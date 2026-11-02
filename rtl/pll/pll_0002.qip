@@ -1,0 +1,10 @@
+# The instance assignments of the Karabas_Profi clock generator: the altera_pll of
+# pll_0002.v runs in direct mode (no feedback compensation), with auto reset and the
+# automatic bandwidth preset, exactly as the wizard generated them.
+#
+# Copied from Template_MiSTer rtl/pll/pll_0002.qip at
+# 76dd8f5c509a2237b8e707773032a31df5905048 unchanged.
+set_instance_assignment -name PLL_COMPENSATION_MODE DIRECT -to "*pll_0002*|altera_pll:altera_pll_i*|*"
+ 
+set_instance_assignment -name PLL_AUTO_RESET ON -to "*pll_0002*|altera_pll:altera_pll_i*|*"
+set_instance_assignment -name PLL_BANDWIDTH_PRESET AUTO -to "*pll_0002*|altera_pll:altera_pll_i*|*"

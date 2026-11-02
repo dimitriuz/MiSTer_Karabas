@@ -1,0 +1,15 @@
+# The Karabas_Profi clock generator: the files of the altera_pll (rtl/pll.v, which wraps
+# rtl/pll/pll_0002.v) and its instance assignments. Add it to the project with
+#   set_global_assignment -name QIP_FILE rtl/pll.qip
+#
+# Cut down from rtl/pll.qip of Template_MiSTer at 76dd8f5c509a2237b8e707773032a31df5905048:
+# the four assignments below are that file's, the rest of it is dropped. What is dropped is
+# the wizard's IP catalog metadata (IP_TOOL_*, IP_TARGETED_DEVICE_FAMILY, the ~300
+# base64-coded IP_COMPONENT_PARAMETER lines and the MISC_FILE of a pll.cmp the template
+# does not even ship). None of it takes part in the synthesis of the PLL - it labels the IP
+# in the Quartus IP report - and every one of those lines would describe the template's one
+# 20 MHz output rather than the three frequencies that pll_0002.v asks for.
+set_global_assignment -name SYNTHESIS_ONLY_QIP ON
+set_global_assignment -library "pll" -name VERILOG_FILE [file join $::quartus(qip_path) "pll.v"]
+set_global_assignment -library "pll" -name VERILOG_FILE [file join $::quartus(qip_path) "pll/pll_0002.v"]
+set_global_assignment -library "pll" -name QIP_FILE [file join $::quartus(qip_path) "pll/pll_0002.qip"]
