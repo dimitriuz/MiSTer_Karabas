@@ -186,7 +186,11 @@ class TestPrepareUpstream(unittest.TestCase):
                     generated.append((rel, name, block))
         self.assertTrue(generated, "no generated components found in the output")
         for rel, name, block in generated:
-            ports = re.search(r'port[ \t]*\((.*?)\);', block, re.S)
+            # The port clause runs to the `);` directly before `end component` —
+            # a lazy `\);` would stop inside `(others => '0');` and only check
+            # the ports before the first vector default.
+            ports = re.search(r'(?is)port[ \t]*\((.*?)\n[ \t]*\);[ \t]*\r?\nend[ \t]+component',
+                              block)
             self.assertIsNotNone(ports, f"component {name} in {rel} has no port clause")
             for entry in ports.group(1).split(";\n"):
                 entry = entry.strip()
@@ -336,6 +340,16 @@ class TestPrepareUpstream(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("nosuchmodule", msg)
         self.assertIn("this is nonsense p", msg)
+
+    def test_unparsable_parameter_fragment_is_a_named_error(self):
+        m = load_tool_module()
+        # `#(parameter A=1, B=2)`: the comma-elided second declaration `B=2` must
+        # not be silently skipped.
+        with self.assertRaises(m.PortParseError) as ctx:
+            m.component_declaration("nosuchmodule", "parameter A=1, B=2", "input wire ok")
+        msg = str(ctx.exception)
+        self.assertIn("nosuchmodule", msg)
+        self.assertIn("B=2", msg)
 
 
 if __name__ == "__main__":

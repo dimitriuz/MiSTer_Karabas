@@ -8,6 +8,7 @@
 # raetro/quartus:17.0 (Docker, repo mounted, host uid — as tools/qbuild.sh does).
 # The last line is always `elab_upstream: exit <code>`; exits with that code.
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
 if [ $# -ne 0 ]; then
     echo "usage: tools/elab_upstream.sh" >&2

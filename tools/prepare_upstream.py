@@ -75,8 +75,8 @@ INIT_REWRITES = [  # (out-relative file, exact old string, new init path suffix)
 ]
 
 
-class PortParseError(Exception):
-    pass
+class PortParseError(ValueError):
+    """A module-header fragment (port or parameter) the parser cannot read."""
 
 
 def strip_comments(s):
@@ -156,13 +156,20 @@ def parse_ports(ports_text, module_name):
     return ports
 
 
-def generic_clauses(params_text):
-    """Generics from Verilog parameter declarations: integer/string, vectors skipped."""
+def generic_clauses(params_text, module_name):
+    """Generics from Verilog parameter declarations: integer/string, vectors skipped.
+
+    A parameter-list fragment that is not a `parameter` declaration raises
+    naming the module and the fragment, so `#(parameter A=1, B=2)` fails loudly
+    instead of silently dropping the generic B.
+    """
     gens = []
     for p in split_args(params_text or ""):
-        m = PARAM_RE.match(p.strip())
+        frag = p.strip()
+        m = PARAM_RE.match(frag)
         if not m:
-            continue
+            raise PortParseError(
+                f"cannot parse parameter fragment {frag!r} of module {module_name}")
         if m.group(1):  # vector-typed parameter: no VHDL generic
             continue
         v = m.group(3).strip()
@@ -190,7 +197,7 @@ def component_declaration(name, params_text, ports_text):
             clause += default_clause(dv, bool(rng)) if dv is not None \
                 else (" := (others => '0')" if rng else " := '0'")
         pl.append(clause)
-    gens = generic_clauses(params_text)
+    gens = generic_clauses(params_text, name)
     g = ("  generic (\n    " + ";\n    ".join(gens) + "\n  );\n") if gens else ""
     return f"component {name}\n{g}  port (\n    " + ";\n    ".join(pl) + "\n  );\nend component;\n"
 
@@ -235,6 +242,12 @@ def main():
     kept = [(k, rel) for k, rel in entries if rel not in excluded]
 
     # ---- mirror copy ----------------------------------------------------------
+    # Never overwrite a directory that is not ours: absent, empty, or a previous
+    # run's output (a STAMP file is present) are the only accepted states.
+    if out.exists() and any(out.iterdir()) and not (out / "STAMP").is_file():
+        raise SystemExit(
+            f"{out}: refusing to replace a non-empty directory that has no STAMP "
+            "file (not a prepare_upstream output); pass a fresh --out")
     if out.exists():
         shutil.rmtree(out)
     for src_rel in ("src/rtl", "modules/rtl"):
