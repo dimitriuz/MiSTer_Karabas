@@ -1,0 +1,8 @@
+build/
+output_files/
+db/
+incremental_db/
+*.rbf
+*.qws
+__pycache__/
+.superpowers/

@@ -1,0 +1,3 @@
+[submodule "upstream/karabas-go-core-profi"]
+	path = upstream/karabas-go-core-profi
+	url = https://github.com/andykarpov/karabas-go-core-profi.git

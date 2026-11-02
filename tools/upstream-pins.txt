@@ -1,0 +1,6 @@
+# Upstream files whose exact content Task 1's tooling pins; compute with:
+#   cd upstream/karabas-go-core-profi && sha256sum <path>
+# When tools/check_upstream.sh fails, the replacement under rtl/replaced/ must be
+# re-ported against the new upstream file.
+sha256  src/rtl/clock/clock.vhd      13966568dcb8fd70b1f91a419c97dd08d37b8ad03ca724fbb0a923e2400511c4
+sha256  src/rtl/memory/memory.vhd    729dc56645d16b7064e96ab8dd6cc2f7461018eb160c8c00549803e52ac350c4
