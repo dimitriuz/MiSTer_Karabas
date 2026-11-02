@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Upstream pins: `upstream/karabas-go-core-profi` at `01dcd6c08a4b9e536103396ab2f2f29b44e8d035` (URL `https://github.com/andykarpov/karabas-go-core-profi.git`), with its submodule `modules/` at `f1a05403958cc0feb727874b1c07f7badc8d1c7c` (karabas-go-modules). Clone recursively. Nothing under `upstream/` is ever edited.
+- Upstream pins: `upstream/karabas-go-core-profi` at `01dcd6c08a4b9e536103396ab2f2f29b44e8d035` (URL `https://github.com/andykarpov/karabas-go-core-profi.git`), with its submodule `modules/` at `2b9776e (the gitlink recorded by core-profi@01dcd6c; full hash from `git -C upstream/karabas-go-core-profi ls-tree HEAD modules`)` (karabas-go-modules). Clone recursively. Nothing under `upstream/` is ever edited.
 - MiSTer framework: `sys/` copied unmodified from `https://github.com/MiSTer-devel/Template_MiSTer` at `76dd8f5c509a2237b8e707773032a31df5905048`; record the commit in `sys/TEMPLATE_COMMIT`. Never edit `sys/`.
 - Reference repos, read-only: `~/repo/ZX-Spectrum_MISTer` (branch `master` @ `756fd4b`), `~/repo/MiSTer_pico-speccy`. Copies from them keep their licence header and name the source commit in a comment.
 - Quartus: `tools/qbuild.sh . Karabas_Profi` (Docker `raetro/quartus:17.0`), launched detached (`setsid nohup … >build/logs/qbuild.log 2>&1 &`), never two builds at once. Revert `LAST_QUARTUS_VERSION` in `Karabas_Profi.qsf` after every build (`git checkout -p` or the sed in Task 1's README note).
