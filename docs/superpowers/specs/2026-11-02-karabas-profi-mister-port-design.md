@@ -272,6 +272,28 @@ resets the machine, as upstream does. Hotkeys follow `core.json` where MiSTer al
 (Menu+F1 … in upstream = MiSTer's OSD key combinations, or direct keys if Menu is not
 available; the builder records the mapping in the README).
 
+### 5.10 Revision during stage-1 planning (2026-11-02)
+
+Research while planning stage 1 changed two "how" decisions of §5.1; goals are unchanged.
+
+- **The MCU replacement speaks the board link instead of patching `profi.vhd`.** Upstream's
+  `kg_mcu` is a decoder of the documented RP2040 ↔ FPGA SPI protocol
+  (karabas-go-firmware `docs/protocol.md`: 3-byte frames for keyboard, mouse, joysticks,
+  soft switches, ROM loading, RTC, image sectors, UART). The MiSTer side (`mcu_emu`) is an SPI
+  master in the FPGA that plays the firmware's part on `profi.vhd`'s existing `MCU_*` pins. So
+  input, OSD switches, ROM loading, RTC, HDF sectors and the USB UART need no patch at all.
+- **Quartus compatibility is a mechanical build step, not a patch series.** Quartus 17 cannot
+  instantiate Verilog modules directly from VHDL (`entity work.kg_sprom` → error 10481) and
+  clashes `uart.v`'s `uart_tx/uart_rx` with the VHDL ones. `tools/prepare_upstream.py` copies
+  upstream to `build/upstream/` and rewrites those instantiations into component declarations
+  (17 modules), puts `uart.v` in its own library, provides an empty `unisim` library, and fixes
+  init-file paths. A spike proved the whole upstream machine then passes Quartus 17 analysis and
+  elaboration. Real patches (`patches/`) stay the tool for behaviour changes; the patch tooling
+  is added by the first plan that needs one.
+- Replaced upstream files (`clock.vhd`, `memory.vhd`) are copies of the pinned upstream file
+  with only the board-specific part swapped; `tools/check_upstream.sh` fails when upstream
+  changes them, so a submodule bump forces a re-port instead of a silent divergence.
+
 ## 6. Delivery in stages
 
 Each stage is its own plan, merged only after it works on the board.
