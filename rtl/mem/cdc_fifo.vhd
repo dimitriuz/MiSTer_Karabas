@@ -3,12 +3,18 @@
 -- and two-flop pointer synchronisers (the classic Cummings design). The write side
 -- is `wr_clk`, the read side `rd_clk`; no cell is written and read in the same
 -- clock, and the write side only touches a cell after the read side's pointer has
--- come around to it again.
+-- come around to it again. `rd = '1'` steps to the next cell, `wr = '1'` appends `d`.
 --
 -- `q` is the combinational output of the cell the read pointer points at: valid
--- whenever `empty = '0'`, it does not need a clock of its own. `rd = '1'` steps to
--- the next cell, `wr = '1'` appends `d`. Both `wr_rst` and `rd_rst` have to be
--- asserted together (they are ARESET here), otherwise the two pointers disagree.
+-- whenever `empty = '0'`, it does not need a clock of its own.
+--
+-- Both `wr_rst` and `rd_rst` have to be asserted together (they are ARESET here), and
+-- held for at least three clocks of the slower domain: the pointer synchronisers are
+-- cleared by their own clock, so reset has to be seen twice by each side with a clock
+-- of room at the release, and the far pointer has to be visible at zero before `full`
+-- and `empty` mean anything. Release it earlier and a pointer can move against a
+-- synchroniser that has not caught up, reading or writing a cell the other side does
+-- not expect.
 --
 -- `wr = '1'` while `full = '1'` silently loses the datum; the caller must size the
 -- queue for its traffic. sram_bridge guards its write queue with an assertion.
@@ -95,16 +101,26 @@ begin
 	sync_w: process (rd_clk)              -- the write pointer into the read domain
 	begin
 		if rising_edge(rd_clk) then
-			wbg_s1 <= wbg;
-			wbg_s2 <= wbg_s1;
+			if rd_rst = '1' then
+				wbg_s1 <= (others => '0');
+				wbg_s2 <= (others => '0');
+			else
+				wbg_s1 <= wbg;
+				wbg_s2 <= wbg_s1;
+			end if;
 		end if;
 	end process;
 
 	sync_r: process (wr_clk)              -- the read pointer into the write domain
 	begin
 		if rising_edge(wr_clk) then
-			rbg_s1 <= rbg;
-			rbg_s2 <= rbg_s1;
+			if wr_rst = '1' then
+				rbg_s1 <= (others => '0');
+				rbg_s2 <= (others => '0');
+			else
+				rbg_s1 <= rbg;
+				rbg_s2 <= rbg_s1;
+			end if;
 		end if;
 	end process;
 

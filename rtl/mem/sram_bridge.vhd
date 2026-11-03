@@ -14,7 +14,7 @@
 --     already hold the byte at `addr` or a write has invalidated it; `dout` then
 --     holds it for as long as `addr` stays there, so a held bus cycle is served from
 --     the register and a back-to-back read of the same byte costs nothing;
---   * the byte arrives 7 clk_bus clocks after `rd_req` rises (measured in
+--   * the byte arrives 9 to 11 clk_bus clocks after `rd_req` rises (measured in
 --     sim/tb_sram_bridge.vhd, whose model keeps `ready` low for 9 clk_sdr clocks per
 --     access; sdram.sv itself takes 3 to 6). A Z80 memory read is 3 T-states, which is
 --     12 clk_bus clocks at the 7 MHz stage-1 limit, so it is in time - but only just:
@@ -35,6 +35,11 @@
 --   * the request of a read that is in flight cannot be cancelled, so when the CPU
 --     changes `addr` mid-cycle the stale answer is dropped and a new read is issued:
 --     the response carries the address it was read for.
+--   * nothing is issued until 16384 clk_sdr clocks after reset, because sdram.sv is
+--     refreshing for about 12100 of them and answers nothing in the meantime although
+--     its `ready` is high;
+--   * a response is dropped when a write to the same byte is queued in its clock: that
+--     write lands after the byte was read, so the response is already stale.
 -------------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
@@ -117,6 +122,13 @@ architecture RTL of sram_bridge is
 	signal acc_addr       : std_logic_vector(ADDR_W - 1 downto 0) := (others => '0');
 	signal sd_din_r       : std_logic_vector(7 downto 0) := (others => '0');
 
+	-- sdram.sv: after `init` it spends some 12100 clk_sdr clocks refreshing
+	-- (STATE_STARTUP) and `ready` tells nothing about it - it is high while the refresh
+	-- runs - so a request in that window ends with the client believing garbage. The
+	-- bridge counts the window itself and keeps everything queued meanwhile.
+	constant SD_STARTUP_C : natural := 16384;
+	signal sd_start       : natural := SD_STARTUP_C;
+
 begin
 
 	U_WQ: cdc_fifo
@@ -178,13 +190,17 @@ begin
 				end if;
 
 				-- the answer of the read in flight: good enough for dout when `addr` still
-				-- wants that byte and no write was queued after the read went out. A write
-				-- queued with the read or before it is served before it by the SDRAM side
-				-- (a write wins a pending read there), so it cannot make the answer stale.
+				-- wants that byte, no write was queued after the read went out, and no write
+				-- is queued in this very clock. A write queued before the read went out is
+				-- served before it by the SDRAM side (a write wins a pending read there), so
+				-- it cannot make the answer stale. One queued now lands after the byte was
+				-- read, so the answer on its way is already wrong - and taking it would undo
+				-- the invalidation above: dout would hold the byte the write just replaced,
+				-- be marked valid for `addr`, and nothing would read the array again.
 				if out_rd = '1' and cq_empty = '0' then
 					cq_pop <= '1';
 					out_rd <= '0';
-					if cq_q(QW - 1 downto 8) = addr and rd_wseq = wseq then
+					if cq_q(QW - 1 downto 8) = addr and rd_wseq = wseq and wr_stb = '0' then
 						dout_r     <= cq_q(7 downto 0);
 						valid_addr <= cq_q(QW - 1 downto 8);
 						have_valid <= '1';
@@ -221,7 +237,10 @@ begin
 				st     <= s_idle;
 				t      <= (others => '0');
 				sd_rd  <= '0';
-				sd_we  <= '0';
+				sd_we    <= '0';
+				sd_start <= SD_STARTUP_C;
+			elsif sd_start /= 0 then
+				sd_start <= sd_start - 1;    -- the controller is still refreshing
 			else
 				case st is
 				when s_idle =>

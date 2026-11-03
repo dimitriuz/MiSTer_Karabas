@@ -56,6 +56,8 @@ architecture sim of tb_sram_bridge is
 	constant WA          : natural := 16#1234#;   -- write_then_read
 	constant WA2         : natural := 16#1236#;   -- ... and its same-clock variant
 	constant WA3         : natural := 16#1238#;   -- ... and the stale-dout write
+	constant WA4         : natural := 16#123A#;   -- write_during_response
+	constant SU          : natural := 16#7E00#;   -- startup
 	constant ORD         : natural := 16#2345#;   -- write_order
 	constant CA0         : natural := 16#3456#;   -- addr_change
 	constant CA1         : natural := 16#4001#;
@@ -202,6 +204,14 @@ main: process
 		wr_stb <= '0';
 	end procedure;
 
+	-- the bridge holds every request back while the SDRAM controller starts up (sdram.sv
+	-- refreshes for about 12100 clk_sdr clocks after init; the bridge counts 16384), so
+	-- nothing any case measures can begin before that has passed
+	procedure wait_startup is
+	begin
+		wait for 200 us;
+	end procedure;
+
 	-- every case, at the clk_bus frequency selected by half_bus. `flip` xor-ed into
 	-- the loader burst's data keeps the two runs' content different, so a write lost
 	-- in the second run cannot hide behind the first run's value.
@@ -214,12 +224,39 @@ main: process
 		variable exp_byte : std_logic_vector(7 downto 0);
 		variable wr_byte  : std_logic_vector(7 downto 0);
 	begin
-		-- read_after_reset ---------------------------------------------------------
+		-- startup ------------------------------------------------------------------
+		-- sdram.sv spends some 12100 clk_sdr clocks refreshing after init and its
+		-- `ready` may be high throughout, so a request in that window is answered with
+		-- nothing. The bridge counts 16384 clk_sdr clocks of its own and keeps
+		-- everything in its queues meanwhile, so the write and the read below are served
+		-- once the window has passed. The 12-clock bound of the other cases is waived
+		-- for this one on purpose: what is checked is that the byte arrives at all, and
+		-- that the model never saw a request during its window - it asserts if it did,
+		-- which ends the simulation.
 		quiesce(8);
 		reset <= '1';
 		rise(8);
 		reset <= '0';
 		rise(4);
+		wr_byte := x"5D";
+		ok2 := dout /= wr_byte;               -- dout must not hold the answer already
+		write_byte(a21(SU), wr_byte);         -- queued inside the window
+		rd_req <= '1';                        -- ... and this read together with it
+		addr <= a21(SU);
+		watch_byte(wr_byte, 12000, ok, clocks);
+		rd_req <= '0';
+		if ok and ok2 then
+			pass("startup" & suffix);
+		else
+			fail("startup" & suffix);
+		end if;
+
+		-- read_after_reset ---------------------------------------------------------
+		reset <= '1';
+		rise(8);
+		reset <= '0';
+		rise(4);
+		wait_startup;                         -- the bridge's own startup count
 		exp_byte := sdram_model_byte(RA0);
 		ok := dout /= exp_byte;             -- a stale dout must not pass the case
 		rd_req <= '1';
@@ -301,6 +338,46 @@ main: process
 			fail("write_over_read" & suffix);
 		end if;
 
+		-- write_during_response ----------------------------------------------------
+		-- the response for addr may be accepted in the very clock a write to addr is
+		-- queued. Taking it there puts the byte the write replaced into dout, marks it
+		-- valid, and nothing reads the array again: dout is wrong for as long as addr
+		-- stays. The write's clock is swept across the arrival window so one iteration
+		-- hits the coincidence; the bound is generous on purpose, because a response
+		-- that has to be dropped costs a second read, and the point here is the value.
+		ok2 := true;
+		for off in 0 to 15 loop
+			rd_req <= '0';
+			quiesce(16);
+			rd_req <= '1';
+			addr <= a21(CA0);
+			watch_byte(sdram_model_byte(CA0), 32, ok, clocks);
+			if not ok then
+				fail("write_during_response" & suffix);   -- the setup read itself
+				return;
+			end if;
+			addr <= a21(WA4);                 -- stale: dout still holds CA0's byte
+			wait until rising_edge(clk_bus);  -- the read for WA4 is issued at this clock
+			for j in 1 to off loop
+				wait until rising_edge(clk_bus);
+			end loop;
+			wr_byte := std_logic_vector(to_unsigned(16#A0# + off, 8));
+			din <= wr_byte;
+			wr_stb <= '1';                    -- one clock: with luck, the response's
+			wait until rising_edge(clk_bus);
+			wr_stb <= '0';
+			watch_byte(wr_byte, 48, ok, clocks);
+			if not ok then
+				ok2 := false;
+			end if;
+		end loop;
+		rd_req <= '0';
+		if ok2 then
+			pass("write_during_response" & suffix);
+		else
+			fail("write_during_response" & suffix);
+		end if;
+
 		-- write_order --------------------------------------------------------------
 		quiesce(16);
 		for i in 0 to 3 loop                -- one write every clk_bus clock
@@ -372,6 +449,8 @@ begin
 	assert RA0 < SDRAM_MODEL_BYTES and SA < SDRAM_MODEL_BYTES and WA < SDRAM_MODEL_BYTES
 	       and WA2 < SDRAM_MODEL_BYTES
 	       and WA3 < SDRAM_MODEL_BYTES
+	       and WA4 < SDRAM_MODEL_BYTES
+	       and SU < SDRAM_MODEL_BYTES
 	       and ORD < SDRAM_MODEL_BYTES and CA0 < SDRAM_MODEL_BYTES
 	       and CA1 < SDRAM_MODEL_BYTES and CA2 < SDRAM_MODEL_BYTES
 	       and LOADER_BASE + LOADER_N <= SDRAM_MODEL_BYTES

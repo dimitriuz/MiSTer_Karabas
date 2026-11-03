@@ -15,11 +15,14 @@
 --     the byte by the latched addr(0); a write masks one byte of the array;
 --   * save_we starts as 1, so the first read is never served from the register.
 --
--- Three deliberate differences from sdram.sv, all in the model's favour:
+-- Four deliberate differences from sdram.sv, all in the model's favour:
 --   * every access takes exactly 9 clocks of `ready` low (sdram.sv takes 3 for a write
 --     and 6 for a read at 100 MHz), so the bridge is timed against the slower controller;
 --   * an access is never interrupted and a request raised while `ready` is low is a
 --     protocol error, reported as one;
+--   * after `init` falls it spends 12100 clocks in sdram.sv's STATE_STARTUP, holding
+--     `ready` high and answering nothing; a request in that window is a protocol error,
+--     reported as one;
 --   * the memory array lives in sdram_model_pkg as a shared variable: GHDL cannot select
 --     a signal inside an instantiated unit by name, and the testbench has to see whether
 --     a write really landed. It is 2 MiB - the map the bridge puts at SDRAM byte 0 - and
@@ -46,11 +49,11 @@ package sdram_model_pkg is
 	-- the boot content of the whole array
 	function sdram_model_boot return model_byte_array;
 
-	-- The model's memory: the model writes it, the testbench reads it back. GHDL notes
-	-- that sdram_model_boot is called before its body is elaborated (-Welaboration): the
-	-- package body is elaborated before the variable is initialised, which is what the
-	-- initialiser needs, and nothing reads the array before time 0.
-	shared variable sdram_model_mem : model_byte_array := sdram_model_boot;
+	-- The model's memory: the model writes it, the testbench reads it back. It is left
+	-- uninitialised here and filled at time 0 by the `boot` process: an initialiser would
+	-- call a function during elaboration, which GHDL reports as an out-of-order call
+	-- (-Welaboration), and the array is 2 MiB so a constant cannot spell it out either.
+	shared variable sdram_model_mem : model_byte_array;
 
 end package;
 
@@ -98,6 +101,11 @@ use work.sdram_model_pkg.all;
 architecture model of sdram is
 
 	constant GAP : unsigned(3 downto 0) := "1001";        -- 9 clocks of ready low
+
+	-- sdram.sv STATE_STARTUP: the refresh sequence that has to run before anyone is
+	-- served. `ready` says nothing about it, so the client has to count.
+	constant STARTUP_C : natural := 12100;
+	signal startup     : natural := STARTUP_C;
 
 	signal data      : std_logic_vector(15 downto 0) := (others => '0');
 	signal save_addr : std_logic_vector(24 downto 0) := (others => '0');
@@ -148,11 +156,24 @@ begin
 	begin
 		if rising_edge(clk) then
 			if init = '1' then
+				startup <= STARTUP_C;
 				rdy     <= '0';
 				busy    <= '0';
 				old_we  <= '0';
 				old_rd  <= '0';
 				save_we <= '1';
+			elsif startup /= 0 then
+				-- sdram.sv STATE_STARTUP: `ready` is high while the refresh sequence
+				-- runs, so a client that only watches `ready` can ask for something
+				-- that will not be answered. Nothing is answered here, and the client
+				-- that asks anyway ends the simulation.
+				old_we  <= we;
+				old_rd  <= rd;
+				rdy     <= '1';
+				assert not ((we = '1' and old_we = '0') or (rd = '1' and old_rd = '0'))
+					report "sdram_model: request during the startup window"
+					severity failure;
+				startup <= startup - 1;
 			else
 				old_we <= we;
 				old_rd <= rd;
@@ -204,6 +225,16 @@ begin
 				end if;
 			end if;
 		end if;
+	end process;
+
+	-- the boot content of the array, applied at time 0 (see the package: no function
+	-- call during elaboration)
+	boot: process
+	begin
+		for i in sdram_model_mem'range loop
+			sdram_model_mem(i) := sdram_model_byte(i);
+		end loop;
+		wait;
 	end process;
 
 end model;
