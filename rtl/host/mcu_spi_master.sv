@@ -103,9 +103,12 @@ always @(posedge clk) begin
             end
             S_HIGH: begin
                 if (cnt == HALF - 1) begin
-                    spi_sck <= 1'b0;   // falling: the slave shifted already
-                    cnt     <= 32'd0;
-                    state   <= S_LOW;
+                    spi_sck  <= 1'b0;             // falling: the slave has
+                    sr       <= {sr[22:0], 1'b0}; // sampled; present the
+                    spi_mosi <= sr[22];           // next bit now, HALF
+                                                  // clocks before the rise
+                    cnt      <= 32'd0;
+                    state    <= S_LOW;
                 end else
                     cnt <= cnt + 32'd1;
             end
@@ -115,10 +118,8 @@ always @(posedge clk) begin
                         spi_cs_n <= 1'b1;
                         cnt      <= 32'd0;
                         state    <= S_TAIL;
-                    end else begin            // change MOSI on the falling edge
-                        sr       <= {sr[22:0], 1'b0};   // and raise SCK for
-                        spi_mosi <= sr[22];             // the next bit
-                        spi_sck  <= 1'b1;
+                    end else begin
+                        spi_sck  <= 1'b1;     // MOSI already holds this bit
                         cnt      <= 32'd0;
                         state    <= S_HIGH;
                     end

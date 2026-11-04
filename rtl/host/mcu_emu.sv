@@ -11,8 +11,9 @@
 // (ioctl_download, index 0) starts, send INIT_START, HW_SETUP board = Go,
 // ROMLOADER on; every ioctl byte as the ROMBANK frames of the address bytes
 // that changed (0..2 = bits 15..8, 23..16, 31..24) plus the ROMDATA frame at
-// the byte's boot.rom address, ioctl_wait held while its frames go out
-// (hps_io does not send the next byte while it is high); ROMLOADER off, all
+// the byte's boot.rom address, ioctl_wait held while its frames go out and
+// from the clock ioctl_download rises until the first byte is consumed (a
+// byte strobed in that window is latched, none is lost); ROMLOADER off, all
 // 14 switch frames (indices 0-8 and 10-14; 9 is the HDF slot), the cleared
 // keyboard (CMD_KBD 0..6 = 0) and INIT_DONE. Bytes of another ioctl_index
 // are ignored and never raise ioctl_wait. A second download repeats the
@@ -20,8 +21,10 @@
 //
 // Run loop after INIT_DONE, in priority order per idle slot: a switch value
 // that differs from the last one sent (all indices compared every slot),
-// the keyboard report on kb_changed (seven CMD_KBD frames), the GS Reset /
-// NMI / Reset trigger pulses (value 1, then 0 after TRIGGER_CLKS), and one
+// the keyboard report on kb_changed (seven CMD_KBD frames; a change arriving
+// mid-burst is answered with one fresh complete report of the latest one),
+// the GS Reset / NMI / Reset trigger pulses (value 1, then 0 after
+// TRIGGER_CLKS), and one
 // CMD_NOPE poll every NOP_CLKS when idle. Replies the core shifted out
 // (rx of each frame) whose command is not NOPE go to last_reply/reply_valid
 // for the later stages.
@@ -131,8 +134,9 @@ wire [7:0] bank2 = cur_a[31:24];
 reg [7:0] sent_val [0:14];   // last CMD_SWITCHES value sent per index
 reg [3:0] sw_i;              // start sequence: the index being sent
 
-reg        kb_pend;
-reg [55:0] kb_snap;
+reg        kb_pend;              // a report burst is in flight
+reg        kb_again;             // the report changed during the burst
+reg [55:0] kb_hold, kb_snap;     // newest report; the frozen burst content
 reg [2:0]  kb_i;
 
 // bit 0: Reset (frame index 14), 1: GS Reset (12), 2: NMI (13)
@@ -152,7 +156,8 @@ endfunction
 
 // ---------------- the frame arbiter ----------------
 
-integer iv, tv;
+integer cv, tv;                  // the arbiter's loop indices
+integer iv;                      // the clocked block's loop index
 integer sw_target, trig_target;
 
 reg        fire;
@@ -216,9 +221,9 @@ always @(*) begin
                     faction = A_START;
                 end else begin
                     // 1. a switch value that differs from the last sent
-                    for (iv = 0; iv <= 14; iv = iv + 1)
-                        if (iv != 9 && osd_value(iv, status) != sent_val[iv])
-                            sw_target = iv;
+                    for (cv = 0; cv <= 14; cv = cv + 1)
+                        if (cv != 9 && osd_value(cv, status) != sent_val[cv])
+                            sw_target = cv;
                     if (sw_target >= 0) begin
                         fword   = {C_SW, sw_target[7:0],
                                    osd_value(sw_target, status)};
@@ -278,7 +283,9 @@ always @(posedge clk) begin
         sw_i        <= 4'd0;
         kb_i        <= 3'd0;
         kb_pend     <= 1'b0;
+        kb_again    <= 1'b0;
         kb_snap     <= 56'd0;
+        kb_hold     <= 56'd0;
         trig_prev   <= 3'd0;
         trig_pend   <= 3'd0;
         trig_arm    <= 3'd0;
@@ -299,14 +306,8 @@ always @(posedge clk) begin
         if (rx_valid)
             waiting <= 1'b0;
 
-        // a byte of the download (hps_io holds the next one behind
-        // ioctl_wait, so one byte is in flight at a time)
-        if (st == S_STRM && ioctl_wr && ioctl_index == 16'd0 && !byte_pend) begin
-            cur_a      <= rom_a;
-            cur_d      <= ioctl_dout;
-            byte_pend  <= 1'b1;
-            ioctl_wait <= 1'b1;
-        end
+        // (byte capture moved below the fire block: a strobe clocked with
+        // A_START must survive its byte_pend clear)
 
         // fire the frame the arbiter picked and take the next one
         if (fire) begin
@@ -317,7 +318,6 @@ always @(posedge clk) begin
                 A_START: begin
                     st           <= S_SEQ;
                     seq_i        <= 2'd0;
-                    byte_pend    <= 1'b0;
                     ioctl_wait   <= 1'b0;
                     bank_sent[0] <= 8'hFF;
                     bank_sent[1] <= 8'hFF;
@@ -365,6 +365,22 @@ always @(posedge clk) begin
             endcase
         end
 
+        // a byte of the download: every strobe is owned (the one clocked
+        // with A_START included - this write overrides that case's clear;
+        // !byte_pend skips only a strobe whose frames were not sent yet,
+        // which cannot happen while ioctl_wait was held for it)
+        if (ioctl_download && ioctl_wr && ioctl_index == 16'd0 && !byte_pend) begin
+            cur_a      <= rom_a;
+            cur_d      <= ioctl_dout;
+            byte_pend  <= 1'b1;
+            ioctl_wait <= 1'b1;
+        end
+        // ioctl_wait stays raised through the whole start sequence, so the
+        // wait check of hps_io sees it before S_STRM consumes the bytes
+        if (ioctl_download && ioctl_index == 16'd0 &&
+            (st == S_WAIT || st == S_RUN || st == S_SEQ))
+            ioctl_wait <= 1'b1;
+
         // input sampling, after the fire block so that a kb_changed clocked
         // together with the report's last frame arms a new report, and a
         // trigger's rising edge clocked with its 01 frame keeps it pending
@@ -375,11 +391,19 @@ always @(posedge clk) begin
             if (trig_arm[iv] && trig_t[iv] != TRIGGER_CLKS)
                 trig_t[iv] <= trig_t[iv] + 32'd1;
         end
-        if (kb_pend && fire && faction == A_KB && kb_i == 3'd6 && !kb_changed)
+        // the report burst: kb_snap is its frozen content; a kb_changed
+        // arriving while it is in flight only updates kb_hold and arms one
+        // fresh complete report of the latest snapshot after it ends
+        if (kb_again && !kb_pend) begin
+            kb_pend  <= 1'b1;
+            kb_snap  <= kb_hold;
+            kb_again <= 1'b0;
+        end
+        if (kb_pend && fire && faction == A_KB && kb_i == 3'd6)
             kb_pend <= 1'b0;
         if (kb_changed) begin
-            kb_pend <= 1'b1;
-            kb_snap <= kb_report;
+            kb_hold  <= kb_report;
+            kb_again <= 1'b1;
         end
         if (st == S_RUN)
             nop_t <= fire ? 32'd0 : nop_t + 32'd1;

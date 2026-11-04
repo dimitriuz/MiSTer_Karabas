@@ -60,6 +60,11 @@ module tb_mcu_emu;
    reg  [55:0]  kb_report      = 56'd0;
    reg          kb_changed     = 1'b0;
    wire         spi_cs_n, spi_sck, spi_mosi;
+   wire         sck_dly, mosi_dly;    // the wire transport: the slave and
+   assign #5  sck_dly  = spi_sck;     // the decoder see SCK 5 ns and MOSI
+   assign #15 mosi_dly = spi_mosi;    // 15 ns late - a MOSI bit moving on
+                                      // the rising edge therefore arrives to
+                                      // the slave as its previous value
    wire         spi_miso;
    wire [23:0]  last_reply;
    wire         reply_valid;
@@ -100,7 +105,7 @@ module tb_mcu_emu;
       .ENABLE_FILE (0), .ENABLE_FT (0), .ENABLE_SD2 (0)
    ) u_mcu (
       .CLK (clk_bus), .N_RESET (~reset),
-      .MCU_MOSI (spi_mosi), .MCU_MISO (mcu_miso), .MCU_SCK (spi_sck),
+      .MCU_MOSI (mosi_dly), .MCU_MISO (mcu_miso), .MCU_SCK (sck_dly),
       .MCU_SS (spi_cs_n), .MCU_SPI_FT_SS (1'b1), .MCU_SPI_SD2_SS (1'b1),
       .MCU_BURST_CS_N (1'b1), .MCU_BURST_READY (),
       .MS_X (), .MS_Y (), .MS_Z (), .MS_B (), .MS_UPD (),
@@ -141,6 +146,44 @@ module tb_mcu_emu;
       .regs (softsw_regs), .upd ()
    );
 
+   // ---------------- reply path: second emulator behind a stub slave -----
+
+   wire         cs2, sck2, mosi2, miso2;
+   wire [23:0]  rep2_last;
+   wire         rep2_vld;
+   reg  [23:0]  stub_word = 24'hFF0000;   // NOPE until the request
+   wire         stub_req;
+   reg          dl2 = 1'b0;
+   integer      rep2_cnt = 0;
+   reg  [23:0]  rep2_get = 24'd0;
+   integer      cs2_cnt = 0;
+
+   mcu_emu #(.TRIGGER_CLKS (2000), .NOP_CLKS (200)) dut2 (
+      .clk (clk), .reset (reset),
+      .ioctl_download (dl2), .ioctl_index (16'd0),
+      .ioctl_wr (1'b0), .ioctl_addr (27'd0), .ioctl_dout (8'd0),
+      .ioctl_wait (),
+      .status (128'd0), .osd_reset (1'b0),
+      .kb_report (56'd0), .kb_changed (1'b0),
+      .spi_cs_n (cs2), .spi_sck (sck2), .spi_mosi (mosi2),
+      .spi_miso (miso2),
+      .last_reply (rep2_last), .reply_valid (rep2_vld)
+   );
+
+   kg_spi_slave #(.N (24)) stub (
+      .clk (clk), .sck (sck2), .ssel (cs2), .mosi (mosi2), .miso (miso2),
+      .di (stub_word), .wren (1'b1), .di_req (stub_req),
+      .do_valid (), .dout ()
+   );
+
+   always @(posedge clk)
+      if (stub_req) stub_word <= 24'h010003;
+   always @(posedge rep2_vld) begin
+      rep2_cnt = rep2_cnt + 1;
+      rep2_get = rep2_last;
+   end
+   always @(posedge cs2) cs2_cnt = cs2_cnt + 1;
+
    // ---------------- expected ROM image (fixed LFSR) ----------------
 
    reg [31:0] lfsr;
@@ -170,9 +213,9 @@ module tb_mcu_emu;
    integer    fe_total  = 0;      // INIT_DONE frames seen
 
    always @(negedge spi_cs_n) cbits = 0;
-   always @(posedge spi_sck)
+   always @(posedge sck_dly)
       if (!reset && !spi_cs_n) begin
-         cword = {cword[22:0], spi_mosi};
+         cword = {cword[22:0], mosi_dly};
          cbits = cbits + 1;
       end
    always @(posedge spi_cs_n) begin
@@ -275,14 +318,15 @@ module tb_mcu_emu;
       integer k;
       begin
          for (k = lo; k < hi; k = k + 1) begin
-            @(negedge clk);
+            if (k != lo) @(negedge clk);  // first byte rides the download
+            else         #1;               // edge itself, off the wake edge
             ioctl_addr = k[26:0];
-            ioctl_dout = exp_data[k];
-            ioctl_wr   = 1'b1;
-            while (ioctl_wait !== 1'b1) @(posedge clk);
-            @(negedge clk);
-            ioctl_wr = 1'b0;
-            while (ioctl_wait !== 1'b0) @(posedge clk);
+            ioctl_dout = exp_data[k];     // hps_io: ioctl_wr is high for
+            ioctl_wr   = 1'b1;             // exactly the one clock it is
+            @(posedge clk);                // sampled on
+            #1;                            // off the edge, so the clear
+            ioctl_wr   = 1'b0;             // never races the sampling
+            while (ioctl_wait === 1'b1) @(posedge clk);
          end
       end
    endtask
@@ -452,6 +496,28 @@ module tb_mcu_emu;
       end
       if (BUSY !== 1'b0) `FAIL("BUSY went back to 1 in the run loop")
 
+      // an update arriving mid-burst: the latest report must then be sent
+      // in full, never a blend of two reports
+      @(negedge clk);
+      kb_report  = {8'h00, 8'h00, 8'h00, 8'h00, 8'h1f, 8'h1e, 8'h03};
+      kb_changed = 1'b1;
+      @(negedge clk);
+      kb_changed = 1'b0;
+      #4001;                            // past the first frame, mid burst;
+                                        // the odd delay drives off an edge
+      kb_report  = {8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h04, 8'h01};
+      kb_changed = 1'b1;
+      @(negedge clk);
+      kb_changed = 1'b0;
+      t0 = $time;
+      while (KB_STATUS !== 8'h01 || KB_DAT0 !== 8'h04 || KB_DAT1 !== 8'h00 ||
+             KB_DAT2 !== 8'h00 || KB_DAT3 !== 8'h00 || KB_DAT4 !== 8'h00 ||
+             KB_DAT5 !== 8'h00) begin
+         if ($time - t0 > 50000 * 1000000)
+            `FAIL("a report replacing a burst was not sent in full")
+         @(negedge clk);
+      end
+
       // reset_trigger: one clock of osd_reset pulses register 14, and the
       // pulse ends after TRIGGER_CLKS (2000 clocks = 40 us)
       @(negedge clk);
@@ -500,6 +566,26 @@ module tb_mcu_emu;
       if (rom_rec != ROMSIZE + 256)
          `FAIL("the second download did not reach the ROM")
       if (act_downs != 2) `FAIL("ROMLOADER_ACTIVE did not fall the second time")
+
+      // the reply path (second emulator behind the stub): the first frame
+      // is answered NOPE (nothing may arrive), the second with a word
+      rep2_cnt = 0; cs2_cnt = 0;
+      @(negedge clk);
+      dl2 = 1'b1;
+      t0 = $time;
+      while (cs2_cnt < 1) begin
+         if ($time - t0 > 5000 * 1000000) `FAIL("the stub link sent no frame")
+         @(negedge clk);
+      end
+      #1000;                            // past that frame's rx_valid
+      if (rep2_cnt !== 0) `FAIL("reply_valid fired for a NOPE reply")
+      t0 = $time;
+      while (rep2_cnt < 1) begin
+         if ($time - t0 > 10000 * 1000000) `FAIL("the reply word never arrived")
+         @(negedge clk);
+      end
+      if (rep2_get !== 24'h010003)
+         `FAIL("the reply word did not reach last_reply uncorrupted")
       t0 = $time;
       while (BUSY !== 1'b0) begin
          if ($time - t0 > 5000 * 1000000) `FAIL("BUSY stuck after the second INIT_DONE")
