@@ -8,14 +8,15 @@
 //
 // vblank then says: the current line is outside the window recorded by the
 // previous frame (0 for the whole first frame, before any window exists).
-// Using the previous frame's window keeps the signal valid while a new frame
-// is still being measured: the machine switches the active window only at
-// VSX boundaries (video_mode.vhd: the blanking of a line comes from the
-// counters of the frame running when it was generated), so one frame of
-// latency costs one frame of accuracy at a mode switch.
+// One frame of latency is inherent to that: video_mode.vhd derives a line's
+// blanking from counters whose visible line follows one line behind, so at
+// a mode switch the new frame's window first appears on the frame after
+// it. That shift is not a mode-change edge (the switch itself lands in the
+// vblank region between frames) and costs only one frame of accuracy.
 //
-// clk      the clock it runs on (clk_bus at the top)
-// ce       the pixel enable inside it (ADC_CLK = ENA_RGB at the top)
+// clk      the clock it runs on (clk_sdr at the top, the video clock)
+// ce       one strobe per popped pixel word (the video CDC's ce_out at the
+//          top; ADC_CLK = ENA_RGB on a clk_bus-side use)
 // hs, vs   RGB_HS, RGB_VS as profi drives them (the polarity only fixes the
 //          frame/line reference: both edges count from the same signals)
 // blank    RGB_BLANK

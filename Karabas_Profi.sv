@@ -36,7 +36,6 @@ assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
 assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
 
-assign VGA_SL = 0;
 assign VGA_F1 = 0;
 assign VGA_SCALER  = 0;
 assign VGA_DISABLE = 0;
@@ -328,51 +327,39 @@ sdramclk_ddr
 // The machine's video chain is clocked by clk_bus with the pixel enable
 // ADC_CLK = ENA_RGB; the pixels cross into the clk_sdr domain (CLK_VIDEO =
 // the 112.5 MHz PLL output on profi's CLK_SDR port) through an async FIFO
-// - every clk_bus -> clk_sdr crossing in this port is a cdc_fifo. Push on
-// every clk_bus edge where ADC_CLK = '1' (the word is captured at that
-// same edge); pop whenever the FIFO is not empty, register the popped
-// word, and let the registered pop strobe be CE_PIXEL. The FIFO resets
-// with the machine ARESET (= not locked: held for far more than three
-// clk_bus clocks, see rtl/mem/cdc_fifo.vhd).
+// - every clk_bus -> clk_sdr crossing in this port is a cdc_fifo (push on
+// the clk_bus edge with ADC_CLK = '1'). The FIFO resets with the machine
+// ARESET (= not locked: held for far more than three clk_bus clocks, see
+// rtl/mem/cdc_fifo.vhd).
 //
 // clk_sdr is a direct PLL clock, which is what sys_top's clock switches
 // (hdmi_clk_sw, vga_clk_sw) require on CLK_VIDEO; clk_bus is multiplexed
 // 28/24 MHz (DS80) and can never be such a net.
 
-wire [11:0] vid_in = {rgb, rgb_hs, rgb_vs, rgb_blank};
-wire [11:0] vid_q;
-wire        vid_empty, vid_full;
-wire        vid_pop = ~vid_empty;
+// The crossing itself is rtl/video/video_cdc.sv (async cdc_fifo DW=12
+// AW=3 + the pop capture register): push on ce_in, pop whenever not empty,
+// ce_out/dout change together - dout is stable from one ce_out to the
+// next (sim/tb_video_cdc.sv checks exactly this, plus exact-once order and
+// the stalled-burst case).
+wire        vid_ce;
+wire [11:0] vid_r;
 
-cdc_fifo #(.DW(12), .AW(3)) video_fifo (
-	.wr_clk(clk_bus),
-	.wr_rst(profi_areset),
-	.wr(adc_clk),                 // ENA_RGB: one word per pixel
-	.d(vid_in),
-	.full(vid_full),              // pop runs 4x faster than push; depth 8
-
-	.rd_clk(clk_sdr),
-	.rd_rst(profi_areset),
-	.rd(vid_pop),
-	.q(vid_q),
-	.empty(vid_empty)
+video_cdc #(.W(12)) video_cdc (
+	.clk_bus(clk_bus),
+	.clk_vid(clk_sdr),
+	.reset(profi_areset),
+	.ce_in(adc_clk),              // ENA_RGB: one word per pixel
+	.din({rgb, rgb_hs, rgb_vs, rgb_blank}),
+	.stall(1'b0),                 // sim-only hold-off
+	.ce_out(vid_ce),
+	.dout(vid_r)
 );
-
-// q shows the popped cell between the pop edge and the next one: register
-// the word one clk_sdr cycle later, together with the strobe.
-reg [11:0] vid_r;
-reg        pop_d;
-always @(posedge clk_sdr) begin
-	pop_d <= vid_pop;
-	if (pop_d) vid_r <= vid_q;
-end
 
 wire       vga_hs    = ~vid_r[2];   // the profi syncs are active low
 wire       vga_vs    = ~vid_r[1];
 wire       vga_blank =  vid_r[0];
 
 assign CLK_VIDEO = clk_sdr;
-assign CE_PIXEL  = pop_d;
 
 // The VBlank of the sampled chain: profi has none, count it from the
 // popped syncs and the pixel blanking (rtl/video/vblank_gen.sv) on the
@@ -380,7 +367,7 @@ assign CE_PIXEL  = pop_d;
 wire vblank;
 vblank_gen vblank_gen (
 	.clk(clk_sdr),
-	.ce(pop_d),
+	.ce(vid_ce),
 	.hs(vid_r[2]),
 	.vs(vid_r[1]),
 	.blank(vid_r[0]),
@@ -389,6 +376,12 @@ vblank_gen vblank_gen (
 
 wire [2:0] fx = status[25:23];    // Scandoubler Fx: None, HQ2x, CRT 25/50/75
 
+// CRT scanline strength for MiSTer: the CONF_STR order above puts HQ2x at
+// fx = 1 and it must keep sl = 0, so the CRT levels shift by one against
+// the ZX-Demo pattern (fx ? fx-1 : 0).
+wire [2:0] sl = (fx > 3'd1) ? (fx - 3'd2) : 3'd0;
+assign VGA_SL = sl[1:0];
+
 wire [7:0] r8w = {vid_r[11:9], vid_r[11:9], vid_r[10:9]};
 wire [7:0] g8w = {vid_r[8:6], vid_r[8:6], vid_r[7:6]};
 wire [7:0] b8w = {vid_r[5:3], vid_r[5:3], vid_r[4:3]};
@@ -396,8 +389,8 @@ wire [7:0] b8w = {vid_r[5:3], vid_r[5:3], vid_r[4:3]};
 video_mixer #(.LINE_LENGTH(1024), .GAMMA(1)) video_mixer
 (
 	.CLK_VIDEO(clk_sdr),
-	.CE_PIXEL(),
-	.ce_pix(pop_d),
+	.CE_PIXEL(CE_PIXEL),          // the mixer's own pixel enable output
+	.ce_pix(vid_ce),
 
 	.scandoubler(forced_scandoubler | (fx != 0)),
 	.hq2x(fx == 3'd1),
