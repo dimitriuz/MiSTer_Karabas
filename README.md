@@ -20,7 +20,9 @@ Prerequisites: Docker, and both upstream submodules
 GHDL install is needed.
 
 ```
-tools/build.sh                  # the one-command build: prepare_upstream + check_upstream + qbuild,
+python3 tools/prepare_upstream.py # regenerate build/upstream + upstream.qip
+tools/check_upstream.sh           # tripwire: upstream files vs SHA256SUMS
+tools/build.sh                   # the one-command build: prepare_upstream + check_upstream + qbuild,
                                 # ends with `build: exit <code>`
 python3 tools/build_boot_rom.py # releases/boot.rom from upstream's src/roms (committed; --check verifies)
 tools/sim.sh <command>          # run <command> in the karabas-sim:1 image (GHDL, Icarus, repo at /work);
@@ -70,4 +72,7 @@ Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, I
 - CPU turbo above 7 MHz may crash: the SDRAM bridge has no wait path yet (stage 2).
 - General Sound is disabled.
 - No RTC, mouse, joysticks, disks or tape yet.
-- MiSTer analog-VGA scandoubler in the 80-column (DS80) mode untested.
+- DS80 mode switches at runtime: untested and not known to work; the bus
+  clock multiplexer itself is simulation-verified (sim/tb_clock.vhd,
+  sim/tb_video_cdc.sv), but the mode change is a 28 MHz <-> 24 MHz switch
+  under load and has never been run on hardware.
