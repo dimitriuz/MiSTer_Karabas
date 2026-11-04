@@ -22,16 +22,16 @@ GHDL install is needed.
 ```
 python3 tools/prepare_upstream.py # regenerate build/upstream + upstream.qip
 tools/check_upstream.sh           # tripwire: upstream files vs SHA256SUMS
-tools/build.sh                   # the one-command build: prepare_upstream + check_upstream + qbuild,
-                                # ends with `build: exit <code>`
-python3 tools/build_boot_rom.py # releases/boot.rom from upstream's src/roms (committed; --check verifies)
-tools/sim.sh <command>          # run <command> in the karabas-sim:1 image (GHDL, Icarus, repo at /work);
-                                # builds tools/sim/Dockerfile into karabas-sim:1 on first use
-tools/sim.sh sim/run_all.sh     # every simulation testbench, ends `run_all: N passed, 0 failed`
-python3 -m unittest discover -s tools/tests -v   # the python tools' tests
-tools/elab_upstream.sh          # upstream gate: quartus_map --analysis_and_elaboration of top `profi`
-tools/check_upstream.sh         # upstream-change tripwire for the files we replace
-tools/qbuild.sh . Karabas_Profi # just the Quartus compile of the MiSTer core in raetro/quartus:17.0
+tools/build.sh                    # the one-command build: prepare_upstream + check_upstream + qbuild,
+                                  # ends with `build: exit <code>`
+python3 tools/build_boot_rom.py   # releases/boot.rom from upstream's src/roms (committed; --check verifies)
+tools/sim.sh <command>            # run <command> in the karabas-sim:1 image (GHDL, Icarus, repo at /work);
+                                  # builds tools/sim/Dockerfile into karabas-sim:1 on first use
+tools/sim.sh sim/run_all.sh       # every simulation testbench, ends `run_all: N passed, 0 failed`
+python3 -m unittest discover -s tools/tests -v  # the python tools' tests
+tools/elab_upstream.sh            # upstream gate: quartus_map --analysis_and_elaboration of top `profi`
+tools/check_upstream.sh           # upstream-change tripwire for the files we replace
+tools/qbuild.sh . Karabas_Profi   # just the Quartus compile of the MiSTer core in raetro/quartus:17.0
 ```
 
 A full compile takes 10-20 minutes, so launch it detached and poll the log:
@@ -72,7 +72,8 @@ Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, I
 - CPU turbo above 7 MHz may crash: the SDRAM bridge has no wait path yet (stage 2).
 - General Sound is disabled.
 - No RTC, mouse, joysticks, disks or tape yet.
-- DS80 mode switches at runtime: untested and not known to work; the bus
-  clock multiplexer itself is simulation-verified (sim/tb_clock.vhd,
-  sim/tb_video_cdc.sv), but the mode change is a 28 MHz <-> 24 MHz switch
-  under load and has never been run on hardware.
+- 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
+  112.5 MHz video clock, so the analog scandoubler may duplicate pixels;
+  HDMI is unaffected.
+- DS80 mode switches at runtime: untested and not known to work (the bus
+  multiplexer itself is simulation-verified, sim/tb_clock.vhd).
