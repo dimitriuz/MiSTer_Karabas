@@ -187,7 +187,7 @@ wire profi_reset, profi_areset, profi_kb_reset;   // buffer ports, read-only
 wire [8:0]  rgb;
 wire        rgb_hs, rgb_vs, rgb_blank, rgb_clk, vga_clk;
 wire        rgb_frame, rgb_pixel, adc_clk;
-wire [3:0]  vmode;               // for later stages
+wire [3:0]  vmode;               // ds80, screen mode, vsync (video blank polarity)
 wire [15:0] profi_audio_l, profi_audio_r;
 wire [1:0]  sdr_dqm;
 
@@ -344,12 +344,20 @@ sdramclk_ddr
 wire        vid_ce;
 wire [11:0] vid_r;
 
+// RGB_BLANK has opposite polarities in the two upstream video generators:
+// profi_video (DS80, 512x240) drives 1 while blanking, pentagon_video (the
+// Spectrum modes) drives 0 while blanking (blank_r). Upstream's own top never
+// uses RGB_BLANK (its HDMI frame is built from RGB_PIXEL/RGB_FRAME), so the
+// mismatch only shows here. Normalise to 1 = blanking on the clk_bus side;
+// vmode[3] is profi's ds80 register (VMODE <= ds80 & ...), also on clk_bus.
+wire        rgb_blank_hi = vmode[3] ? rgb_blank : ~rgb_blank;
+
 video_cdc #(.W(12)) video_cdc (
 	.clk_bus(clk_bus),
 	.clk_vid(clk_sdr),
 	.reset(profi_areset),
 	.ce_in(adc_clk),              // ENA_RGB: one word per pixel
-	.din({rgb, rgb_hs, rgb_vs, rgb_blank}),
+	.din({rgb, rgb_hs, rgb_vs, rgb_blank_hi}),
 	.stall(1'b0),                 // sim-only hold-off
 	.ce_out(vid_ce),
 	.dout(vid_r)
