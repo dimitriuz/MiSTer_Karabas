@@ -76,3 +76,13 @@ set_clock_groups -exclusive \
 	-group [get_clocks { FPGA_CLK1_50 }] \
 	-group [get_clocks { FPGA_CLK2_50 }] \
 	-group [get_clocks { FPGA_CLK3_50 }]
+
+# Ruling R10: the select (ds80 = vmode(3), a video-domain register) is the
+# asynchronous input of the two 2-flop synchroniser chains of clkmux2; its
+# setup to the first sampling stage is not a synchronous requirement (the
+# d1/q1 stages and the enable interlock below stay timed: a late sample
+# only costs cycles, the branch enables can never be on together).
+# build 9: the only two negative slack rows, one path each (the transfers
+# clk_bus24/clk_bus28 -> general[0]/[1], RF; the two names below are the
+# d0/q0 register names from the sta path reports).
+set_false_path -to [get_registers {emu:emu|profi:u_profi|clock:U1|clkmux2:U9|d0 emu:emu|profi:u_profi|clock:U1|clkmux2:U9|q0}]
