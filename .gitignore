@@ -6,3 +6,6 @@ incremental_db/
 *.qws
 __pycache__/
 .superpowers/
+build_id.v
+jtag.cdf
+c5_pin_model_dump.txt
