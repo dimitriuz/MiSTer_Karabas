@@ -12,8 +12,10 @@
 // ROMLOADER on; every ioctl byte as the ROMBANK frames of the address bytes
 // that changed (0..2 = bits 15..8, 23..16, 31..24) plus the ROMDATA frame at
 // the byte's boot.rom address, ioctl_wait held while its frames go out and
-// from the clock ioctl_download rises until the first byte is consumed (a
-// byte strobed in that window is latched, none is lost); ROMLOADER off, all
+// from the clock ioctl_download rises to S_STRM - there it drops again
+// while no byte is pending, so a source that strobes only on the low can
+// start it (a byte strobed in the held window is latched, none is lost);
+// ROMLOADER off, all
 // 14 switch frames (indices 0-8 and 10-14; 9 is the HDF slot), the cleared
 // keyboard (CMD_KBD 0..6 = 0) and INIT_DONE. Bytes of another ioctl_index
 // are ignored and never raise ioctl_wait. A second download repeats the
@@ -365,8 +367,19 @@ always @(posedge clk) begin
             endcase
         end
 
+        // ioctl_wait stays raised through the whole start sequence (a
+        // source that starts only on the low holds its first byte until
+        // then), and drops again once S_STRM waits with nothing pending -
+        // the release the first strobe follows; before the capture block,
+        // so a byte strobed on this clock keeps the wait raised
+        if (ioctl_download && ioctl_index == 16'd0 &&
+            (st == S_WAIT || st == S_RUN || st == S_SEQ))
+            ioctl_wait <= 1'b1;
+        if (st == S_STRM && !byte_pend)
+            ioctl_wait <= 1'b0;
+
         // a byte of the download: every strobe is owned (the one clocked
-        // with A_START included - this write overrides that case's clear;
+        // with A_START included - this write overrides both clears above;
         // !byte_pend skips only a strobe whose frames were not sent yet,
         // which cannot happen while ioctl_wait was held for it)
         if (ioctl_download && ioctl_wr && ioctl_index == 16'd0 && !byte_pend) begin
@@ -375,11 +388,6 @@ always @(posedge clk) begin
             byte_pend  <= 1'b1;
             ioctl_wait <= 1'b1;
         end
-        // ioctl_wait stays raised through the whole start sequence, so the
-        // wait check of hps_io sees it before S_STRM consumes the bytes
-        if (ioctl_download && ioctl_index == 16'd0 &&
-            (st == S_WAIT || st == S_RUN || st == S_SEQ))
-            ioctl_wait <= 1'b1;
 
         // input sampling, after the fire block so that a kb_changed clocked
         // together with the report's last frame arms a new report, and a

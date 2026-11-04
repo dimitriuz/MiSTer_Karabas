@@ -32,7 +32,7 @@
 module tb_mcu_emu;
 
    localparam integer ROMSIZE = 360448;      // 0x58000
-   localparam integer ROMMAX  = 360704;      // + the second 256-byte run
+   localparam integer ROMMAX  = 360960;      // + two more 256-byte runs
    localparam integer FMAX    = 370000;
 
    reg clk = 1'b0;
@@ -310,6 +310,23 @@ module tb_mcu_emu;
       end
    endfunction
 
+   // wait for a condition to stop holding, with a timeout in microseconds
+   // (50 clocks at the 20 ns clock); the guard counts clock edges instead
+   // of comparing $time differences: a 32-bit snapshot truncates $time
+   // (ps) at the microsecond marks this test runs at, and deep-sim 64-bit
+   // and real time comparisons mis-evaluate in this simulator (guards
+   // that must fire silently did not in debug)
+   integer g_n;
+   `define WAIT_GT(COND, BUDGET_US, WHY) begin                          \
+         g_n = 0;                                                       \
+         while (COND) begin                                             \
+            if (g_n >= (BUDGET_US) * 50 || g_n < 0)                     \
+               `FAIL(WHY)                                               \
+            g_n = g_n + 1;                                              \
+            @(negedge clk);                                             \
+         end                                                            \
+      end
+
    // ---------------- ioctl source ----------------
 
    task stream_range;                     // source bytes [lo, hi)
@@ -327,6 +344,28 @@ module tb_mcu_emu;
             #1;                            // off the edge, so the clear
             ioctl_wr   = 1'b0;             // never races the sampling
             while (ioctl_wait === 1'b1) @(posedge clk);
+         end
+      end
+   endtask
+
+   // the real HPS behaviour: it never strobes while ioctl_wait is high,
+   // not even for the first byte - so it starts only after the emulator
+   // released the wait again
+   task stream_range_hps;
+      input integer lo;
+      input integer hi;
+      integer k;
+      begin
+         for (k = lo; k < hi; k = k + 1) begin
+            `WAIT_GT(ioctl_wait === 1'b1, 20000, "the download hung: ioctl_wait never dropped");
+            if (k != lo) @(negedge clk);
+            else         #1;
+            ioctl_addr = k[26:0];
+            ioctl_dout = exp_data[k];
+            ioctl_wr   = 1'b1;
+            @(posedge clk);
+            #1;
+            ioctl_wr   = 1'b0;
          end
       end
    endtask
@@ -392,7 +431,7 @@ module tb_mcu_emu;
 
    // ---------------- main ----------------
 
-   integer i, base, t0;
+   integer i, base;
 
    initial begin
       // the image (the fixed LFSR the source plays)
@@ -402,9 +441,9 @@ module tb_mcu_emu;
          exp_addr[i] = rom_map(i[26:0]);
          exp_data[i] = lfsr[7:0];
       end
-      for (i = 0; i < 256; i = i + 1) begin    // the second download replays
-         exp_addr[ROMSIZE + i] = exp_addr[i];
-         exp_data[ROMSIZE + i] = exp_data[i];
+      for (i = 0; i < 512; i = i + 1) begin   // the extra downloads replay
+         exp_addr[ROMSIZE + i] = exp_addr[i % 256];
+         exp_data[ROMSIZE + i] = exp_data[i % 256];
       end
       expected_total = ROMSIZE;
 
@@ -430,11 +469,7 @@ module tb_mcu_emu;
       ioctl_download = 1'b0;
 
       // INIT_DONE closes the start sequence
-      t0 = $time;
-      while (fe_total < 1) begin
-         if ($time - t0 > 200000 * 1000000) `FAIL("INIT_DONE was not sent")
-         @(negedge clk);
-      end
+      `WAIT_GT(fe_total < 1, 200000, "INIT_DONE was not sent");
       walk_stream(0, 0, ROMSIZE);
       if (nfrm != walk_n) begin
          $display("tb_mcu_emu: FAIL %0d frames logged, %0d expected",
@@ -453,11 +488,7 @@ module tb_mcu_emu;
 
       // init_and_busy: BUSY is 1 until after INIT_DONE, then 0 (the walk
       // checked every frame up to INIT_DONE; now the drop)
-      t0 = $time;
-      while (BUSY !== 1'b0) begin
-         if ($time - t0 > 5000 * 1000000) `FAIL("BUSY stuck after INIT_DONE")
-         @(negedge clk);
-      end
+      `WAIT_GT(BUSY !== 1'b0, 5000, "BUSY stuck after INIT_DONE");
       if (HWID !== 8'h01) `FAIL("HW_SETUP board is not Go")
 
       // switch_during_load / switches: every register holds the table's
@@ -475,11 +506,7 @@ module tb_mcu_emu;
       @(negedge clk);
       status[2:1] = 2'b01;
       curbank     = 1;
-      t0 = $time;
-      while (softsw_regs[0*8 +: 8] !== 8'd1) begin
-         if ($time - t0 > 50000 * 1000000) `FAIL("register 0 did not follow status")
-         @(negedge clk);
-      end
+      `WAIT_GT(softsw_regs[0*8 +: 8] !== 8'd1, 50000, "register 0 did not follow status");
 
       // keyboard
       @(negedge clk);
@@ -487,13 +514,7 @@ module tb_mcu_emu;
       kb_changed = 1'b1;
       @(negedge clk);
       kb_changed = 1'b0;
-      t0 = $time;
-      while (KB_STATUS !== 8'h02 || KB_DAT0 !== 8'h04 || KB_DAT1 !== 8'h00 ||
-             KB_DAT2 !== 8'h00 || KB_DAT3 !== 8'h00 || KB_DAT4 !== 8'h00 ||
-             KB_DAT5 !== 8'h00) begin
-         if ($time - t0 > 50000 * 1000000) `FAIL("the keyboard report did not arrive")
-         @(negedge clk);
-      end
+      `WAIT_GT(KB_STATUS !== 8'h02 || KB_DAT0 !== 8'h04 || KB_DAT1 !== 8'h00 || KB_DAT2 !== 8'h00 || KB_DAT3 !== 8'h00 || KB_DAT4 !== 8'h00 || KB_DAT5 !== 8'h00, 60000, "the keyboard report did not arrive");
       if (BUSY !== 1'b0) `FAIL("BUSY went back to 1 in the run loop")
 
       // an update arriving mid-burst: the latest report must then be sent
@@ -509,14 +530,7 @@ module tb_mcu_emu;
       kb_changed = 1'b1;
       @(negedge clk);
       kb_changed = 1'b0;
-      t0 = $time;
-      while (KB_STATUS !== 8'h01 || KB_DAT0 !== 8'h04 || KB_DAT1 !== 8'h00 ||
-             KB_DAT2 !== 8'h00 || KB_DAT3 !== 8'h00 || KB_DAT4 !== 8'h00 ||
-             KB_DAT5 !== 8'h00) begin
-         if ($time - t0 > 50000 * 1000000)
-            `FAIL("a report replacing a burst was not sent in full")
-         @(negedge clk);
-      end
+      `WAIT_GT(KB_STATUS !== 8'h01 || KB_DAT0 !== 8'h04 || KB_DAT1 !== 8'h00 || KB_DAT2 !== 8'h00 || KB_DAT3 !== 8'h00 || KB_DAT4 !== 8'h00 || KB_DAT5 !== 8'h00, 60000, "a burst-replacing report was not sent in full");
 
       // reset_trigger: one clock of osd_reset pulses register 14, and the
       // pulse ends after TRIGGER_CLKS (2000 clocks = 40 us)
@@ -524,19 +538,11 @@ module tb_mcu_emu;
       osd_reset = 1'b1;
       @(negedge clk);
       osd_reset = 1'b0;
-      t0 = $time;
-      while (softsw_regs[14*8 +: 8] !== 8'h01) begin
-         if ($time - t0 > 15000 * 1000000) `FAIL("osd_reset did not pulse register 14")
-         @(negedge clk);
-      end
+      `WAIT_GT(softsw_regs[14*8 +: 8] !== 8'h01, 15000, "osd_reset did not pulse register 14");
       #20000;                       // TRIGGER_CLKS has not passed yet
       if (softsw_regs[14*8 +: 8] !== 8'h01)
          `FAIL("the Reset pulse ended before TRIGGER_CLKS")
-      t0 = $time;
-      while (softsw_regs[14*8 +: 8] !== 8'h00) begin
-         if ($time - t0 > 60000 * 1000000) `FAIL("the Reset pulse did not end")
-         @(negedge clk);
-      end
+      `WAIT_GT(softsw_regs[14*8 +: 8] !== 8'h00, 60000, "the Reset pulse did not end");
       // the keyboard back to idle, so the report frames between ROMLOADER
       // off and INIT_DONE carry zeros again
       @(negedge clk);
@@ -544,11 +550,7 @@ module tb_mcu_emu;
       kb_changed = 1'b1;
       @(negedge clk);
       kb_changed = 1'b0;
-      t0 = $time;
-      while (KB_STATUS !== 8'h00) begin
-         if ($time - t0 > 50000 * 1000000) `FAIL("the keyboard did not reach idle")
-         @(negedge clk);
-      end
+      `WAIT_GT(KB_STATUS !== 8'h00, 60000, "the keyboard did not reach idle");
 
       // a second boot.rom download repeats the whole start sequence
       expected_total = ROMSIZE + 256;
@@ -556,41 +558,41 @@ module tb_mcu_emu;
       ioctl_download = 1'b1;
       stream_range(0, 256);
       ioctl_download = 1'b0;
-      t0 = $time;
-      while (fe_total < 2) begin
-         if ($time - t0 > 200000 * 1000000) `FAIL("the second INIT_DONE was not sent")
-         @(negedge clk);
-      end
+      `WAIT_GT(fe_total < 2, 200000, "the second INIT_DONE was not sent");
       walk_stream(base, 0, 256);
       if (nfrm != base + walk_n) `FAIL("stray frames in the second download")
       if (rom_rec != ROMSIZE + 256)
          `FAIL("the second download did not reach the ROM")
       if (act_downs != 2) `FAIL("ROMLOADER_ACTIVE did not fall the second time")
 
+      // a third download with the source behaving like the real HPS: it
+      // holds every byte - the first included - while ioctl_wait is high,
+      // so the first strobe only follows the release at S_STRM
+      expected_total = ROMSIZE + 512;
+      base           = nfrm;
+      ioctl_download = 1'b1;
+      #1000;                            // a few clocks of slack, as the
+      stream_range_hps(0, 256);         // HPS thread takes before it looks
+      ioctl_download = 1'b0;
+      `WAIT_GT(fe_total < 3, 200000, "the third INIT_DONE was not sent");
+      walk_stream(base, 0, 256);
+      if (nfrm != base + walk_n) `FAIL("stray frames in the third download")
+      if (rom_rec != ROMSIZE + 512)
+         `FAIL("the third download did not reach the ROM")
+      if (act_downs != 3) `FAIL("ROMLOADER_ACTIVE did not fall the third time")
+
       // the reply path (second emulator behind the stub): the first frame
       // is answered NOPE (nothing may arrive), the second with a word
       rep2_cnt = 0; cs2_cnt = 0;
       @(negedge clk);
       dl2 = 1'b1;
-      t0 = $time;
-      while (cs2_cnt < 1) begin
-         if ($time - t0 > 5000 * 1000000) `FAIL("the stub link sent no frame")
-         @(negedge clk);
-      end
+      `WAIT_GT(cs2_cnt < 1, 5000, "the stub link sent no frame");
       #1000;                            // past that frame's rx_valid
       if (rep2_cnt !== 0) `FAIL("reply_valid fired for a NOPE reply")
-      t0 = $time;
-      while (rep2_cnt < 1) begin
-         if ($time - t0 > 10000 * 1000000) `FAIL("the reply word never arrived")
-         @(negedge clk);
-      end
+      `WAIT_GT(rep2_cnt < 1, 10000, "the reply word never arrived");
       if (rep2_get !== 24'h010003)
          `FAIL("the reply word did not reach last_reply uncorrupted")
-      t0 = $time;
-      while (BUSY !== 1'b0) begin
-         if ($time - t0 > 5000 * 1000000) `FAIL("BUSY stuck after the second INIT_DONE")
-         @(negedge clk);
-      end
+      `WAIT_GT(BUSY !== 1'b0, 5000, "BUSY stuck after the second INIT_DONE");
 
       $display("tb_mcu_emu: PASS");
       $finish;
