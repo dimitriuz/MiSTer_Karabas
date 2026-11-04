@@ -22,7 +22,7 @@ little endian) and reloading the core. Screenshots are in `stage1-shots/`.
 | ROM bank FDImage | PASS | `bank-fdimage.png`: FDImage v0.87 |
 | ROM bank FATALL | PASS (menu only) | `bank-fatall.png`: ROMain menu; the image differs from bank 0 only above 0x8000 (CP/M/FATALL), which needs a disk |
 | OSD Reset | PASS | checked by the owner on the board |
-| MiSTer reset button | not run | needs a hand on the board |
+| MiSTer reset button | PASS | checked by the owner on the board |
 | Turbo 2x | **FAIL** | `turbo2x-romain-hang.png`: black screen with ROMain; PQ-DOS hangs the same way at 2x, 4x and 8x |
 
 ## Findings
