@@ -1,0 +1,30 @@
+# The Karabas_Profi file list. Never edited by the Quartus IDE: the upstream
+# half comes from build/upstream/upstream.qip (tools/prepare_upstream.py, the
+# order of src/karabas_go.prj), the rest is spelled out below.
+#
+# rtl/compat/unisim_vcomponents.vhd stands in for the Xilinx unisim library
+# the upstream VHDL `use`s; rtl/replaced/* are the port's replacements for
+# the upstream files check_upstream.sh guards.
+
+set_global_assignment -name VHDL_FILE rtl/compat/unisim_vcomponents.vhd -library unisim
+
+set_global_assignment -name QIP_FILE build/upstream/upstream.qip
+set_global_assignment -name QIP_FILE rtl/pll.qip
+
+set_global_assignment -name VHDL_FILE rtl/replaced/clock.vhd
+set_global_assignment -name VHDL_FILE rtl/replaced/memory.vhd
+set_global_assignment -name VHDL_FILE rtl/clk/clkmux2.vhd
+set_global_assignment -name VHDL_FILE rtl/clk/clkgate.vhd
+
+set_global_assignment -name VHDL_FILE rtl/mem/cdc_fifo.vhd
+set_global_assignment -name VHDL_FILE rtl/mem/sram_bridge.vhd
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/sdram.sv
+
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/ps2_hid.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/mcu_spi_master.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/mcu_emu.sv
+
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/vblank_gen.sv
+
+set_global_assignment -name SDC_FILE Karabas_Profi.sdc
+set_global_assignment -name SYSTEMVERILOG_FILE Karabas_Profi.sv
