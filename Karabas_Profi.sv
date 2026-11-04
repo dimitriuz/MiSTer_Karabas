@@ -376,10 +376,11 @@ vblank_gen vblank_gen (
 
 wire [2:0] fx = status[25:23];    // Scandoubler Fx: None, HQ2x, CRT 25/50/75
 
-// CRT scanline strength for MiSTer: the CONF_STR order above puts HQ2x at
-// fx = 1 and it must keep sl = 0, so the CRT levels shift by one against
-// the ZX-Demo pattern (fx ? fx-1 : 0).
-wire [2:0] sl = (fx > 3'd1) ? (fx - 3'd2) : 3'd0;
+// CRT scanline strength for MiSTer (sys/scanlines.v: 0 = off, 1/2/3 =
+// 25/50/75%): with the CONF_STR order above HQ2x is fx = 1 and must stay
+// at sl = 0, so everything from fx = 2 on shifts down by one - the ZX-Demo
+// pattern.
+wire [2:0] sl = (fx > 3'd1) ? (fx - 3'd1) : 3'd0;
 assign VGA_SL = sl[1:0];
 
 wire [7:0] r8w = {vid_r[11:9], vid_r[11:9], vid_r[10:9]};
