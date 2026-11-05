@@ -2,9 +2,10 @@
 
 Run: python3 -m unittest discover -s tools/tests -v
 
-Fixtures copy the line shapes of the build 15 reports: the `Type  : ` /
+Fixtures copy the line shapes of the build 15/16 reports: the `Type  : ` /
 `Slack : ` blocks of Karabas_Profi.sta.summary, the `; clk_bus24   ;
-Generated ; 41.481 ; ...` rows of the Clocks table and the stock
+Generated ; 41.481 ; ...` rows of the Clocks table (the four Stage-2 generated
+clocks clk_bus28/clk_bus24/clk_mem112/clk_mem96) and the stock
 `Warning (332174): Ignored filter at sys_top.sdc(14) ...` line of
 Karabas_Profi.sta.rpt. The good rpt keeps that stock warning in (it is
 emitted on every build and must not fail the gate) plus its plain
@@ -76,7 +77,8 @@ RPT_GOOD = """\
 ; Clock Name ; Type      ; Period  ; Frequency ;
 ; clk_bus24  ; Generated ; 41.481  ; 24.11 MHz ;
 ; clk_bus28  ; Generated ; 35.555  ; 28.13 MHz ;
-; FPGA_CLK1_50 ; Base    ; 20.000  ; 50.0 MHz  ;
+; clk_mem96  ; Generated ; 10.370  ; 96.43 MHz ;
+; clk_mem112 ; Generated ; 8.889   ; 112.50 MHz ;
 +------------+-----------+---------+-----------+
 ; clk_bus28   ; 10.295 ; 0.000         ;
 ; clk_bus24   ; 13.105 ; 0.000         ;
@@ -84,16 +86,27 @@ Info (332104): Reading SDC File: 'Karabas_Profi.sdc'
 Warning (332174): Ignored filter at sys_top.sdc(14): *|pll|pll_inst|altera_pll_i|*[*].*|divclk could not be matched with a clock File: /work/sys/sys_top.sdc Line: 14
 """
 
-RPT_NO_CLK24_ROW = "\n".join(
-    line for line in RPT_GOOD.splitlines()
-    if not line.startswith("; clk_bus24  ; Generated")
-) + "\n"
+def drop_row(text, prefix):
+    """RPT_GOOD without every line starting with prefix."""
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.startswith(prefix)
+    ) + "\n"
+
+
+RPT_NO_CLK24_ROW = drop_row(RPT_GOOD, "; clk_bus24  ; Generated")
+RPT_NO_CLKMEM112_ROW = drop_row(RPT_GOOD, "; clk_mem112 ; Generated")
 
 # a refit renamed the CLKENA cell: create_generated_clock was ignored, the
 # clock exists (from its source) but not as our named Generated clock.
 RPT_CLK24_WRONG_TYPE = RPT_GOOD.replace(
     "; clk_bus24  ; Generated ; 41.481  ; 24.11 MHz ;",
     "; clk_bus24  ; Base      ; 41.481  ; 24.11 MHz ;",
+)
+
+RPT_CLKMEM96_WRONG_TYPE = RPT_GOOD.replace(
+    "; clk_mem96  ; Generated ; 10.370  ; 96.43 MHz ;",
+    "; clk_mem96  ; Base      ; 10.370  ; 96.43 MHz ;",
 )
 
 RPT_OUR_SDC_IGNORED = RPT_GOOD + (
@@ -186,6 +199,18 @@ class CheckTimingTest(unittest.TestCase):
         code, out = self.check(rpt=RPT_CLK24_WRONG_TYPE)
         self.assertEqual(code, 1)
         self.assertIn("clk_bus24", out)
+
+    def test_missing_clk_mem112_row_fails(self):
+        code, out = self.check(rpt=RPT_NO_CLKMEM112_ROW)
+        self.assertEqual(code, 1)
+        self.assertIn("clk_mem112", out)
+        self.assertEqual(out.strip().splitlines()[-1],
+                         "check_timing: FAIL 1 problems")
+
+    def test_clk_mem96_row_wrong_type_fails(self):
+        code, out = self.check(rpt=RPT_CLKMEM96_WRONG_TYPE)
+        self.assertEqual(code, 1)
+        self.assertIn("clk_mem96", out)
 
     # ---- sdc warnings -----------------------------------------------------
     def test_our_sdc_332174_fails(self):

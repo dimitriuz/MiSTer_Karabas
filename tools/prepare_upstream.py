@@ -99,6 +99,27 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "cpu_wait_n <= '0' when zc_busy = '1' or ",
      "cpu_wait_n <= '0' when (mem_wait = '1' and turbo_mode /= \"00\") "
      "or zc_busy = '1' or "),
+    # Task 1 (stage 2): clock.vhd grows CLK_VID (fixed 112.5 MHz), BUS_PHASE
+    # and RESET_MEM; profi carries the video clock as a buffer port and the
+    # other two as signals (Task 4 maps them on to U3 = memory).
+    # (the dead clk_vid signal upstream would clash with the new port name)
+    ("src/rtl/profi.vhd",
+     "signal clk_vid \t\t\t: std_logic;",
+     "-- signal clk_vid \t\t: std_logic; -- MiSTer Stage 2: profi gained the CLK_VID port"),
+    ("src/rtl/profi.vhd",
+     "\tCLK_SDR : buffer std_logic;",
+     "\tCLK_SDR : buffer std_logic;\n\tCLK_VID : buffer std_logic;"),
+    ("src/rtl/profi.vhd",
+     "signal cpu_wait_n \t\t: std_logic := '1';",
+     "signal cpu_wait_n \t\t: std_logic := '1';\n"
+     "signal bus_phase : std_logic_vector(1 downto 0);\n"
+     "signal reset_mem : std_logic;"),
+    ("src/rtl/profi.vhd",
+     "\tCLK_SDR  \t\t=> clk_sdr, -- 84",
+     "\tCLK_SDR  \t\t=> clk_sdr, -- 84\n"
+     "\tCLK_VID  \t\t=> CLK_VID,\n"
+     "\tBUS_PHASE \t\t=> bus_phase,\n"
+     "\tRESET_MEM \t\t=> reset_mem,"),
 ]
 
 

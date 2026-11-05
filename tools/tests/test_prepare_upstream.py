@@ -388,6 +388,49 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertIn(self.PROFIS, msg)
         self.assertIn("signal cpu_wait", msg)
 
+    def test_profi_rewrites_each_anchor_missing(self):
+        # Every rewrite's old string is required exactly once: removing any
+        # one of them raises, naming the file and the string.
+        m = load_tool_module()
+        for _rel, old, _new in m.PROFI_REWRITES:
+            text = self.upstream_profi().replace(old, "", 1)
+            self.assertNotEqual(text, self.upstream_profi())
+            with self.assertRaises(SystemExit) as ctx:
+                m.apply_profi_rewrites(text)
+            self.assertIn(self.PROFIS, str(ctx.exception))
+
+    def test_profi_rewrites_each_anchor_duplicated(self):
+        m = load_tool_module()
+        for _rel, old, _new in m.PROFI_REWRITES:
+            line = old.splitlines()[0]
+            text = self.upstream_profi().replace(old, old + "\n" + line, 1)
+            with self.assertRaises(SystemExit) as ctx:
+                m.apply_profi_rewrites(text)
+            self.assertIn(self.PROFIS, str(ctx.exception))
+
+    def test_profi_rewrites_clocktree_strings(self):
+        # Task 1: CLK_VID port, bus_phase/reset_mem signals and the U1
+        # mappings must each appear exactly once in the core profi, and the
+        # port addition must sit right below CLK_SDR's.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(out.count("\tCLK_VID : buffer std_logic;"), 1)
+        self.assertEqual(
+            out.count("\tCLK_SDR : buffer std_logic;\n"
+                      "\tCLK_VID : buffer std_logic;"), 1)
+        self.assertEqual(
+            out.count("signal bus_phase : std_logic_vector(1 downto 0);"), 1)
+        self.assertEqual(out.count("signal reset_mem : std_logic;"), 1)
+        self.assertEqual(
+            out.count("\tCLK_SDR  \t\t=> clk_sdr, -- 84\n"
+                      "\tCLK_VID  \t\t=> CLK_VID,\n"
+                      "\tBUS_PHASE \t\t=> bus_phase,\n"
+                      "\tRESET_MEM \t\t=> reset_mem,"), 1)
+        # the dead upstream clk_vid signal must be gone (port name clash)
+        self.assertEqual(out.count("\nsignal clk_vid "), 0)
+        self.assertEqual(
+            out.count("-- signal clk_vid \t\t: std_logic;"), 1)
+
     def test_profi_rewrites_core_only(self):
         # The rewritten profi.vhd maps the MEM_WAIT port of the replaced
         # memory.vhd, so only the core profile may carry the rewrites; the elab

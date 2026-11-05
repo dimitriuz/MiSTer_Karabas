@@ -14,10 +14,11 @@ code alone cannot prove timing closure (final review I1). Problems:
      line that precedes it is printed with the slack);
   3. the summary has no `Slack :` line at all (an empty or truncated report);
   4. the rpt Clocks table has no `Generated` row for one of the required
-     clocks clk_bus28 / clk_bus24: the sdc creates them on a fitter-made
-     cell (clkmux2 |clk_out~CLKENA*|outclk), and if a refit renames that
-     cell create_generated_clock is ignored with a warning only and the
-     clocks silently vanish;
+     clocks clk_bus28 / clk_bus24 / clk_mem112 / clk_mem96: the sdc creates
+     them on fitter-made cells (the clkmux2 |clk_out~CLKENA*|outclk and the
+     clkdiv4 divider register), and if a refit renames those cells
+     create_generated_clock is ignored with a warning only and the clocks
+     silently vanish;
   5. an rpt line carrying Warning (332174), (332049) or (332060) that
      mentions Karabas_Profi.sdc - an ignored or ineffective line of our own
      sdc. The stock sys_top.sdc(14) 332174 of every build does not count.
@@ -29,7 +30,7 @@ from pathlib import Path
 
 SUMMARY_NAME = "Karabas_Profi.sta.summary"
 RPT_NAME = "Karabas_Profi.sta.rpt"
-REQUIRED_CLOCKS = ("clk_bus28", "clk_bus24")
+REQUIRED_CLOCKS = ("clk_bus28", "clk_bus24", "clk_mem112", "clk_mem96")
 SDC_WARNING_CODES = ("Warning (332174)", "Warning (332049)", "Warning (332060)")
 OUR_SDC = "Karabas_Profi.sdc"
 

@@ -2,7 +2,8 @@
 # The one-command build of the MiSTer core: regenerate build/upstream/ from
 # the submodule, run the upstream-change tripwire, compile with Quartus in
 # Docker, then gate the result with tools/check_timing.py (negative slack
-# in the TimeQuest summary, a missing clk_bus28/clk_bus24 clock or an sdc
+# in the TimeQuest summary, a missing clk_bus28/clk_bus24/clk_mem112/
+# clk_mem96 clock or an sdc
 # warning naming Karabas_Profi.sdc fail the build: Quartus exits 0 with
 # timing unclosed). The last line is always `build: exit <code>`, so a
 # detached poller can watch for it:
