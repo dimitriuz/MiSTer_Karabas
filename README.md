@@ -34,6 +34,11 @@ tools/check_upstream.sh           # upstream-change tripwire for the files we re
 tools/qbuild.sh . Karabas_Profi   # just the Quartus compile of the MiSTer core in raetro/quartus:17.0
 ```
 
+`build.sh` runs `tools/check_timing.py` on the TimeQuest reports after the compile and
+fails the build on a negative slack or a missing `clk_bus28`/`clk_bus24` bus clock
+(Quartus itself exits 0 with timing unclosed; only warnings mark an sdc clock that
+stopped resolving).
+
 A full compile takes 10-20 minutes, so launch it detached and poll the log:
 `setsid nohup tools/build.sh </dev/null >build/logs/build.log 2>&1 &`, then watch for the
 `build: exit <code>` line. Quartus 17 rewrites `LAST_QUARTUS_VERSION` in the `.qsf` on every
