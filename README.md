@@ -80,5 +80,4 @@ Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, I
 - 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
   112.5 MHz video clock, so the analog scandoubler may duplicate pixels;
   HDMI is unaffected.
-- DS80 mode switches at runtime: untested and not known to work (the bus
-  multiplexer itself is simulation-verified, sim/tb_clock.vhd).
+- DS80 mode switches at runtime: switching between the Profi menu (DS80) and the Spectrum modes, through the menu and through reset, works on the board; arbitrary software toggling is not separately tested.

@@ -12,8 +12,9 @@
 --   BUFGCE                            -> clkgate (rtl/clk/clkgate.vhd)
 --
 -- The three outputs of that PLL are 28.125 MHz (the bus of the 40-column mode),
--- 24.107142 MHz (the bus of the 80-column DS80 mode) and 112.5 MHz, all with phase 0, so
--- the clocks are related and the timing tools analyse the paths between them. What the
+-- 24.107142 MHz (the bus of the 80-column DS80 mode) and 112.5 MHz, all with phase 0.
+-- The sdc cuts clk_bus <-> clk_sdr as asynchronous, so every path between them must
+-- go through a cdc_fifo (as the SDRAM bridge and the video CDC do). What the
 -- Xilinx PLL gave and this one does not:
 --
 --   clk_gs  = clk_28, not a second 28.125 MHz PLL output of the same frequency and
@@ -119,8 +120,9 @@ end component;
 begin
 
 -- 50 MHz -> 28.125, 24.107142, 112.5 MHz (rtl/pll.v: one altera_pll, VCO 675 MHz, the
--- counters resolved by Quartus at build time). All from one PLL with phase 0, so the
--- clocks are related and the timing tools analyse the paths between them (see the sdc).
+-- counters resolved by Quartus at build time). The sdc cuts clk_bus <-> clk_sdr as
+-- asynchronous, so every path between them must go through a cdc_fifo (as the SDRAM
+-- bridge and the video CDC do).
 U2: pll port map (
 	refclk   => CLK,
 	rst      => '0',

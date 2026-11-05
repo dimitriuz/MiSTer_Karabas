@@ -16,14 +16,19 @@
 --     the register and a back-to-back read of the same byte costs nothing;
 --   * the byte arrives 9 to 11 clk_bus clocks after `rd_req` rises (measured in
 --     sim/tb_sram_bridge.vhd, whose model keeps `ready` low for 9 clk_sdr clocks per
---     access; sdram.sv itself takes 3 to 6). A Z80 memory read is 3 T-states, which is
---     12 clk_bus clocks at the 7 MHz stage-1 limit, so it is in time - but nothing
---     faster is: hence `cpu_wait`, combinational in clk_bus, high while a CPU read of
---     a byte `dout` does not hold is outstanding or the write queue has no room left
---     for another burst. Through memory.vhd's MEM_WAIT it reaches clock.vhd's
---     WAIT_CPU, which zeroes ENA_CPU and so freezes the CPU (T80s CEN) until the byte
---     is there; profi.vhd applies it only while turbo is on. At 3.5 MHz a read takes
---     2 T-states of 4 clocks = 16, more than the bridge needs, and nothing waits.
+--     access; sdram.sv itself takes 3 to 6, for a 7 to 9 clk_bus round trip plus
+--     about 2 on a refresh collision). The budget is the 2 T-states after `rd_req`
+--     rises, before the T80 latches DI at the end of T2: 16 / 8 / 4 / 2 clk_bus
+--     clocks at turbo 00 / 01 / 10 / 11, so turbo 00 is in time without waiting and
+--     the faster settings are kept in time by `cpu_wait` alone: hence `cpu_wait`,
+--     combinational in clk_bus, high while a CPU read of a byte `dout` does not
+--     hold is outstanding or the write queue has no room left for another burst.
+--     Through memory.vhd's MEM_WAIT it reaches clock.vhd's WAIT_CPU, which zeroes
+--     ENA_CPU and so freezes the CPU (T80s CEN) until the byte is there; profi.vhd
+--     applies it only while turbo is on. The generated profi.vhd feeds the wait to
+--     the T80 WAIT_n pin as well (the cpu_wait_n term, needed at turbo 8x: one
+--     T-state is one clk_bus there, and only WAIT_n stops the clock that samples
+--     DI).
 --
 -- Clock domains: clk_bus (28.125 / 24.107 MHz) for the CPU side, clk_sdr (112.5 MHz)
 -- for the SDRAM side. Everything crossing is a cdc_fifo (gray pointers, two-flop
