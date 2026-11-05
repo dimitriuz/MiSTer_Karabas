@@ -151,7 +151,7 @@ module tb_video_cdc;
         end
 
         // ---- phase B: 24.107142 MHz, enable 1-in-2 ------------------------
-        half_bus = 41.4815;
+        half_bus = 20.7407;           // half period of 24.107142 MHz, ns
         ce_div   = 2;
         push_en  = 1'b1;
         tx0 = pushes;
