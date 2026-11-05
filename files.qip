@@ -24,7 +24,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/ps2_hid.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/mcu_spi_master.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/mcu_emu.sv
 
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/vblank_gen.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/vframe_gen.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/video_cdc.sv
 
 set_global_assignment -name SDC_FILE Karabas_Profi.sdc
