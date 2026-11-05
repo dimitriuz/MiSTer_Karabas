@@ -4,15 +4,30 @@
 -- Run with: tools/sim.sh sim/run_tb_clock.sh
 --
 -- The device under test is rtl/replaced/clock.vhd; the `pll` component inside it
--- binds to the sim-only entity sim/models/pll_model.vhd, which produces the three
--- PLL periods exactly (35.555 / 41.481 / 8.888 ns) and asserts `locked` 1 us after
--- the start. A period measured here is therefore exactly the period expected from
--- the altera_pll parameters, checked with a 0.01 ns tolerance.
+-- binds to the sim-only entity sim/models/pll_model.vhd, which produces the four
+-- PLL periods exactly (35.555556 / 41.481480 / 8.888888 / 10.370370 ns) and
+-- asserts `locked` 1 us after the start. A period measured here is therefore
+-- exactly the period expected from the altera_pll parameters, checked with a
+-- 0.01 ns tolerance.
 --
 -- Cases, each printing its own name:
 --   freq_28       DS80 = '0': 100 consecutive CLK_BUS periods; CLK_VGA follows the
---                 mux and CLK_GS / CLK_SDR are the PLL's 28.125 / 112.5 MHz outputs
---   freq_24       DS80 = '1': the same periods at 24.107142 MHz
+--                 mux and CLK_GS / CLK_SDR / CLK_VID are 28.125 / 112.5 / 112.5 MHz
+--   freq_24       DS80 = '1': CLK_BUS/CLK_VGA 24.107142, CLK_SDR 96.428571 MHz and
+--                 CLK_VID stays at the fixed 112.5 MHz
+--   reset_mem     RESET_MEM is '1' from the start and stays '1' for at least 16
+--                 clk_mem (CLK_SDR) periods after `locked` rises (ARESET falls at
+--                 the lock), releasing on a clk_mem rising edge
+--   phase_28      DS80 = '0', 2000 CLK_BUS periods: every CLK_BUS rising edge
+--                 coincides (within 0.1 ns) with a CLK_SDR rising edge whose
+--                 BUS_PHASE is "00", every CLK_BUS high phase is exactly 2
+--                 112.5 MHz periods (+/- 0.1 ns), and the frequency over 1000
+--                 periods is within 0.01 % of 28.125 MHz
+--   phase_24      the same for DS80 = '1' (2 x 10.370370 ns, 24.107142 MHz)
+--   switch_x10    DS80 toggled ten times at pseudo-random CLK_BUS edges: no
+--                 CLK_BUS or CLK_SDR pulse shorter than the 112.5 MHz half
+--                 period minus 0.1 ns, and the phase relation of phase_28 holds
+--                 again from the first CLK_BUS edge after every switch
 --   switch_storm  DS80 toggled every 173 ns for 20 us: no CLK_BUS high or low phase
 --                 shorter than 17.7 ns, and the period settles within 4 periods
 --                 after the last toggle
@@ -33,16 +48,18 @@ end tb_clock;
 
 architecture sim of tb_clock is
 
--- The device under test (rtl/replaced/clock.vhd): the upstream port list unchanged.
+-- The device under test (rtl/replaced/clock.vhd): the upstream port list plus the
+-- three Stage-2 clock-tree ports.
 component clock is
 port (
 	CLK			: in std_logic;
 	DS80			: in std_logic;
 
-	CLK_BUS		: buffer std_logic; -- 28 / 24
+	CLK_BUS		: buffer std_logic; -- 28 / 24 (= CLK_SDR / 4)
 	CLK_8			: buffer std_logic; -- 8 (the FDC, the FT812 clock output)
 	CLK_GS		: buffer std_logic; -- 28 in both video modes (General Sound)
-	CLK_SDR		: buffer std_logic; -- 84 (sdram)
+	CLK_SDR		: buffer std_logic; -- clk_mem: 112.5 / 96.428571
+	CLK_VID		: out std_logic;    -- 112.5 fixed (video)
 	CLK_12      : buffer std_logic; -- 12
 	CLK_RGB 		: buffer std_logic; -- 7 / 12
 	CLK_VGA		: buffer std_logic; -- 28 / 24
@@ -67,26 +84,40 @@ port (
 
 	TURBO			: in std_logic_vector(1 downto 0);
 	WAIT_CPU		: in std_logic;
-	ARESET 		: out std_logic
+	ARESET 		: out std_logic;
+	BUS_PHASE		: out std_logic_vector(1 downto 0); -- in the CLK_SDR domain
+	RESET_MEM		: out std_logic                     -- stretched not-locked
 );
 end component;
 
-constant T_28  : time := 35.555 ns;  -- the model's 28.125 MHz period
-constant T_24  : time := 41.481 ns;  -- the model's 24.107142 MHz period
-constant T_112 : time := 8.888 ns;   -- the model's 112.5 MHz period
-constant T_REF : time := 20 ns;      -- the MiSTer 50 MHz input clock
+constant T_28  : time := 35.555556 ns;  -- the model's 28.125 MHz period
+constant T_24  : time := 41.481480 ns;  -- the model's 24.107142 MHz period
+constant T_112 : time := 8.888888 ns;   -- the model's 112.5 MHz period
+constant T_96  : time := 10.370370 ns;  -- the model's 96.428571 MHz period
+constant T_REF : time := 20 ns;         -- the MiSTer 50 MHz input clock
 
 constant TOL       : time := 0.01 ns;  -- the period tolerance of the brief
+constant CO_TOL    : time := 0.1 ns;   -- the edge-coincidence window of the brief
 constant MIN_PHASE : time := 17.7 ns;  -- the shortest allowed CLK_BUS phase
+constant MIN_PULSE : time := 4.344 ns; -- the switch window: 112.5 MHz half period - 0.1 ns
 constant STORM_T   : time := 173 ns;   -- the DS80 toggle period of the storm
-constant STORM_N     : natural := 115; -- 115 toggles: 19.9 us, i.e. 20 us
+constant STORM_N   : natural := 115;   -- 115 toggles: 19.9 us, i.e. 20 us
 constant LOCK_T    : time := 1 us;     -- the model's lock time
+constant PH_N      : natural := 2000;  -- the CLK_BUS periods of the phase windows
+constant FREQ_N    : natural := 1000;  -- the CLK_BUS periods of the frequency windows
 
--- the monitor below measures while this is asserted
-signal mon_run : boolean := false;
+-- the monitor below measures while these are asserted
+signal mon_run   : boolean := false;  -- switch_storm: CLK_BUS phases
+signal mon_phase : boolean := false;  -- bus edge == clk_mem edge with BUS_PHASE "00"
+signal mon_high  : boolean := false;  -- CLK_BUS high time = 2 clk_mem periods
+signal mon_min   : boolean := false;  -- shortest allowed pulse while switching
 
-shared variable mon_viol   : boolean := false;  -- a CLK_BUS phase below MIN_PHASE
-shared variable t_bus_rise : time := 0 ns;      -- the time of the last CLK_BUS rise
+shared variable mon_viol     : boolean := false;  -- a CLK_BUS phase below MIN_PHASE
+shared variable viol_phase   : boolean := false;  -- a bus edge outside the relation
+shared variable viol_high    : boolean := false;  -- a bus high phase outside 2 periods
+shared variable viol_min     : boolean := false;  -- a bus or clk_mem pulse below MIN_PULSE
+shared variable t_bus_rise   : time := 0 ns;      -- the time of the last CLK_BUS rise
+shared variable t_mem_rise   : time := 0 ns;      -- the time of the last CLK_SDR rise
 
 -- the 50 MHz MiSTer clock
 signal clk50 : std_logic := '0';
@@ -95,7 +126,9 @@ signal clk50 : std_logic := '0';
 signal ds80 : std_logic := '0';
 signal turbo : std_logic_vector(1 downto 0) := "00";
 signal wait_cpu : std_logic := '0';
-signal clk_bus, clk_8, clk_gs, clk_sdr, clk_12, clk_rgb, clk_vga, clk_adc : std_logic;
+signal clk_bus, clk_8, clk_gs, clk_sdr, clk_vid, clk_12, clk_rgb, clk_vga, clk_adc : std_logic;
+signal bus_phase : std_logic_vector(1 downto 0);
+signal reset_mem : std_logic;
 signal ena_div2, ena_div4, ena_div8, ena_div16 : std_logic;
 signal ena_div2n, ena_div4n, ena_div8n, ena_div16n : std_logic;
 signal ena_cpu, ena_cpu_n, ena_rgb, ce_14, ce_8 : std_logic;
@@ -116,13 +149,15 @@ end process;
 U1: clock port map (
 	CLK => clk50, DS80 => ds80,
 	CLK_BUS => clk_bus, CLK_8 => clk_8, CLK_GS => clk_gs, CLK_SDR => clk_sdr,
+	CLK_VID => clk_vid,
 	CLK_12 => clk_12, CLK_RGB => clk_rgb, CLK_VGA => clk_vga, CLK_ADC => clk_adc,
 	ENA_DIV2 => ena_div2, ENA_DIV4 => ena_div4, ENA_DIV8 => ena_div8,
 	ENA_DIV16 => ena_div16, ENA_DIV2N => ena_div2n, ENA_DIV4N => ena_div4n,
 	ENA_DIV8N => ena_div8n, ENA_DIV16N => ena_div16n,
 	ENA_CPU => ena_cpu, ENA_CPU_N => ena_cpu_n, ENA_RGB => ena_rgb,
 	CE_14 => ce_14, CE_8 => ce_8,
-	TURBO => turbo, WAIT_CPU => wait_cpu, ARESET => areset
+	TURBO => turbo, WAIT_CPU => wait_cpu, ARESET => areset,
+	BUS_PHASE => bus_phase, RESET_MEM => reset_mem
 );
 
 -- switch_storm: while mon_run is asserted, watch every CLK_BUS phase. Both references
@@ -161,9 +196,98 @@ begin
 	end if;
 end process;
 
+-- the phase relation: stamp every clk_mem (CLK_SDR) rising edge with its time.
+stamp_mem: process (clk_sdr)
+begin
+	if rising_edge(clk_sdr) then
+		t_mem_rise := now;
+	end if;
+end process;
+
+-- phase_28/24/switch_x10: every CLK_BUS rising edge must sit on a clk_mem rising edge
+-- (CO_TOL) whose BUS_PHASE is "00". The wait for 0 ns moves the read of BUS_PHASE one
+-- delta after the edge: BUS_PHASE is the clkdiv4 counter, registered in the same
+-- process and same delta as the clk_bus register itself, and the concurrent output
+-- buffer needs that delta to carry it to the port. (A wait statement is illegal in a
+-- sensitized process, so this one waits on the edge itself.)
+proc_phase: process
+begin
+	loop
+		wait until rising_edge(clk_bus);
+		wait for 0 ns;
+		if mon_phase then
+			if bus_phase /= "00" or (now - t_mem_rise) > CO_TOL then
+				viol_phase := true;
+			end if;
+		end if;
+	end loop;
+end process;
+
+-- phase_28/24: the CLK_BUS high phase is exactly two clk_mem periods (the 50 % duty
+-- the falling-edge ena_cnt of clock.vhd needs). ds80 is stable while mon_high is on.
+proc_high: process (clk_bus)
+	variable tr : time := 0 ns;
+	variable want : time;
+begin
+	if rising_edge(clk_bus) then
+		tr := now;
+	elsif falling_edge(clk_bus) and mon_high then
+		if ds80 = '0' then
+			want := 2 * T_112;
+		else
+			want := 2 * T_96;
+		end if;
+		if (now - tr) < want - CO_TOL or (now - tr) > want + CO_TOL then
+			viol_high := true;
+		end if;
+	end if;
+end process;
+
+-- switch_x10: neither CLK_BUS nor clk_mem may produce a pulse shorter than the
+-- 112.5 MHz half period (minus the 0.1 ns window) across a DS80 switch.
+proc_min_bus: process (clk_bus)
+	variable have_rise : boolean := false;
+	variable have_fall : boolean := false;
+	variable tr, tf : time := 0 ns;
+begin
+	if rising_edge(clk_bus) then
+		tr := now;
+		if have_fall and mon_min and (tr - tf) < MIN_PULSE then
+			viol_min := true;
+		end if;
+		have_rise := true;
+	elsif falling_edge(clk_bus) then
+		tf := now;
+		if have_rise and mon_min and (tf - tr) < MIN_PULSE then
+			viol_min := true;
+		end if;
+		have_fall := true;
+	end if;
+end process;
+
+proc_min_mem: process (clk_sdr)
+	variable have_rise : boolean := false;
+	variable have_fall : boolean := false;
+	variable tr, tf : time := 0 ns;
+begin
+	if rising_edge(clk_sdr) then
+		tr := now;
+		if have_fall and mon_min and (tr - tf) < MIN_PULSE then
+			viol_min := true;
+		end if;
+		have_rise := true;
+	elsif falling_edge(clk_sdr) then
+		tf := now;
+		if have_rise and mon_min and (tf - tr) < MIN_PULSE then
+			viol_min := true;
+		end if;
+		have_fall := true;
+	end if;
+end process;
+
 main: process
 
-	type clk_id is (BUS_C, VGA_C, GS_C, SDR_C);
+	type clk_id is (BUS_C, VGA_C, GS_C, SDR_C, VID_C);
 	type turbo_array is array (natural range <>) of std_logic_vector(1 downto 0);
 	type count_array is array (natural range <>) of natural;
 
@@ -176,6 +300,8 @@ main: process
 	variable n, high_adc, rise_rgb : natural;
 	variable off_align : boolean;
 	variable target : time;
+	variable t_lock : time;
+	variable seed : natural := 42;
 
 	procedure fail(name : string) is
 	begin
@@ -209,6 +335,7 @@ main: process
 				when VGA_C => wait until rising_edge(clk_vga);
 				when GS_C  => wait until rising_edge(clk_gs);
 				when SDR_C => wait until rising_edge(clk_sdr);
+				when VID_C => wait until rising_edge(clk_vid);
 			end case;
 			if p /= 0 ns then
 				d := now - p;
@@ -218,6 +345,21 @@ main: process
 			end if;
 			p := now;
 		end loop;
+	end procedure;
+
+	-- the CLK_BUS frequency over `cycles` periods, within 0.01 % of 1 / `period`
+	procedure check_freq(period : in time; cycles : in natural; good : out boolean) is
+		variable t0, t1, d : time;
+	begin
+		wait until rising_edge(clk_bus);
+		t0 := now;
+		for i in 1 to cycles loop
+			wait until rising_edge(clk_bus);
+		end loop;
+		t1 := now;
+		d := t1 - t0;
+		good := d >= (cycles * period) - (cycles * period) / 10000
+		    and d <= (cycles * period) + (cycles * period) / 10000;
 	end procedure;
 
 	-- one window of `cycles` consecutive CLK_BUS cycles: the CLK_ADC value of each of them
@@ -267,13 +409,22 @@ begin
 	wait for 800 ns;
 	ok := ok and areset = '1' and now < LOCK_T;
 	wait until areset = '0';
+	t_lock := now;
 	ok := ok and now >= LOCK_T;
 	wait for 100 ns;
 	ok := ok and areset = '0';
 	if ok then pass("areset"); else fail("areset"); end if;
 
+	-- reset_mem: '1' from the start (the PLL is unlocked) and it must stay '1' for at
+	-- least 16 clk_mem periods after the lock at t_lock, releasing on a clk_mem rising
+	-- edge (the stretched synchronous release of clock.vhd). ------------------------
+	ok := reset_mem = '1';
+	wait until reset_mem = '0';
+	ok := ok and (now - t_lock >= 16 * T_112) and (now - t_mem_rise <= CO_TOL);
+	if ok then pass("reset_mem"); else fail("reset_mem"); end if;
+
 	-- freq_28: DS80 = '0' -> CLK_BUS and CLK_VGA 28.125 MHz, CLK_GS 28.125 MHz,
-	-- CLK_SDR 112.5 MHz ------------------------------------------------------------
+	-- CLK_SDR and CLK_VID 112.5 MHz ---------------------------------------------------
 	ds80 <= '0';
 	rise(4);
 	ok := true;
@@ -281,15 +432,70 @@ begin
 	check_periods(VGA_C, T_28, 100, ok);
 	check_periods(GS_C,  T_28, 100, ok);
 	check_periods(SDR_C, T_112, 200, ok);
+	check_periods(VID_C, T_112, 200, ok);
 	if ok then pass("freq_28"); else fail("freq_28"); end if;
 
-	-- freq_24: DS80 = '1' -> 24.107142 MHz -----------------------------------------
+	-- freq_24: DS80 = '1' -> 24.107142 MHz on the bus, 96.428571 MHz on clk_mem;
+	-- CLK_VID keeps running at the fixed 112.5 MHz -------------------------------------
 	ds80 <= '1';
 	wait for 1 us;                 -- the switch is over in about 4 periods
 	ok := true;
 	check_periods(BUS_C, T_24, 100, ok);
 	check_periods(VGA_C, T_24, 100, ok);
+	check_periods(SDR_C, T_96, 200, ok);
+	check_periods(VID_C, T_112, 200, ok);
 	if ok then pass("freq_24"); else fail("freq_24"); end if;
+
+	-- phase_28: DS80 = '0', 2000 CLK_BUS periods: every bus edge on a clk_mem edge with
+	-- BUS_PHASE "00", every high phase 2 clk_mem periods, 1000 periods within 0.01 % of
+	-- 28.125 MHz ------------------------------------------------------------------------
+	ds80 <= '0';
+	wait for 1 us;
+	mon_phase <= true;
+	mon_high  <= true;
+	ok := true;
+	check_freq(T_28, FREQ_N, ok);
+	rise(PH_N - FREQ_N);
+	mon_phase <= false;
+	mon_high  <= false;
+	if viol_phase or viol_high or not ok then
+		ok := false;
+	end if;
+	if ok then pass("phase_28"); else fail("phase_28"); end if;
+
+	-- phase_24: the same for DS80 = '1' (2 x 10.370370 ns, 24.107142 MHz) ---------------
+	ds80 <= '1';
+	wait for 1 us;
+	mon_phase <= true;
+	mon_high  <= true;
+	ok := true;
+	check_freq(T_24, FREQ_N, ok);
+	rise(PH_N - FREQ_N);
+	mon_phase <= false;
+	mon_high  <= false;
+	if viol_phase or viol_high or not ok then
+		ok := false;
+	end if;
+	if ok then pass("phase_24"); else fail("phase_24"); end if;
+
+	-- switch_x10: DS80 ten times at pseudo-random CLK_BUS edges; across every switch no
+	-- CLK_BUS or clk_mem pulse below MIN_PULSE, and the phase relation holds again from
+	-- the first CLK_BUS edge after the switch (mon_phase never goes off) -----------------
+	mon_phase <= true;
+	mon_min   <= true;
+	viol_phase := false;
+	viol_min := false;
+	for i in 1 to 10 loop
+		seed := (seed * 37 + 11) mod 4096;
+		n := 13 + seed mod 97;               -- 13 .. 109 CLK_BUS periods between switches
+		rise(n);
+		ds80 <= not ds80;
+	end loop;
+	rise(8);                                  -- settle after the last switch
+	mon_phase <= false;
+	mon_min   <= false;
+	ok := not (viol_phase or viol_min);
+	if ok then pass("switch_x10"); else fail("switch_x10"); end if;
 
 	-- switch_storm: DS80 every 173 ns for 20 us; no CLK_BUS phase below 17.7 ns; the
 	-- period settles within 4 periods after the last toggle: of the four periods measured

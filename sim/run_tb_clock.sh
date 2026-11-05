@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.."
 STD="--std=93c -fsynopsys"
 WORK=build/sim
 SRC="sim/models/pll_model.vhd rtl/clk/clkmux2.vhd rtl/clk/clkgate.vhd
-     rtl/replaced/clock.vhd sim/tb_clock.vhd"
+     rtl/clk/clkdiv4.vhd rtl/replaced/clock.vhd sim/tb_clock.vhd"
 
 LOG=""
 # Whatever fails — analysis, elaboration, the run, or the check of the verdict — the
@@ -35,7 +35,7 @@ mkdir -p "$WORK"
 # shellcheck disable=SC2086
 ghdl -a $STD --workdir="$WORK" $SRC
 # shellcheck disable=SC2086
-ghdl -r $STD --workdir="$WORK" tb_clock --stop-time=200us > "$LOG" 2>&1 || true
+ghdl -r $STD --workdir="$WORK" tb_clock --stop-time=600us > "$LOG" 2>&1 || true
 cat "$LOG"
 # The testbench prints its own verdict (see the end of the main process); grep decides
 # here, so that a run that hangs to the stop time or dies in GHDL also fails.
