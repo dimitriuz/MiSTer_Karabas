@@ -6,10 +6,12 @@
 // the hps_io hookup, CONF_STR, VIDEO_ARX/ARY).
 //
 // Clocks: the machine's PLL is the one inside clock.vhd, below profi.
-// CLK_VIDEO is clk_sdr, the 112.5 MHz output of that PLL (the machine's
+// CLK_VIDEO is clk_vid, the fixed 112.5 MHz output of that PLL (the machine's
 // video pixels cross into it through an async FIFO, see the VIDEO
-// section). clk_sys for hps_io, mcu_emu and ps2_hid is the 50 MHz input
-// itself. Every path between that 50 MHz domain and the machine is
+// section); clk_sdr is the muxed memory clock (112.5 / 96.428571 MHz),
+// clk_bus its quarter (28.125 / 24.107142 MHz). clk_sys for hps_io, mcu_emu and
+// ps2_hid is the 50 MHz input itself. Every path between that 50 MHz domain and
+// the machine is
 // asynchronous by design: the SPI link into kg_mcu (mcu_emu's registers on
 // one side, kg_mcu's synchroniser chain on the other) and the quasi-static
 // OSD bits (which also only travel as switch frames over that link).
@@ -181,7 +183,7 @@ mcu_emu u_mcu (
 
 ///////////////////////   THE MACHINE   ////////////////////////////////////
 
-wire clk_bus, clk_sdr;          // from profi's clock generator (clock.vhd)
+wire clk_bus, clk_sdr, clk_vid; // from profi's clock generator (clock.vhd)
 wire profi_reset, profi_areset, profi_kb_reset;   // buffer ports, read-only
 
 wire [8:0]  rgb;
@@ -206,6 +208,7 @@ profi #(
 	.CLK_50MHZ(clk_sys),
 	.CLK_BUS(clk_bus),
 	.CLK_SDR(clk_sdr),
+	.CLK_VID(clk_vid),
 	.CLK_12(),                    // '0' in clock.vhd; FT812/MIDI only
 	.CLK_8(),
 	.RESET(profi_reset),
@@ -294,9 +297,9 @@ assign {SDRAM_DQMH, SDRAM_DQML} = sdr_dqm;
 assign SDRAM_nCS = 1'b0;
 assign SDRAM_CKE = 1'b1;
 
-// SDRAM_CLK: the 112.5 MHz clock leaves through a DDR output register, the
+// SDRAM_CLK: the memory clock leaves through a DDR output register, the
 // same trick as at the end of rtl/mem/sdram.sv (copied from there verbatim,
-// the .outclock net is clk_sdr here and the dataout the MiSTer pin).
+// the .outclock net is clk_sdr = clk_mem here and the dataout the MiSTer pin).
 altddio_out
 #(
 	.extend_oe_disable("OFF"),
@@ -325,16 +328,16 @@ sdramclk_ddr
 ///////////////////////   VIDEO   //////////////////////////////////////////
 
 // The machine's video chain is clocked by clk_bus with the pixel enable
-// ADC_CLK = ENA_RGB; the pixels cross into the clk_sdr domain (CLK_VIDEO =
-// the 112.5 MHz PLL output on profi's CLK_SDR port) through an async FIFO
-// - every clk_bus -> clk_sdr crossing in this port is a cdc_fifo (push on
+// ADC_CLK = ENA_RGB; the pixels cross into the clk_vid domain (CLK_VIDEO =
+// the fixed 112.5 MHz PLL output on profi's CLK_VID port) through an async FIFO
+// - every clk_bus -> clk_vid crossing in this port is a cdc_fifo (push on
 // the clk_bus edge with ADC_CLK = '1'). The FIFO resets with the machine
 // ARESET (= not locked: held for far more than three clk_bus clocks, see
 // rtl/mem/cdc_fifo.vhd).
 //
-// clk_sdr is a direct PLL clock, which is what sys_top's clock switches
-// (hdmi_clk_sw, vga_clk_sw) require on CLK_VIDEO; clk_bus is multiplexed
-// 28/24 MHz (DS80) and can never be such a net.
+// clk_vid is a direct PLL clock, which is what sys_top's clock switches
+// (hdmi_clk_sw, vga_clk_sw) require on CLK_VIDEO; clk_bus is divided from the
+// DS80-muxed memory clock and can never be such a net.
 
 // The crossing itself is rtl/video/video_cdc.sv (async cdc_fifo DW=12
 // AW=3 + the pop capture register): push on ce_in, pop whenever not empty,
@@ -354,7 +357,7 @@ wire        rgb_blank_hi = vmode[3] ? rgb_blank : ~rgb_blank;
 
 video_cdc #(.W(12)) video_cdc (
 	.clk_bus(clk_bus),
-	.clk_vid(clk_sdr),
+	.clk_vid(clk_vid),
 	.reset(profi_areset),
 	.ce_in(adc_clk),              // ENA_RGB: one word per pixel
 	.din({rgb, rgb_hs, rgb_vs, rgb_blank_hi}),
@@ -366,17 +369,17 @@ video_cdc #(.W(12)) video_cdc (
 wire       vga_hs    = ~vid_r[2];   // the profi syncs are active low
 wire       vga_blank =  vid_r[0];
 
-assign CLK_VIDEO = clk_sdr;
+assign CLK_VIDEO = clk_vid;
 
 // VBlank and VS for the mixer: the machine's VSYNC can lie outside its
 // vertical blank (the 60 Hz Spectrum modes: upstream pentagon_video.vhd
 // drives VSYNC at chr_row 27 while the blank covers rows 28-29), so
 // rtl/video/vframe_gen.sv rebuilds both from the run of fully blank lines
-// in the popped pixel stream, on the clk_sdr side with the pop strobe as
+// in the popped pixel stream, on the clk_vid side with the pop strobe as
 // the clock enable.
 wire vf_vblank, vf_vs;
 vframe_gen vframe_gen (
-	.clk(clk_sdr),
+	.clk(clk_vid),
 	.ce(vid_ce),
 	.hs_n(vid_r[2]),
 	.blank(vid_r[0]),
@@ -399,7 +402,7 @@ wire [7:0] b8w = {vid_r[5:3], vid_r[5:3], vid_r[4:3]};
 
 video_mixer #(.LINE_LENGTH(1024), .GAMMA(1)) video_mixer
 (
-	.CLK_VIDEO(clk_sdr),
+	.CLK_VIDEO(clk_vid),
 	.CE_PIXEL(CE_PIXEL),          // the mixer's own pixel enable output
 	.ce_pix(vid_ce),
 
