@@ -5,7 +5,7 @@
 # in the TimeQuest summary, a missing clk_bus28/clk_bus24 clock or an sdc
 # warning naming Karabas_Profi.sdc fail the build: Quartus exits 0 with
 # timing unclosed). The last line is always `build: exit <code>`, so a
-# detached poller
+# detached poller can watch for it:
 #   setsid nohup tools/build.sh </dev/null >build/logs/build.log 2>&1 &
 #   for i in $(seq 1 30); do sleep 60; grep -q '^build: exit' build/logs/build.log && break; done
 # Quartus rewrites LAST_QUARTUS_VERSION in Karabas_Profi.qsf; revert it after
