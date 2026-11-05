@@ -17,9 +17,13 @@
 --   * the byte arrives 9 to 11 clk_bus clocks after `rd_req` rises (measured in
 --     sim/tb_sram_bridge.vhd, whose model keeps `ready` low for 9 clk_sdr clocks per
 --     access; sdram.sv itself takes 3 to 6). A Z80 memory read is 3 T-states, which is
---     12 clk_bus clocks at the 7 MHz stage-1 limit, so it is in time - but only just:
---     the bridge has no wait path to the bus, which is why faster CPU clocks are a
---     stage 1 limitation and a wait generator belongs to stage 2.
+--     12 clk_bus clocks at the 7 MHz stage-1 limit, so it is in time - but nothing
+--     faster is: hence `cpu_wait`, combinational in clk_bus, high while a CPU read of
+--     a byte `dout` does not hold is outstanding or the write queue has no room left
+--     for another burst. Through memory.vhd's MEM_WAIT it reaches clock.vhd's
+--     WAIT_CPU, which zeroes ENA_CPU and so freezes the CPU (T80s CEN) until the byte
+--     is there; profi.vhd applies it only while turbo is on. At 3.5 MHz a read takes
+--     2 T-states of 4 clocks = 16, more than the bridge needs, and nothing waits.
 --
 -- Clock domains: clk_bus (28.125 / 24.107 MHz) for the CPU side, clk_sdr (112.5 MHz)
 -- for the SDRAM side. Everything crossing is a cdc_fifo (gray pointers, two-flop
@@ -56,6 +60,7 @@ port (
 	addr     : in  std_logic_vector(20 downto 0);    -- byte address in the 2 MiB SRAM map
 	din      : in  std_logic_vector(7 downto 0);
 	dout     : out std_logic_vector(7 downto 0);     -- clk_bus domain, data of the last completed read
+	cpu_wait : out std_logic;                         -- clk_bus domain, combinational: hold the CPU
 	-- to sdram (clk_sdr domain)
 	sd_addr  : out std_logic_vector(24 downto 0);
 	sd_din   : out std_logic_vector(7 downto 0);
@@ -82,6 +87,7 @@ architecture RTL of sram_bridge is
 		wr     : in  std_logic := '0';
 		d      : in  std_logic_vector(DW - 1 downto 0) := (others => '0');
 		full   : out std_logic;
+		afull  : out std_logic;
 		rd_clk : in  std_logic;
 		rd_rst : in  std_logic := '0';
 		rd     : in  std_logic := '0';
@@ -92,11 +98,12 @@ architecture RTL of sram_bridge is
 
 	type state_t is (s_idle, s_busy);
 
-	-- the write queue: 8 places, drained in about 3 clk_bus clocks per write, while
-	-- the CPU cannot write more often than every fourth clk_bus clock
+	-- the write queue: 8 places, drained in about 3 clk_bus clocks per write; the
+	-- CPU can strobe every clock in turbo, its `cpu_wait` (from `afull`) keeps it
+	-- two places away from full
 	signal wq_d, wq_q     : std_logic_vector(QW - 1 downto 0);
 	signal wq_wr, wq_pop  : std_logic := '0';
-	signal wq_full, wq_empty : std_logic;
+	signal wq_full, wq_afull, wq_empty : std_logic;
 
 	-- the read requests, one in flight at a time, and their responses
 	signal rq_d, rq_q     : std_logic_vector(ADDR_W - 1 downto 0);
@@ -135,6 +142,7 @@ begin
 	generic map (DW => QW, AW => 3)
 	port map (
 		wr_clk => clk_bus, wr_rst => reset, wr => wq_wr, d => wq_d, full => wq_full,
+		afull => wq_afull,
 		rd_clk => clk_sdr, rd_rst => reset, rd => wq_pop, q => wq_q, empty => wq_empty
 	);
 
@@ -142,6 +150,7 @@ begin
 	generic map (DW => ADDR_W, AW => 2)
 	port map (
 		wr_clk => clk_bus, wr_rst => reset, wr => rq_wr, d => rq_d, full => rq_full,
+		afull => open,
 		rd_clk => clk_sdr, rd_rst => reset, rd => rq_pop, q => rq_q, empty => rq_empty
 	);
 
@@ -150,13 +159,16 @@ begin
 	generic map (DW => QW, AW => 2)
 	port map (
 		wr_clk => clk_sdr, wr_rst => reset, wr => cq_wr, d => cq_d, full => cq_full,
+		afull => open,
 		rd_clk => clk_bus, rd_rst => reset, rd => cq_pop, q => cq_q, empty => cq_empty
 	);
 
-	-- a queued write must never be lost. The fastest Z80 write cycle is 5 T-states, i.e.
-	-- about 20 clk_bus clocks at the 7 MHz limit (the ROM loader writes once every 128),
-	-- while a place frees in about 4 - eight of them are here for the burst of a write
-	-- that meets an access already in flight.
+	-- a queued write must never be lost. The fastest Z80 write cycle is 5 T-states,
+	-- i.e. about 20 clk_bus clocks at the 7 MHz limit (the ROM loader writes once
+	-- every 128) while a place frees in about 4 - eight of them are here for the
+	-- burst of a write that meets an access already in flight. In turbo the CPU can
+	-- write on every clock; `cpu_wait` (from `afull`, two places of headroom for
+	-- the registered ENA_CPU) freezes it before this can fire.
 	assert not (wr_stb = '1' and wq_full = '1')
 		report "sram_bridge: the write queue is full" severity failure;
 	assert not (cq_wr = '1' and cq_full = '1')
@@ -166,6 +178,13 @@ begin
 	stale <= '1' when have_valid = '0' or valid_addr /= addr else '0';
 	rd_push <= '1' when rd_req = '1' and out_rd = '0' and stale = '1' and rq_full = '0'
 	           else '0';
+
+	-- hold the CPU while dout does not hold the byte a read wants (its answer is on
+	-- its way) or the write queue has no room left for another burst. Combinational
+	-- on purpose: clock.vhd registers WAIT_CPU into ENA_CPU, so the freeze already
+	-- takes effect one clock late, and at turbo 8x the CPU samples DI two clocks
+	-- after rd_req rises
+	cpu_wait <= (rd_req and stale) or wq_afull;
 
 	cpu: process (clk_bus)
 	begin

@@ -40,6 +40,7 @@ port (
 	GS_N_WR		: in std_logic;
 	GS_N_RFSH	: in std_logic;
 	GS_WAIT_N		: out STD_LOGIC:='1';
+	MEM_WAIT		: out std_logic := '0';
 	GS_MREQ_N	: in STD_LOGIC;
 	
 	MA 			: out 	std_logic_vector(20 downto 0);
@@ -168,6 +169,7 @@ architecture RTL of memory is
 	signal sd_addr : std_logic_vector(24 downto 0);
 	signal sd_din, sd_dout : std_logic_vector(7 downto 0);
 	signal sd_rd, sd_we, sd_ready : std_logic;
+	signal sram_wait : std_logic;
 	signal SDRAM_DQML, SDRAM_DQMH : std_logic;
 
 	
@@ -252,6 +254,11 @@ begin
 	N_MRD <= "11";
 	DO <= sram_dout;
 
+	-- the bridge's hold signal: high while a CPU read is not served yet or the
+	-- write queue is nearly full (see sram_bridge); profi.vhd applies it to the
+	-- clock's WAIT_CPU in the turbo modes only
+	MEM_WAIT <= sram_wait;
+
 	-- the shared port of the profi cpu, served by the bridge
 	sram_rd_req <= not N_MREQ and not N_RD and not loader_act;
 
@@ -265,6 +272,7 @@ begin
 		addr => port1_a,
 		din => port1_di,
 		dout => sram_dout,
+		cpu_wait => sram_wait,
 		sd_addr => sd_addr,
 		sd_din => sd_din,
 		sd_rd => sd_rd,

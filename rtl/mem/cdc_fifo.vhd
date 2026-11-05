@@ -17,7 +17,8 @@
 -- not expect.
 --
 -- `wr = '1'` while `full = '1'` silently loses the datum; the caller must size the
--- queue for its traffic. sram_bridge guards its write queue with an assertion.
+-- queue for its traffic. sram_bridge guards its write queue with an assertion and
+-- watches `afull` (below) to slow its writer long before that point.
 -------------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
@@ -34,7 +35,7 @@ port (
 	wr     : in  std_logic := '0';
 	d      : in  std_logic_vector(DW - 1 downto 0) := (others => '0');
 	full   : out std_logic;
-
+	afull  : out std_logic;   -- write side: at most 2 free cells (conservative)
 	rd_clk : in  std_logic;
 	rd_rst : in  std_logic := '0';
 	rd     : in  std_logic := '0';
@@ -68,6 +69,21 @@ architecture RTL of cdc_fifo is
 		end loop;
 		return g;
 	end function;
+
+	-- gray to binary: the inverse chain of to_gray, b(i) = g(i) xor b(i + 1),
+	-- computed from the top bit down
+	function to_bin (g : unsigned) return unsigned is
+		variable b : unsigned(g'range);
+	begin
+		b(g'high) := g(g'high);
+		for i in g'high - 1 downto 0 loop
+			b(i) := g(i) xor b(i + 1);
+		end loop;
+		return b;
+	end function;
+
+	-- used cells in the write domain, from the synchronised read pointer
+	signal used : unsigned(AW downto 0);
 
 begin
 
@@ -123,6 +139,11 @@ begin
 			end if;
 		end if;
 	end process;
+
+	-- the synchronised read pointer lags, so `used` is never smaller than the
+	-- truth: afull (at most two free cells) may be early, never late
+	used <= wb - to_bin(rbg_s2);
+	afull <= '1' when used >= to_unsigned(2**AW - 2, AW + 1) else '0';
 
 	empty <= '1' when rbg = wbg_s2 else '0';
 	full  <= '1' when wbg = (not rbg_s2(AW downto AW - 1)) & rbg_s2(AW - 2 downto 0) else '0';

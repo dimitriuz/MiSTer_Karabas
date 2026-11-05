@@ -31,6 +31,14 @@
 --   write_over_read   dout holds the byte at A; A is written; the next read of A has to
 --                     return the written byte and not the one dout cached for it
 --   addr_change       rd_req stays high while addr changes twice: dout follows both
+--   cpu_wait_read     rd_req rises for a byte dout does not hold: cpu_wait is high in
+--                     that very clock and in every clock until dout holds the byte,
+--                     low in the first clock it does and for as long as rd_req stays
+--                     on that address
+--   cpu_wait_afull    writes faster than the model drains: cpu_wait rises before the
+--                     write queue is full, one more write gets through (the registered
+--                     ENA_CPU), every byte lands and cpu_wait returns to 0 with the
+--                     queue drained
 --   loader_burst      4096 writes, one every 128 clk_bus clocks (the ROM loader's
 --                     pace) at consecutive addresses -> the model holds the bytes
 -------------------------------------------------------------------------------
@@ -61,6 +69,9 @@ architecture sim of tb_sram_bridge is
 	constant ORD         : natural := 16#2345#;   -- write_order
 	constant CA0         : natural := 16#3456#;   -- addr_change
 	constant CA1         : natural := 16#4001#;
+	constant RB          : natural := 16#6001#;   -- cpu_wait_read
+	constant AF_BASE     : natural := 16#30000#;  -- cpu_wait_afull, clear of the rest
+	constant AF_N        : natural := 25;         -- its burst bound plus allowance
 	constant CA2         : natural := 16#5ABC#;
 	constant LOADER_BASE : natural := 16#20000#;  -- loader_burst, clear of the rest
 	constant LOADER_N    : natural := 4096;
@@ -74,6 +85,7 @@ architecture sim of tb_sram_bridge is
 	signal addr   : std_logic_vector(20 downto 0) := (others => '0');
 	signal din    : std_logic_vector(7 downto 0) := (others => '0');
 	signal dout   : std_logic_vector(7 downto 0);
+	signal cpu_wait : std_logic;
 
 	signal sd_addr  : std_logic_vector(24 downto 0);
 	signal sd_din   : std_logic_vector(7 downto 0);
@@ -101,6 +113,7 @@ begin
 		addr     => addr,
 		din      => din,
 		dout     => dout,
+		cpu_wait => cpu_wait,
 		sd_addr  => sd_addr,
 		sd_din   => sd_din,
 		sd_rd    => sd_rd,
@@ -223,6 +236,13 @@ main: process
 		variable drifted  : boolean;
 		variable exp_byte : std_logic_vector(7 downto 0);
 		variable wr_byte  : std_logic_vector(7 downto 0);
+		constant AF_MAX   : natural := 26;      -- burst bound AF_N plus the allowance
+		type nat_vec is array (0 to AF_MAX - 1) of natural;
+		type byte_vec is array (0 to AF_MAX - 1) of std_logic_vector(7 downto 0);
+		variable af_addr  : nat_vec;
+		variable af_data  : byte_vec;
+		variable af_cnt   : natural;
+		variable found    : boolean;
 	begin
 		-- startup ------------------------------------------------------------------
 		-- sdram.sv spends some 12100 clk_sdr clocks refreshing after init and its
@@ -415,6 +435,97 @@ main: process
 			fail("addr_change" & suffix);
 		end if;
 
+		-- cpu_wait_read ------------------------------------------------------------
+		-- the CPU must be held while dout does not hold the byte the read wants,
+		-- and released as soon as it does - even with rd_req still held
+		reset <= '1';
+		rise(8);
+		reset <= '0';
+		rise(4);
+		wait_startup;
+		exp_byte := sdram_model_byte(RB);
+		ok := dout /= exp_byte;               -- a stale dout must not pass the case
+		addr <= a21(RB);
+		rd_req <= '1';
+		wait for 1 ns;                        -- the very clock rd_req rose on
+		ok := ok and cpu_wait = '1';
+		ok2 := true;
+		found := false;
+		for i in 1 to 32 loop
+			wait until rising_edge(clk_bus);
+			if dout = exp_byte then
+				found := true;
+				if cpu_wait /= '0' then
+					ok2 := false;             -- first clock dout holds: already low
+				end if;
+				exit;
+			end if;
+			if cpu_wait /= '1' then
+				ok2 := false;                 -- wait fell while dout lacks the byte
+			end if;
+		end loop;
+		ok2 := ok2 and found;
+		for i in 1 to 4 loop                  -- rd_req high on a held address: stays 0
+			wait until rising_edge(clk_bus);
+			if cpu_wait /= '0' then
+				ok2 := false;
+			end if;
+		end loop;
+		rd_req <= '0';
+		if ok and ok2 then
+			pass("cpu_wait_read" & suffix);
+		else
+			fail("cpu_wait_read" & suffix);
+		end if;
+
+		-- cpu_wait_afull -----------------------------------------------------------
+		-- one write every clk_bus clock, faster than the model drains: cpu_wait
+		-- (the queue's afull) rises while the queue still has free places - the
+		-- full assertion, which ends the simulation when a write is lost, stays
+		-- silent - the one more write the registered ENA_CPU lets through lands,
+		-- every written byte lands, and cpu_wait returns to 0 with the queue drained
+		quiesce(32);
+		ok := false;
+		af_cnt := 0;
+		burst: for i in 0 to AF_N - 1 loop
+			af_addr(af_cnt) := AF_BASE + i;
+			af_data(af_cnt) := (not sdram_model_byte(AF_BASE + i)) xor flip;
+			addr <= a21(AF_BASE + i);
+			din <= af_data(af_cnt);
+			wr_stb <= '1';
+			af_cnt := af_cnt + 1;
+			wait until rising_edge(clk_bus);
+			if cpu_wait = '1' then
+				ok := true;
+				exit burst;
+			end if;
+		end loop burst;
+		if ok then
+			-- the one more write, as the CPU held by a registered ENA_CPU delivers
+			af_addr(af_cnt) := AF_BASE + AF_N - 1;
+			af_data(af_cnt) := (not sdram_model_byte(AF_BASE + AF_N - 1)) xor flip;
+			addr <= a21(AF_BASE + AF_N - 1);
+			din <= af_data(af_cnt);
+			wait until rising_edge(clk_bus);
+			wr_stb <= '0';
+			af_cnt := af_cnt + 1;
+		else
+			wr_stb <= '0';
+		end if;
+		quiesce(128);                         -- the queue drains, the model writes the array
+		ok2 := cpu_wait = '0';
+		found := true;
+		for i in 0 to af_cnt - 1 loop           -- every written byte made it into the array
+			if sdram_model_mem(af_addr(i)) /= af_data(i) then
+				found := false;
+			end if;
+		end loop;
+		if ok and ok2 and found then
+			pass("cpu_wait_afull" & suffix);
+		else
+			fail("cpu_wait_afull" & suffix);
+		end if;
+
 		-- loader_burst -------------------------------------------------------------
 		quiesce(16);
 		for i in 0 to LOADER_N - 1 loop
@@ -453,6 +564,8 @@ begin
 	       and SU < SDRAM_MODEL_BYTES
 	       and ORD < SDRAM_MODEL_BYTES and CA0 < SDRAM_MODEL_BYTES
 	       and CA1 < SDRAM_MODEL_BYTES and CA2 < SDRAM_MODEL_BYTES
+	       and RB < SDRAM_MODEL_BYTES
+	       and AF_BASE + AF_N <= SDRAM_MODEL_BYTES
 	       and LOADER_BASE + LOADER_N <= SDRAM_MODEL_BYTES
 		report "tb_sram_bridge: test address out of range" severity failure;
 	-- and their bytes must differ, or dout could satisfy a case by accident
@@ -461,6 +574,7 @@ begin
 	       and sdram_model_byte(CA0) /= sdram_model_byte(CA2)
 	       and sdram_model_byte(SA) /= x"5A"
 	       and sdram_model_byte(RA0) /= x"00"
+	       and sdram_model_byte(RB) /= x"00"
 		report "tb_sram_bridge: test addresses collide" severity failure;
 
 	-- clk_bus 28.125 MHz ---------------------------------------------------------------

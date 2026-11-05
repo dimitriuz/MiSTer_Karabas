@@ -13,11 +13,18 @@
 --     NOT start an access: the latched address follows and `ready` never drops;
 --   * a read loads both bytes of its 16-bit word into that register and `dout` selects
 --     the byte by the latched addr(0); a write masks one byte of the array;
---   * save_we starts as 1, so the first read is never served from the register.
---
--- Four deliberate differences from sdram.sv, all in the model's favour:
---   * every access takes exactly 9 clocks of `ready` low (sdram.sv takes 3 for a write
---     and 6 for a read at 100 MHz), so the bridge is timed against the slower controller;
+-- `ready` is then held low for GAP_CLKS clk_sdr clocks per access: a busy counter
+-- that starts at GAP_CLKS - 1 and blocks `ready` until it reaches 0 holds it low
+-- for exactly GAP_CLKS clocks. The default 9 = 7.9 clock units is a deliberate
+-- difference: sdram.sv holds it for 3 on a write and 6 on a read, and waiting 9
+-- tests the bridge 50 % slower than the real controller at the rate the bus
+-- model samples at. sim/tb_turbo_wait.vhd overrides GAP_CLKS with the 6 a read
+-- costs on the real controller, because the T80's DI register latches only
+-- 8 clk_bus clocks after rd_req rises: the 9 clock gap has margin against the
+-- bus model's 12 clock window, none against the CPU's sampling edge.
+-- The clock domain is 112.5 MHz (8.888 ns), as for the client: at the 28.125 MHz
+-- bus rate one clk_sdr is a quarter clk_bus clock, so the default 9 tie up 2.25
+-- bus clocks and the 6 of the real read access 1.5.
 --   * an access is never interrupted and a request raised while `ready` is low is a
 --     protocol error, reported as one;
 --   * after `init` falls it spends 12100 clocks in sdram.sv's STATE_STARTUP, holding
@@ -81,6 +88,9 @@ library IEEE;
 use IEEE.std_logic_1164.all;
 
 entity sdram is
+generic (
+	GAP_CLKS : integer range 2 to 15 := 9    -- clk_sdr clocks ready stays low
+);
 port (
 	init   : in  std_logic;                                        -- reset, initialise
 	clk    : in  std_logic;                                        -- ~112.5 MHz
@@ -100,7 +110,7 @@ use work.sdram_model_pkg.all;
 
 architecture model of sdram is
 
-	constant GAP : unsigned(3 downto 0) := "1001";        -- 9 clocks of ready low
+	constant GAP : unsigned(3 downto 0) := to_unsigned(GAP_CLKS, 4);
 
 	-- sdram.sv STATE_STARTUP: the refresh sequence that has to run before anyone is
 	-- served. `ready` says nothing about it, so the client has to count.
@@ -186,6 +196,7 @@ begin
 				-- a write always starts an access
 				if we = '1' and old_we = '0' then
 					new_data <= din;
+					save_addr <= addr;
 					save_we  <= '1';
 					rdy      <= '0';
 					busy     <= '1';
@@ -200,6 +211,7 @@ begin
 						-- the same 16-bit word: served from the read register
 						save_addr <= addr;
 					else
+						save_addr <= addr;
 						save_we  <= '0';
 						rdy      <= '0';
 						busy     <= '1';
@@ -214,8 +226,17 @@ begin
 						if acc_we = '1' then
 							sdram_model_mem(byte_index(acc_addr)) := new_data;
 						else
-							data(7 downto 0)  <= sdram_model_mem(byte_index(acc_addr));
-							data(15 downto 8) <= sdram_model_mem(other_byte_index(acc_addr));
+							-- sdram.sv: `dout = save_addr[0] ? data[15:8] : data[7:0]`, so
+							-- the data register holds the 16-bit word with its even byte in
+							-- data(7:0) and its odd byte in data(15:8) - independent of
+							-- which byte of the word the access asked for.
+							if byte_index(acc_addr) mod 2 = 0 then
+								data(7 downto 0)  <= sdram_model_mem(byte_index(acc_addr));
+								data(15 downto 8) <= sdram_model_mem(other_byte_index(acc_addr));
+							else
+								data(7 downto 0)  <= sdram_model_mem(other_byte_index(acc_addr));
+								data(15 downto 8) <= sdram_model_mem(byte_index(acc_addr));
+							end if;
 						end if;
 						rdy   <= '1';
 						busy  <= '0';
