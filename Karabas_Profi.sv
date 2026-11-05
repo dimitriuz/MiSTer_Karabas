@@ -364,22 +364,24 @@ video_cdc #(.W(12)) video_cdc (
 );
 
 wire       vga_hs    = ~vid_r[2];   // the profi syncs are active low
-wire       vga_vs    = ~vid_r[1];
 wire       vga_blank =  vid_r[0];
 
 assign CLK_VIDEO = clk_sdr;
 
-// The VBlank of the sampled chain: profi has none, count it from the
-// popped syncs and the pixel blanking (rtl/video/vblank_gen.sv) on the
-// clk_sdr side, with the pop strobe as the clock enable.
-wire vblank;
-vblank_gen vblank_gen (
+// VBlank and VS for the mixer: the machine's VSYNC can lie outside its
+// vertical blank (the 60 Hz Spectrum modes: upstream pentagon_video.vhd
+// drives VSYNC at chr_row 27 while the blank covers rows 28-29), so
+// rtl/video/vframe_gen.sv rebuilds both from the run of fully blank lines
+// in the popped pixel stream, on the clk_sdr side with the pop strobe as
+// the clock enable.
+wire vf_vblank, vf_vs;
+vframe_gen vframe_gen (
 	.clk(clk_sdr),
 	.ce(vid_ce),
-	.hs(vid_r[2]),
-	.vs(vid_r[1]),
+	.hs_n(vid_r[2]),
 	.blank(vid_r[0]),
-	.vblank(vblank)
+	.vblank(vf_vblank),
+	.vs(vf_vs)
 );
 
 wire [2:0] fx = status[25:23];    // Scandoubler Fx: None, HQ2x, CRT 25/50/75
@@ -411,9 +413,9 @@ video_mixer #(.LINE_LENGTH(1024), .GAMMA(1)) video_mixer
 	.B(b8w),
 
 	.HSync(vga_hs),
-	.VSync(vga_vs),
+	.VSync(vf_vs),
 	.HBlank(vga_blank),
-	.VBlank(vblank),
+	.VBlank(vf_vblank),
 
 	.HDMI_FREEZE(1'b0),
 	.freeze_sync(),
