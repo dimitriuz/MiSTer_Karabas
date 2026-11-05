@@ -15,6 +15,7 @@ set_global_assignment -name VHDL_FILE rtl/replaced/clock.vhd
 set_global_assignment -name VHDL_FILE rtl/replaced/memory.vhd
 set_global_assignment -name VHDL_FILE rtl/clk/clkmux2.vhd
 set_global_assignment -name VHDL_FILE rtl/clk/clkgate.vhd
+set_global_assignment -name VHDL_FILE rtl/clk/clkdiv4.vhd
 
 set_global_assignment -name VHDL_FILE rtl/mem/cdc_fifo.vhd
 set_global_assignment -name VHDL_FILE rtl/mem/sram_bridge.vhd

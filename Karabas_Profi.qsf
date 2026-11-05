@@ -30,6 +30,13 @@ set_global_assignment -name MAX_CORE_JUNCTION_TEMP 100
 set_global_assignment -name POWER_PRESET_COOLING_SOLUTION "23 MM HEAT SINK WITH 200 LFPM AIRFLOW"
 set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
 set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS OFF
+# Stage 2 (clock tree): clkdiv4's q is promoted to the global clock net by
+# the fitter on its own; the memory clock (the clkmux2 output) must ask for
+# it (build 16 left its loads on local routing: no clock buffer, no
+# clk_mem112/96 pin to constrain), and the detailed per-path STA sections
+# are what tools/check_timing.py failures are debugged from.
+set_global_assignment -name GLOBAL_SIGNAL "Global Clock" -to "emu:emu|profi:u_profi|clock:U1|clkmux2:U9|clk_out"
+set_global_assignment -name TIMEQUEST_DO_REPORT_TIMING ON
 set_global_assignment -name OPTIMIZE_POWER_DURING_FITTING OFF
 set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION ALWAYS
 set_global_assignment -name FITTER_EFFORT "STANDARD FIT"

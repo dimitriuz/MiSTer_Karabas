@@ -1,11 +1,12 @@
-// The clock generator of the MiSTer Karabas_Profi port: 28.125 MHz (the 40-column bus and
-// General Sound), 24.107142 MHz (the 80-column DS80 bus) and 112.5 MHz (the SDRAM) out of
-// one altera_pll on the 50 MHz MiSTer clock (VCO 675 MHz, phase 0 on all three, so the
-// clocks are related and the timing tools analyse the paths between them).
+// The clock generator of the MiSTer Karabas_Profi port: 28.125 MHz (General Sound),
+// 24.107142 MHz (unused, kept from stage 1), 112.5 MHz (CLK_VID; clk_mem branch 0) and
+// 96.428571 MHz (clk_mem branch 1) out of one altera_pll on the 50 MHz MiSTer clock
+// (VCO 675 MHz, phase 0 on all four, so the clocks are related and the timing tools
+// analyse the paths between them).
 // rtl/replaced/clock.vhd instantiates it; the sim-only model is sim/models/pll_model.vhd.
 //
 // Copied from Template_MiSTer rtl/pll.v at 76dd8f5c509a2237b8e707773032a31df5905048 and
-// re-parameterised: the template drives one output, this one drives three, and the wizard
+// re-parameterised: the template drives one output, this one drives four, and the wizard
 // record at the end of the file carries the requested frequencies.
 // megafunction wizard: %Altera PLL v17.0%
 // GENERATION: XML
@@ -20,6 +21,7 @@ module pll (
 		output wire  outclk_0, // outclk0.clk
 		output wire  outclk_1, // outclk1.clk
 		output wire  outclk_2, // outclk2.clk
+		output wire  outclk_3, // outclk3.clk
 		output wire  locked    //  locked.export
 	);
 
@@ -29,6 +31,7 @@ module pll (
 		.outclk_0 (outclk_0), // outclk0.clk
 		.outclk_1 (outclk_1), // outclk1.clk
 		.outclk_2 (outclk_2), // outclk2.clk
+		.outclk_3 (outclk_3), // outclk3.clk
 		.locked   (locked)    //  locked.export
 	);
 
@@ -74,7 +77,7 @@ endmodule
 // Retrieval info: 	<generic name="gui_dsm_out_sel" value="1st_order" />
 // Retrieval info: 	<generic name="gui_use_locked" value="true" />
 // Retrieval info: 	<generic name="gui_en_adv_params" value="false" />
-// Retrieval info: 	<generic name="gui_number_of_clocks" value="3" />
+// Retrieval info: 	<generic name="gui_number_of_clocks" value="4" />
 // Retrieval info: 	<generic name="gui_multiply_factor" value="1" />
 // Retrieval info: 	<generic name="gui_frac_multiply_factor" value="1" />
 // Retrieval info: 	<generic name="gui_divide_factor_n" value="1" />
@@ -106,7 +109,7 @@ endmodule
 // Retrieval info: 	<generic name="gui_actual_phase_shift2" value="0" />
 // Retrieval info: 	<generic name="gui_duty_cycle2" value="50" />
 // Retrieval info: 	<generic name="gui_cascade_counter3" value="false" />
-// Retrieval info: 	<generic name="gui_output_clock_frequency3" value="10.0" />
+// Retrieval info: 	<generic name="gui_output_clock_frequency3" value="96.428571" />
 // Retrieval info: 	<generic name="gui_divide_factor_c3" value="1" />
 // Retrieval info: 	<generic name="gui_actual_output_clock_frequency3" value="0 MHz" />
 // Retrieval info: 	<generic name="gui_ps_units3" value="ps" />

@@ -10,21 +10,46 @@
 --                                                  MHz on the 50 MHz MiSTer clock)
 --   BUFGMUX                           -> clkmux2 (rtl/clk/clkmux2.vhd)
 --   BUFGCE                            -> clkgate (rtl/clk/clkgate.vhd)
+--   (new, Stage 2)                    -> clkdiv4 (rtl/clk/clkdiv4.vhd)
 --
--- The three outputs of that PLL are 28.125 MHz (the bus of the 40-column mode),
--- 24.107142 MHz (the bus of the 80-column DS80 mode) and 112.5 MHz, all with phase 0.
--- The sdc cuts clk_bus <-> clk_sdr as asynchronous, so every path between them must
--- go through a cdc_fifo (as the SDRAM bridge and the video CDC do). What the
--- Xilinx PLL gave and this one does not:
+-- The tree of Stage 2 (all four PLL outputs are phase 0 of the same 675 MHz VCO):
+--
+--   clk_28   28.125 MHz   -> CLK_GS only (General Sound runs at 28 MHz in both video
+--                            modes, as in Stage 1; a second same-frequency output of
+--                            the Xilinx PLL, which this one folds onto one)
+--   (24.107142 MHz: the Xilinx bus frequency of the DS80 mode, no longer used by
+--    anything - the request keeps the output, the fitter prunes the counter)
+--   clk_112  112.5 MHz    -> CLK_VID (the fixed video clock) and branch 0 of clk_mem
+--   clk_96   96.428571    -> clk_mem branch 1
+--   clk_mem  = DS80 ? clk_96 : clk_112 (clkmux2 U9)  -> CLK_SDR (the SDRAM bridge)
+--   clk_bus  = clk_mem / 4, 50 % duty (clkdiv4 U11)  -> CLK_BUS, CLK_VGA, clk_rgb
+--
+-- The bus clock is derived from the memory clock instead of coming from its own PLL
+-- output, because the SDRAM controller of Task 3 places its bursts on the bus clock
+-- and needs a fixed phase between the two (BUS_PHASE, in the clk_mem domain: "00" on
+-- the clk_mem edge where a clk_bus rising edge is, then 01, 10, 11), and because one
+-- clkmux2 then switches both clocks together on DS80: the phase cannot move across a
+-- switch. The 50 % duty matters: the ena_cnt below ticks on the falling edge.
+--
+-- The sdc keeps clk_bus and clk_mem related (a divide-by-4) and cuts the fixed PLL
+-- outputs general[0] (CLK_GS) and general[2] (CLK_VID) asynchronous against the two
+-- {clk_mem, clk_bus} groups, so what crosses those cuts is synchronised by design:
+-- the cdc_fifo handshakes of the SDRAM bridge and the video CDC. What the Xilinx PLL
+-- gave and this one does not:
 --
 --   clk_gs  = clk_28, not a second 28.125 MHz PLL output of the same frequency and
---             phase; it stays out of the bus mux, the General Sound part of the machine
---             runs at 28 MHz in both video modes
---   clk_sdr = 112.5 MHz, not the 84.375 MHz of the Xilinx PLL: the SDRAM bridge of this
---             port is clocked at 112.5 MHz
+--             phase; it stays out of the memory mux, the General Sound part of the
+--             machine runs at 28 MHz in both video modes
+--   clk_sdr = 112.5 / 96.428571 MHz, not the 84.375 MHz of the Xilinx PLL: the SDRAM
+--             side of this port runs at 4x the bus clock (the CPU at turbo 8x), and
+--             clk_bus with it (the two DS80 settings move together)
 --   clk_12, clk_8 = '0': profi.vhd has both declarations commented out and routes them
 --             only to the MIDI clock and the FT812 clock pin drivers of the
 --             karabas_go/mini tops, which this port does not use
+--
+-- Resets: ARESET = not locked, the upstream meaning. RESET_MEM stretches it in the
+-- clk_mem domain (async assert, synchronous release, at least 16 clk_mem long) for
+-- the memory-side logic, which needs its reset released on the clock it runs on.
 --
 -- clk_adc carries the pixel enable instead of the bus clock: a MiSTer core clocks its
 -- video chain with one clock, so what it needs is the enable that the gated clk_rgb runs
@@ -44,10 +69,10 @@ port (
 	CLK			: in std_logic;
 	DS80			: in std_logic;
 	
-	CLK_BUS		: buffer std_logic; -- 28 / 24
+	CLK_BUS		: buffer std_logic; -- 28 / 24 (= CLK_SDR / 4)
 	CLK_8			: buffer std_logic; -- 8 (the FDC, the FT812 clock output)
 	CLK_GS		: buffer std_logic; -- 28 in both video modes (General Sound)
-	CLK_SDR		: buffer std_logic; -- 84 (sdram)
+	CLK_SDR		: buffer std_logic; -- clk_mem: 112.5 / 96.428571 (sdram)
 	CLK_12      : buffer std_logic; -- 12
 	CLK_RGB 		: buffer std_logic; -- 7 / 12
 	CLK_VGA		: buffer std_logic; -- 28 / 24
@@ -72,7 +97,12 @@ port (
 	
 	TURBO			: in std_logic_vector(1 downto 0);
 	WAIT_CPU		: in std_logic;
-	ARESET 		: out std_logic
+	ARESET 		: out std_logic;
+
+	-- Stage 2 additions (upstream maps none of them; profi's U1 does):
+	CLK_VID		: out std_logic;    -- 112.5 fixed (the video clock)
+	BUS_PHASE	: out std_logic_vector(1 downto 0); -- clk_bus phase, clk_mem domain
+	RESET_MEM	: out std_logic     -- not locked, stretched in clk_mem
 );
 end clock;
 
@@ -80,9 +110,14 @@ architecture rtl of clock is
 
 signal ena_cnt : std_logic_vector(5 downto 0) := "000000";
 signal locked : std_logic := '0';
-signal clk_28, clk_24 : std_logic;
+signal not_locked : std_logic;
+signal clk_28, clk_96 : std_logic;
 signal clk_112 : std_logic;
-signal clk_bus_i, clk_rgb_i : std_logic;  -- the mux and the gate, wired to the buffer ports
+signal clk_bus_i, clk_mem_i, clk_rgb_i : std_logic;  -- the mux, the divider and the gate, wired to the buffer ports
+signal s1, s2 : std_logic := '1';        -- not_locked, synchronised into clk_mem
+signal rm_cnt : std_logic_vector(3 downto 0) := "0000";  -- the >= 16 clk_mem stretch
+signal r1, r2 : std_logic := '0';        -- two more clk_mem edges after rm_cnt is full
+signal reset_mem_i : std_logic;
 signal acc8 : std_logic_vector(16 downto 0) := (others => '0');
 
 -- The Cyclone V units, declared as components rather than instantiated as
@@ -94,9 +129,19 @@ port (
 	refclk   : in  std_logic;
 	rst      : in  std_logic;
 	outclk_0 : out std_logic; -- 28.125
-	outclk_1 : out std_logic; -- 24.107
+	outclk_1 : out std_logic; -- 24.107 (unconnected)
 	outclk_2 : out std_logic; -- 112.5
+	outclk_3 : out std_logic; -- 96.428571
 	locked   : out std_logic
+);
+end component;
+
+component clkdiv4 is
+port (
+	clk_in  : in  std_logic;
+	rst     : in  std_logic;
+	clk_out : out std_logic;
+	phase   : out std_logic_vector(1 downto 0)
 );
 end component;
 
@@ -119,22 +164,27 @@ end component;
 
 begin
 
--- 50 MHz -> 28.125, 24.107142, 112.5 MHz (rtl/pll.v: one altera_pll, VCO 675 MHz, the
--- counters resolved by Quartus at build time). The sdc cuts clk_bus <-> clk_sdr as
--- asynchronous, so every path between them must go through a cdc_fifo (as the SDRAM
--- bridge and the video CDC do).
+-- 50 MHz -> 28.125 / 24.107142 (unused) / 112.5 / 96.428571 MHz (rtl/pll.v: one
+-- altera_pll, VCO 675 MHz, the counters resolved by Quartus at build time; the open
+-- 24.107 MHz output makes the fitter prune its counter). The 28.125 MHz branch feeds
+-- only CLK_GS, the two fast ones the clkmux2 of clk_mem, which clkdiv4 divides by 4
+-- into the bus clock - the fixed phase between the two clocks and the reason for the
+-- divider are in the header.
 U2: pll port map (
 	refclk   => CLK,
 	rst      => '0',
 	outclk_0 => clk_28,
-	outclk_1 => clk_24,
+	outclk_1 => open,
 	outclk_2 => clk_112,
+	outclk_3 => clk_96,
 	locked   => locked
 );
 CLK_GS  <= clk_28;
-CLK_SDR <= clk_112;
+CLK_SDR <= clk_mem_i;
+CLK_VID <= clk_112;
 
-U9 : clkmux2 port map (clk0 => clk_28, clk1 => clk_24, clk_out => clk_bus_i, sel => ds80);
+U9 : clkmux2 port map (clk0 => clk_112, clk1 => clk_96, clk_out => clk_mem_i, sel => ds80);
+U11: clkdiv4 port map (clk_in => clk_mem_i, rst => reset_mem_i, clk_out => clk_bus_i, phase => BUS_PHASE);
 U10: clkgate port map(clk => clk_bus_i, gclk => clk_rgb_i, en => ena_rgb);
 clk_bus <= clk_bus_i;
 clk_rgb <= clk_rgb_i;
@@ -144,6 +194,35 @@ clk_12 <= '0';
 clk_8 <= '0';
 
 ARESET <= not locked;
+
+-- RESET_MEM: `not locked` for the memory side of the port. The two sample FFs are the
+-- classic asynchronous-assert / synchronous-release synchroniser on clk_mem; rm_cnt (a
+-- clk_mem clock enable away from being freed) and the two-edge chain r1, r2 behind it
+-- stretch the release, so RESET_MEM falls only 17 clk_mem edges (more than 16 whole
+-- periods) after `locked` rose, and always on a clk_mem rising edge. The whole chain
+-- clears asynchronously while the PLL is unlocked, so a re-lock always restarts the
+-- full stretch. clkdiv4 holds its counter at "00" while this is high.
+not_locked <= not locked;
+synchroniser: process (clk_mem_i, not_locked)
+begin
+	if not_locked = '1' then
+		s1 <= '1';
+		s2 <= '1';
+		rm_cnt <= "0000";
+		r1 <= '0';
+		r2 <= '0';
+	elsif rising_edge(clk_mem_i) then
+		s1 <= '0';
+		s2 <= s1;
+		if rm_cnt /= "1111" then
+			rm_cnt <= rm_cnt + 1;
+		end if;
+		r1 <= rm_cnt(3) and rm_cnt(2) and rm_cnt(1) and rm_cnt(0);
+		r2 <= r1;
+	end if;
+end process;
+reset_mem_i <= s2 or not (r1 and r2);
+RESET_MEM <= reset_mem_i;
 
 -- 8 MHz clock enable on clk_bus for the SAA1099 (8 MHz is its clock in the SAM Coupe): a phase accumulator,
 -- 8 / 28.125 * 2^16 = 18641, 8 / 24.107 * 2^16 = 21748 (7.99997 / 7.99993 MHz on average, one clk_bus of jitter).
