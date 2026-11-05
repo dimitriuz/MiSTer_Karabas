@@ -15,6 +15,11 @@ submodule) and writes a generated tree (default `build/upstream/`):
     component (e.g. `opl2_top` in `profi.vhd`) keep theirs;
   * the three init-file rewrites (icons.bit, the VG93 microcode hex, the SAA1099
     compressor LUT) so the paths resolve from the profile's Quartus project dir;
+  * the profi.vhd wait rewrites (core profile only, PROFI_REWRITES): the SDRAM
+    wait of the replaced memory.vhd (`MEM_WAIT`) is declared, mapped and, while
+    turbo is on, fed to the clock's WAIT_CPU and to the `cpu_wait_n` term of the
+    T80 WAIT_n pin (at turbo "11" one T-state is one clk_bus, and only WAIT_n
+    stops the clock that samples DI);
   * `upstream.qip`: the file list of `src/karabas_go.prj` in prj order, as
     `set_global_assignment` lines whose paths are relative to the profile's Quartus
     project dir; `uart.v` goes to library `zxuno` (its Verilog `uart_tx`/`uart_rx`
@@ -73,6 +78,41 @@ INIT_REWRITES = [  # (out-relative file, exact old string, new init path suffix)
     ("src/rtl/sound/saa1099.v", '"saa1099_compressor_lut.hex"',
      "src/rtl/sound/saa1099_compressor_lut.hex"),
 ]
+
+# profi.vhd rewrites (core profile only): the SDRAM wait of
+# rtl/mem/sram_bridge.vhd reaches the CPU through the replaced memory.vhd
+# (MEM_WAIT), clock.vhd's WAIT_CPU and the T80 WAIT_n pin (the cpu_wait_n
+# condition). The elab profile keeps upstream's memory.vhd, which has no
+# MEM_WAIT port, so its profi.vhd stays untouched.
+PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
+    ("src/rtl/profi.vhd",
+     "signal cpu_wait \t\t\t: std_logic;",
+     "signal cpu_wait \t\t\t: std_logic;\nsignal mem_wait \t\t\t: std_logic;"),
+    ("src/rtl/profi.vhd",
+     "\tGS_WAIT_N \t\t=> gs_wait_n,",
+     "\tGS_WAIT_N \t\t=> gs_wait_n,\n\tMEM_WAIT \t\t=> mem_wait,"),
+    ("src/rtl/profi.vhd",
+     "cpu_wait <= '0';",
+     "cpu_wait <= mem_wait when turbo_mode /= \"00\" else '0';"
+     " -- MiSTer: SDRAM wait in turbo"),
+    ("src/rtl/profi.vhd",
+     "cpu_wait_n <= '0' when zc_busy = '1' or ",
+     "cpu_wait_n <= '0' when (mem_wait = '1' and turbo_mode /= \"00\") "
+     "or zc_busy = '1' or "),
+]
+
+
+def apply_profi_rewrites(text):
+    """PROFI_REWRITES over the text of src/rtl/profi.vhd. Every old string must
+    occur exactly once; anything else is an error naming the file and the
+    string."""
+    for rel, old, new in PROFI_REWRITES:
+        n = text.count(old)
+        if n != 1:
+            raise SystemExit(f"{rel}: expected exactly one {old!r}, found {n}")
+        text = text.replace(old, new)
+    return text
+
 
 
 class PortParseError(ValueError):
@@ -262,6 +302,11 @@ def main():
         if s.count(old) != 1:
             raise SystemExit(f"{rel}: expected exactly one {old!r}, found {s.count(old)}")
         p.write_text(s.replace(old, new))
+
+    # ---- the profi.vhd wait rewrites (core profile only) -----------------------
+    if args.profile == "core":
+        p = out / "src/rtl/profi.vhd"
+        p.write_text(apply_profi_rewrites(p.read_text(errors="replace")))
 
     # ---- the compize_proto rewrite over the compiled (qip-kept) VHDL ----------
     vmods, vhd_ents = {}, set()

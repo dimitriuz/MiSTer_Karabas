@@ -351,6 +351,55 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertIn("nosuchmodule", msg)
         self.assertIn("B=2", msg)
 
+    # ---- profi.vhd SDRAM-wait rewrites (Task 9) --------------------------------
+
+    PROFIS = "src/rtl/profi.vhd"
+
+    def upstream_profi(self):
+        return (UPSTREAM / "src/rtl/profi.vhd").read_text(errors="replace")
+
+    def test_profi_rewrites_on_real_text(self):
+        # Every new string lands exactly once; rewrite 3's old line is gone and
+        # the two upstream comment lines above it are untouched.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        for _rel, _old, new in m.PROFI_REWRITES:
+            self.assertEqual(out.count(new), 1)
+        self.assertEqual(out.count("cpu_wait <= '0';"), 0)
+        self.assertEqual(
+            out.count("-- wait always disabled\n"
+                      "-- actual wait signal is controlled by ena_cpu\n"), 1)
+
+    def test_profi_rewrites_anchor_missing(self):
+        m = load_tool_module()
+        with self.assertRaises(SystemExit) as ctx:
+            m.apply_profi_rewrites("-- some other file\n")
+        msg = str(ctx.exception)
+        self.assertIn(self.PROFIS, msg)
+        self.assertIn("signal cpu_wait", msg)
+
+    def test_profi_rewrites_anchor_duplicated(self):
+        m = load_tool_module()
+        line = "signal cpu_wait \t\t\t: std_logic;"
+        text = self.upstream_profi().replace(line, line + "\n" + line)
+        with self.assertRaises(SystemExit) as ctx:
+            m.apply_profi_rewrites(text)
+        msg = str(ctx.exception)
+        self.assertIn(self.PROFIS, msg)
+        self.assertIn("signal cpu_wait", msg)
+
+    def test_profi_rewrites_core_only(self):
+        # The rewritten profi.vhd maps the MEM_WAIT port of the replaced
+        # memory.vhd, so only the core profile may carry the rewrites; the elab
+        # profile keeps upstream's memory.vhd (no MEM_WAIT) and profi.vhd as is.
+        m = load_tool_module()
+        core = (prepared("core") / "src/rtl/profi.vhd").read_text(errors="replace")
+        elab = (prepared("elab") / "src/rtl/profi.vhd").read_text(errors="replace")
+        for _rel, _old, new in m.PROFI_REWRITES:
+            self.assertEqual(core.count(new), 1)
+            self.assertEqual(elab.count(new), 0)
+        self.assertEqual(elab.count("cpu_wait <= '0';"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
