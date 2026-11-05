@@ -69,7 +69,7 @@ Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, I
 
 ## Known limitations (stage 1)
 
-- CPU turbo above 7 MHz may crash: the SDRAM bridge has no wait path yet (stage 2).
+- CPU turbo (2x/4x/8x) runs with SDRAM wait states: the CPU is held while a read is outstanding, so turbo is slower than on the Karabas board.
 - General Sound is disabled.
 - No RTC, mouse, joysticks, disks or tape yet.
 - 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
