@@ -15,7 +15,7 @@ little endian) and reloading the core. Screenshots are in `stage1-shots/`.
 | Core loads, `boot.rom` streamed, ROMain menu at 50 Hz | PASS | `romain-menu-50hz.png` (608x272) |
 | ROMain menu at 60 Hz (VSync = 60 Hz) | PASS | `romain-menu-60hz.png` (608x240) |
 | Spectrum-mode video (Sinclair 128 menu) at 50 Hz | PASS after fix ef76147 | before: `spectrum128-before-blank-fix.png` (72x305, black); after: `spectrum128-menu-50hz.png` (376x304) |
-| Spectrum-mode video at 60 Hz | **FAIL** | `spectrum128-menu-60hz-broken.png`: torn, colour bytes rotated |
+| Spectrum-mode video at 60 Hz | PASS after fix d3fa0f0 (2026-11-05) | before: `spectrum128-menu-60hz-broken.png` (torn); after: `spectrum128-menu-60hz.png`, `basic128-print-60hz.png` (376x248); 50 Hz rechecked (376x304) |
 | Keyboard: menu navigation (cursor down, Enter) | PASS | selection moves; Sinclair 128K starts |
 | Keyboard: `10 PRINT 1`, `RUN` in 128 BASIC | PASS | `basic128-print.png`: `1`, `0 OK, 10:1` |
 | ROM bank PQ-DOS | PASS | `bank-pqdos.png`: ROM-BIOS 0.42d self-test (FDD0/1 Fail: no drives until stage 2) |
@@ -32,13 +32,13 @@ little endian) and reloading the core. Screenshots are in `stage1-shots/`.
    RGB_BLANK (its HDMI frame comes from RGB_PIXEL/RGB_FRAME), so the mismatch only
    shows in this port. The top now inverts it in the Spectrum modes (`vmode[3]` = 0).
 
-2. **60 Hz Spectrum modes: VSYNC outside the vertical blank (open).** In
+2. **60 Hz Spectrum modes: VSYNC outside the vertical blank (fixed, 6d88edb/d3fa0f0).** In
    `pentagon_video.vhd`, with MODE60 = 1 the VSYNC pulse is on character row 27
    (`ver_cnt /= 27`), but the blank covers rows 28-29 (`ver_cnt(5:1) = 14`; the
    comment there says 13). At 50 Hz VSYNC (row 31) lies inside the blank (rows 30-31).
-   MiSTer's scaler needs VSYNC inside the vertical blank. Fix in this port's top, not
-   upstream: regenerate VS (and VBlank) from the blank run on the clk_sdr side, so
-   VS sits inside the vertical blank in every mode.
+   MiSTer's scaler needs VSYNC inside the vertical blank. Fixed in this port's top:
+   `rtl/video/vframe_gen.sv` rebuilds VS and VBlank from the run of fully blank lines,
+   so VS sits inside the vertical blank in every mode.
 
 3. **Turbo hangs from 2x on (open).** The SDRAM bridge returns a read within 12
    clk_bus clocks. A Z80 read at turbo 2x (7 MHz, one T-state = 4 clk_bus) leaves
