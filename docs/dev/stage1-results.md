@@ -23,7 +23,8 @@ little endian) and reloading the core. Screenshots are in `stage1-shots/`.
 | ROM bank FATALL | PASS (menu only) | `bank-fatall.png`: ROMain menu; the image differs from bank 0 only above 0x8000 (CP/M/FATALL), which needs a disk |
 | OSD Reset | PASS | checked by the owner on the board |
 | MiSTer reset button | PASS | checked by the owner on the board |
-| Turbo 2x | **FAIL** | `turbo2x-romain-hang.png`: black screen with ROMain; PQ-DOS hangs the same way at 2x, 4x and 8x |
+| Turbo 2x/4x/8x | PASS after fix 4d633df..b80d0ad (build 15, 2026-11-05) | before: `turbo2x-romain-hang.png` (black, every turbo); after: `turbo2x-romain.png`, `turbo8x-romain.png` (status bar "Turbo: 2x/4x/8x"), `basic128-print-turbo8x.png` (`10 PRINT 1` / `RUN` at 8x), `turbo8x-pqdos.png` (PQ-DOS BIOS boots, measures "Z80 clock: 8.3Mhz") |
+| Turbo off after the wait fix | PASS | 128 BASIC `10 PRINT 1` / `RUN` at 3.5 MHz, 50 Hz; one unrepeated garbage screen (`turbo-off-oneoff-garbage.png`), see finding 5 |
 
 ## Findings
 
@@ -40,13 +41,25 @@ little endian) and reloading the core. Screenshots are in `stage1-shots/`.
    `rtl/video/vframe_gen.sv` rebuilds VS and VBlank from the run of fully blank lines,
    so VS sits inside the vertical blank in every mode.
 
-3. **Turbo hangs from 2x on (open).** The SDRAM bridge returns a read within 12
-   clk_bus clocks. A Z80 read at turbo 2x (7 MHz, one T-state = 4 clk_bus) leaves
-   about 6. The machine needs `WAIT_CPU` (clock.vhd has the input) driven by the
-   bridge while a read is outstanding. The stage-1 limitation "turbo above 7 MHz
-   may crash" understated this: every turbo setting fails.
+3. **Turbo hung from 2x on (fixed, 4d633df/b80d0ad).** The SDRAM bridge returns a
+   read 9-11 clk_bus clocks after the request, and a Z80 read at turbo 2x leaves
+   about 6. The bridge now raises `cpu_wait` while a CPU read is not served yet or
+   its write queue is nearly full. `tools/prepare_upstream.py` feeds it, in turbo
+   only, into both clock.vhd's `WAIT_CPU` (freezes ENA_CPU) and the T80 `WAIT_n`
+   pin. The pin is needed at 8x, where ENA_CPU is high every clock and the
+   registered freeze lands after the T80 latched DI at the end of T2.
+   `sim/tb_turbo_wait.vhd` reproduces the hang without the wait (no HALT at
+   01/10/11) and passes with it. Turbo is slower than on the Karabas board: the
+   PQ-DOS BIOS measures 8.3 MHz at the 8x setting.
 
 4. **Palette (observation).** The machine's default palette puts the normal colours
    at level 4/7 and the bright colours at 6/7 (`video.vhd`), so plain white shows as
    RGB 144. This is upstream's palette. The DS80 extra green bit `GX0` is not carried
    into the 9-bit RGB of this port.
+
+5. **One-off garbage screen at turbo off (not reproduced).** One key-scripted run
+   (reload at turbo off right after an 8x run, menu → Sinclair 128 → 128 BASIC →
+   `10 PRINT 1`) ended on a screen of garbage. The identical script repeated
+   twice, and the steps taken one by one, all gave `0 OK, 10:1`. Most likely the
+   scripted keys landed while the ROM was still starting; it is left on record in
+   case it recurs.
