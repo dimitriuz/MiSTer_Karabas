@@ -150,6 +150,13 @@ set_multicycle_path -hold 1 -from [get_clocks {clk_bus28}] -to [get_clocks {clk_
 set_multicycle_path -setup 2 -from [get_clocks {clk_bus24}] -to [get_clocks {clk_mem96}]
 set_multicycle_path -hold 1 -from [get_clocks {clk_bus24}] -to [get_clocks {clk_mem96}]
 
+# b_done is a toggle: sdram_nowait's b_done_r (clk_mem) is consumed in
+# memory.vhd only through the 2-flop synchroniser b_done_s1 -> b_done_s2
+# into clk_bus, and the logic acts on the second stage alone (the s1 /= s2
+# edge compare), so the first stage may go metastable.
+set_false_path -from [get_registers {*sdram_nowait:U_SDRAM|b_done_r}] \
+	-to [get_registers {*memory:U3|b_done_s1}]
+
 # (the stage 1 sram_bridge cdc_fifo false paths went with the bridge: the
 # no-wait controller has no gray-pointer crossing between these clocks)
 
