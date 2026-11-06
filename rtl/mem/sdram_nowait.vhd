@@ -29,9 +29,12 @@
 --   the sample after E0 is t = 2; after E1 t = 6; E2 is t = 8; after E2 t = 10.
 -- All times below are clk_mem cycles from the start sample S0.
 --
--- CPU M-cycle schedule (the only path for CPU data; MC = "001"/"010" cycles
--- only - I/O and internal cycles, MC = "000", never touch the memory, the
--- I/O device answers them and cpu_dout simply holds). Times for turbo 11;
+-- CPU M-cycle schedule (the only path for CPU data; EVERY T1 starts an
+-- M-cycle: MC is the T80's binary M-cycle number (M1 = "001" .. M5), not a
+-- kind code, and memory reads/writes run in any of M2..M5. I/O and internal
+-- cycles run the same ACTIVE/READ; they resolve to PRECHARGE below and never
+-- write, and in an I/O cycle the T80 takes its DI from the I/O mux, not from
+-- cpu_dout. Times for turbo 11;
 -- at lower turbos a T-state lasts several clk_bus, so E1/E2 and the resolve
 -- sample land later (the start-anchored READ/capture do not move):
 --   S0     start: sample with cpu_ts = "001" and the previous sample's ts
@@ -380,10 +383,12 @@ begin
 			if smp and ready_r = '1' then
 				if cpu_reset_n = '1' and cpu_ts = "001"
 				   and prev_ts /= "001" and in_cycle = '0'
-				   and (cpu_mc = "001" or cpu_mc = "010") then
-					-- start of a CPU M-cycle (MC = 001/010: I/O and internal
-					-- cycles, MC = "000", never touch the memory - the I/O
-					-- device answers them and cpu_dout simply holds)
+				   then
+					-- start of a CPU M-cycle: MC must not gate it (window
+					-- (a) below is the only user of cpu_mc); the latch
+					-- capture of an I/O or internal cycle is harmless -
+					-- the T80 samples I/O data from the I/O mux and
+					-- ignores DI in an internal cycle
 					-- pragma translate_off
 					assert t_next = 0
 						report "sdram_nowait: start sample with the bank busy"
