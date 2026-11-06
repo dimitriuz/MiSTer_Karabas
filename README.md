@@ -74,7 +74,7 @@ Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, I
 
 ## Known limitations (stage 1)
 
-- CPU turbo (2x/4x/8x) runs with SDRAM wait states: the CPU is held while a read is outstanding, so turbo is slower than on the Karabas board.
+- CPU turbo runs without memory wait states (no-wait SDRAM controller).
 - General Sound is disabled.
 - No RTC, mouse, joysticks, disks or tape yet.
 - 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
