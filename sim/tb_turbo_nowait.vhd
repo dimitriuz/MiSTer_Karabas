@@ -5,45 +5,60 @@
 --
 -- Successor of sim/tb_turbo_wait.vhd on the Stage 2 controller: clock +
 -- pll model, the upstream T80s (with the TS_O/MC_O ports, analysed from the
--- prepare_upstream output), rtl/mem/sdram_nowait.vhd and the SDRAM chip model
+-- prepare_upstream output), rtl/replaced/memory.vhd (which instantiates
+-- rtl/mem/sdram_nowait.vhd) and the SDRAM chip model
 -- sim/models/sdram_chip.vhd with ROWS => 64 and REFRESH_US => 500.0, as in
 -- tb_sdram_nowait. No wait path exists at all: WAIT_n = '1', WAIT_CPU = '0'.
 --
--- Wiring (profi.vhd, memory.vhd): T80s CLK => clk_bus, CEN => ENA_CPU,
--- DI => cpu_dout; the controller gets MREQ_n/RD_n/WR_n/IORQ_n, addr =
--- "00000" & A (memory.vhd's main map), wr_en = '1' (every address the TB
--- sees is RAM - memory.vhd's cpu_wr_en is its RAM address decode), din = DO;
--- bus_phase and reset_mem come from clock.vhd. SDRAM_CLK = not clk_mem
+-- Wiring (profi.vhd): T80s CLK => clk_bus, CEN => ENA_CPU, DI => the
+-- memory unit's DO; U3 = rtl/replaced/memory.vhd itself (the real core
+-- memory unit: it decodes the paging map and cpu_wr_en and instantiates
+-- the controller), wired as profi.vhd wires U3 for the ports that matter:
+-- the CPU bus, the clock unit's BUS_PHASE/RESET_MEM, the T80's TS_O/MC_O
+-- and cpu_reset_n, MEM_READY, TURBO_MODE and DS80; the paging inputs carry
+-- a plain Spectrum 128 map (RAM_BANK/RAM_EXT "000", ROM_BANK '0',
+-- EXT_ROM_BANK "00", WOROM/CPM/SCO/SCR/TRDOS/DIVMMC_EN '0', REG_E3 x"00",
+-- AUTOMAP '0', the GS and video ports tied off, loader inactive). The two
+-- video RAMs bind to sim/models/kg_sdpram.vhd. SDRAM_CLK = not clk_mem
 -- delayed 1 ns (the top's altddio behaviour).
 --
--- The program (loaded at 0x0000) runs from SDRAM preloaded straight into the
--- chip model's array (sdram_chip_pkg.sdram_chip_mem, written before the
--- controller's init ends and rewritten between the phases while the CPU is
--- in reset); port B is idle. Program: 256 writes of (256 - i) mod 256 to
--- 0x4000 + i, the sum 0x80 to 0x5000, then INC (HL) over 0x4000..0x400F
--- (each writes its old byte + 1, a read-modify-write through the controller)
--- and PUSH HL (0x4010 -> 0x7FFF <- 0x40, 0x7FFE <- 0x10), then HALT. Every
--- CPU write cycle - the strobes of one cycle are split by WR_n rising - is
--- compared against the expected sequence, EXP_N = 275 writes in all.
+-- The program runs from the boot ROM window (CPU 0x0000, rom_page "10",
+-- ROM_BANK 0 -> SDRAM byte address 0x108000 + A -> chip array index
+-- 16#108000# + A) and works in RAM page "000101" (0x4000..0x7FFF -> index
+-- 16#14000# + A(13:0)); both ranges are preloaded into the chip model's
+-- array (sdram_chip_pkg.sdram_chip_mem, written before the controller's
+-- init ends and rewritten between the phases while the CPU is in reset);
+-- port B is idle. Program: 256 writes of (256 - i) mod 256 to 0x4000 + i,
+-- the sum 0x80 to 0x5000, INC (HL) over 0x4000..0x400F (each writes its
+-- old byte + 1, a read-modify-write through the controller), PUSH HL, then
+-- LD (0x0100),A - a write to a ROM address - and HALT. Every CPU write
+-- cycle (the strobes of one cycle are split by WR_n rising) is compared
+-- against the expected sequence, EXP_N = 276 writes in all; the 276th,
+-- the ROM write, must show on the CPU bus but must NOT reach the chip.
+-- After every phase the chip array itself is checked: RAM 0x4000..0x400F
+-- hold the incremented bytes, 0x5000 holds 0x80, the stack bytes hold the
+-- pushed HL, and the ROM byte at 0x0100 is unchanged - the bus sequence
+-- and the array checks together pin cpu_wr_en to what the controller
+-- latches at the start sample (T1, before MREQ_n falls).
 --
--- Phases: DS80 0 and 1, each at turbo "00" "01" "10" "11". The controller is
--- never reset between phases (a second 100 us init would break the chip's
--- 500 us sliding refresh window); every phase resets only the CPU. With no
--- wait the T-state counts are equal, so the times to HALT must stand in the
--- ratio 8 : 4 : 2 : 1 (the CPU clock is the bus /8, /4, /2, /1). Measured
--- from the first T1 after cpu_reset_n rises (TS_O = "001"; during reset the
--- T80 core holds TS_O = "000") to the clock edge on which HALT_n falls; both
--- are CPU-clock edges, so the ratio is exact - the check requires |t(00) -
--- 2 t(01)|, |t(01) - 2 t(10)| and |t(10) - 2 t(11)| within one clk_bus
--- period of that DS80 mode. Budget per phase: 9 ms (turbo 00 needs ~4.2 ms
--- at DS80 = 0, ~4.9 at DS80 = 1).
+-- Phases: DS80 0 and 1, each at turbo "00" "01" "10" "11". The controller
+-- is never reset between phases (a second 100 us init would break the
+-- chip's 500 us sliding refresh window); every phase resets only the CPU.
+-- With no wait the T-state counts are equal, so the times to HALT must
+-- stand in the ratio 8 : 4 : 2 : 1 (the CPU clock is the bus /8, /4, /2,
+-- /1). Measured from the first T1 after cpu_reset_n rises (TS_O = "001";
+-- during reset the T80 core holds TS_O = "000") to the clock edge on which
+-- HALT_n falls; both are CPU-clock edges, so the ratio is exact - the
+-- check requires |t(00) - 2 t(01)|, |t(01) - 2 t(10)| and |t(10) - 2 t(11)|
+-- within one clk_bus period of that DS80 mode. Budget per phase: 9 ms
+-- (turbo 00 needs ~4.2 ms at DS80 = 0, ~4.9 at DS80 = 1).
 --
--- Per phase the run prints one line, per DS80 setting one line with the four
--- times; the last line is the verdict `tb_turbo_nowait: PASS` or
--- `tb_turbo_nowait: FAIL <reason>`. The chip model's violation counter and
--- the controller's b_overrun must both stay zero over the whole run; the
--- controller's sim-only assertions stop GHDL with severity failure (the run
--- script reports that as a FAIL too).
+-- Per phase the run prints one line, per DS80 setting one line with the
+-- four times; the last line is the verdict `tb_turbo_nowait: PASS` or
+-- `tb_turbo_nowait: FAIL <reason>`. The chip model's violation counter
+-- must stay zero over the whole run (the controller's b_overrun is tied
+-- to open inside memory.vhd); the controller's sim-only assertions stop
+-- GHDL with severity failure (the run script reports that as a FAIL too).
 -------------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;
@@ -97,39 +112,6 @@ architecture sim of tb_turbo_nowait is
 	);
 	end component;
 
-	component sdram_nowait is
-	port (
-		clk_mem   : in  std_logic;
-		reset     : in  std_logic;
-		bus_phase : in  std_logic_vector(1 downto 0);
-		ready     : out std_logic;
-		cpu_reset_n : in std_logic;
-		cpu_ena   : in  std_logic;
-		cpu_ts    : in  std_logic_vector(2 downto 0);
-		cpu_mc    : in  std_logic_vector(2 downto 0);
-		cpu_mreq_n : in std_logic;
-		cpu_rd_n   : in std_logic;
-		cpu_wr_n   : in std_logic;
-		cpu_iorq_n : in std_logic;
-		cpu_addr  : in  std_logic_vector(20 downto 0);
-		cpu_wr_en : in std_logic;
-		cpu_din   : in  std_logic_vector(7 downto 0);
-		cpu_dout  : out std_logic_vector(7 downto 0);
-		b_req   : in  std_logic;
-		b_we    : in  std_logic;
-		b_addr  : in  std_logic_vector(20 downto 0);
-		b_din   : in  std_logic_vector(7 downto 0);
-		b_dout  : out std_logic_vector(7 downto 0);
-		b_done  : out std_logic;
-		b_overrun : out std_logic;
-		sd_ba  : out std_logic_vector(1 downto 0);
-		sd_a   : out std_logic_vector(12 downto 0);
-		sd_dqm : out std_logic_vector(1 downto 0);
-		sd_ras_n, sd_cas_n, sd_we_n : out std_logic;
-		sd_dq  : inout std_logic_vector(15 downto 0)
-	);
-	end component;
-
 	component sdram_chip is
 	generic (
 		T_CK_NS    : real := 8.888889;
@@ -160,8 +142,8 @@ architecture sim of tb_turbo_nowait is
 	);
 	end component;
 
-	-- the program (load at 0x0000), see the header
-	constant PROG_N : natural := 63;
+	-- the program (runs from the ROM window), see the header
+	constant PROG_N : natural := 66;
 	type prog_t is array (0 to PROG_N - 1) of std_logic_vector(7 downto 0);
 	constant PROG : prog_t := (
 		x"31", x"00", x"80",     -- LD SP,0x8000
@@ -196,11 +178,13 @@ architecture sim of tb_turbo_nowait is
 		x"34", x"23",
 		x"34", x"23",
 		x"E5",                   -- PUSH HL
+		x"32", x"00", x"01",     -- LD (0x0100),A - a ROM address
 		x"76"                    -- HALT
 	);
 
-	-- 256 loop writes + the sum + 16 INC (HL) + the two PUSH bytes
-	constant EXP_N : natural := 275;
+	-- 256 loop writes + the sum + 16 INC (HL) + the two PUSH bytes + the
+	-- ROM write (its bus cycle; the chip must not see the write itself)
+	constant EXP_N : natural := 276;
 
 	function e_a (i : natural) return std_logic_vector is
 	begin
@@ -212,8 +196,10 @@ architecture sim of tb_turbo_nowait is
 			return std_logic_vector(to_unsigned(16#4000# + (i - 257), 16));
 		elsif i = 273 then
 			return x"7FFF";
-		else
+		elsif i = 274 then
 			return x"7FFE";
+		else
+			return x"0100";
 		end if;
 	end function;
 
@@ -228,8 +214,10 @@ architecture sim of tb_turbo_nowait is
 			return std_logic_vector(to_unsigned((257 - (i - 257)) mod 256, 8));
 		elsif i = 273 then
 			return x"40";        -- PUSH HL with HL = 0x4010
-		else
+		elsif i = 274 then
 			return x"10";
+		else
+			return x"80";        -- LD (0x0100),A with the sum
 		end if;
 	end function;
 
@@ -249,8 +237,28 @@ architecture sim of tb_turbo_nowait is
 		     & HEX(to_integer(unsigned(v(3 downto 0))) + 1);
 	end function;
 
+	function hx6 (v : natural) return string is
+		variable s : string(1 to 6);
+		variable x : natural := v;
+	begin
+		for i in 0 to 5 loop
+			s(6 - i) := HEX((x mod 16) + 1);
+			x := x / 16;
+		end loop;
+		return s;
+	end function;
+
 	-- VHDL-93 has no image attributes on time/integer/boolean in GHDL's
 	-- --std=93c: the report lines below use these small converters
+	function bstr (b : in boolean) return string is
+	begin
+		if b then
+			return "yes";
+		else
+			return "no";
+		end if;
+	end function;
+
 	function itos (n : in integer) return string is
 		variable s : string(1 to 14) := (others => ' ');
 		variable v : integer := n;
@@ -265,15 +273,6 @@ architecture sim of tb_turbo_nowait is
 			i := i - 1;
 		end loop;
 		return s(i + 1 to 14);
-	end function;
-
-	function bstr (b : in boolean) return string is
-	begin
-		if b then
-			return "yes";
-		else
-			return "no";
-		end if;
 	end function;
 
 	-- the monitor below writes, the test process below reads
@@ -298,10 +297,7 @@ architecture sim of tb_turbo_nowait is
 	signal di_bus : std_logic_vector(7 downto 0) := (others => '0');
 	signal do_bus : std_logic_vector(7 downto 0);
 
-	-- the controller
-	signal cpu_addr_i : std_logic_vector(20 downto 0);
-	signal cpu_wr_en_i : std_logic;
-	signal b_over : std_logic;
+	-- the memory unit (the controller inside it)
 	signal ready  : std_logic;
 
 	-- SDRAM pins
@@ -366,26 +362,39 @@ begin
 		MC_O    => mc_o
 	);
 
-	-- memory.vhd's wiring: the main map starts at word 0 (page 0), the write
-	-- mask is the RAM address part of cpu_wr_en, the loader port B is idle
-	-- (the program is preloaded into the chip model)
-	U_SDRAM: sdram_nowait port map (
-		clk_mem => clk_mem, reset => reset_mem, bus_phase => bus_phase,
-		ready => ready,
-		cpu_reset_n => cpu_reset_n, cpu_ena => ena_cpu,
-		cpu_ts => ts_o, cpu_mc => mc_o,
-		cpu_mreq_n => mreq_n, cpu_rd_n => rd_n, cpu_wr_n => wr_n,
-		cpu_iorq_n => iorq_n,
-		cpu_addr => cpu_addr_i,
-		cpu_wr_en => cpu_wr_en_i,
-		cpu_din => do_bus,
-		cpu_dout => di_bus,
-		b_req => '0', b_we => '0',
-		b_addr => (others => '0'), b_din => (others => '0'),
-		b_dout => open, b_done => open, b_overrun => b_over,
-		sd_ba => sd_ba, sd_a => sd_a, sd_dqm => sd_dqm,
-		sd_ras_n => sd_ras_n, sd_cas_n => sd_cas_n, sd_we_n => sd_we_n,
-		sd_dq => dq_bus
+	-- U3: the real memory unit (paging map, cpu_wr_en, the no-wait
+	-- controller inside it), wired as profi.vhd wires it; the loader and
+	-- the GS/video ports are tied off, the paging inputs carry the plain
+	-- Spectrum 128 map of the header. DI = DO is the profi wiring: the
+	-- controller drives its dout early enough for the CPU's latch edge
+	-- (checked for every read by tb_sdram_nowait).
+	U_MEM: entity work.memory
+	port map (
+		CLK_BUS => clk_bus, CLK_SDR => clk_mem, ARESET => areset,
+		ENA_CPU => ena_cpu, ENA_GS => '1',
+		A => a_bus, D => do_bus,
+		N_MREQ => mreq_n, N_IORQ => iorq_n, N_WR => wr_n, N_RD => rd_n,
+		N_M1 => m1_n,
+		loader_act => '0', loader_ram_a => (31 downto 0 => '0'),
+		loader_ram_do => x"00", loader_ram_wr => '0',
+		DO => di_bus, N_OE => open,
+		GS_A => (20 downto 0 => '0'), GS_D => (7 downto 0 => '0'),
+		GS_DO => open, GS_N_RD => '1', GS_N_WR => '1', GS_N_RFSH => '1',
+		GS_MREQ_N => '1',
+		BUS_PHASE => bus_phase, RESET_MEM => reset_mem,
+		CPU_TS => ts_o, CPU_MC => mc_o, CPU_RESET_N => cpu_reset_n,
+		MEM_READY => ready,
+		SDR_BA => sd_ba, SDR_A => sd_a, SDR_DQM => sd_dqm,
+		SDR_RAS_N => sd_ras_n, SDR_CAS_N => sd_cas_n, SDR_WE_N => sd_we_n,
+		SDR_DQ => dq_bus,
+		RAM_BANK => "000", RAM_EXT => "000", TRDOS => '0',
+		VA => (13 downto 0 => '0'), VID_PAGE => '0', VID_DO => open,
+		VID_RD => '0',
+		DS80 => ds80, CPM => '0', SCO => '0', SCR => '0', WOROM => '0',
+		ROM_BANK => '0', EXT_ROM_BANK => "00",
+		COUNT_BLOCK => '0', CONTENDED => open,
+		DIVMMC_EN => '0', AUTOMAP => '0', REG_E3 => x"00",
+		TURBO_MODE => turbo
 	);
 
 	sdram_clk <= not clk_mem after 1 ns;   -- the top's altddio behaviour
@@ -398,12 +407,6 @@ begin
 		ba => sd_ba, a => sd_a, dqm => sd_dqm, dq => dq_bus,
 		violations => viol, refreshes => n_ref
 	);
-
-	-- memory.vhd's wiring into the controller (VHDL-93 port maps want plain
-	-- signals; wr_en is the pure address part - here: everything is RAM, the
-	-- controller latches it at the start sample, where WR_n is not low yet)
-	cpu_addr_i <= "00000" & a_bus;
-	cpu_wr_en_i <= '1';
 
 	-- every CPU write cycle counted once: several strobes (one per ENA_CPU
 	-- clock while WR_n is low) are one write cycle, split when WR_n rises.
@@ -458,16 +461,56 @@ main: process
 	end procedure;
 
 	-- the program into the chip model's array (the controller is idle while
-	-- this runs: the CPU is in reset and port B is tied off; refreshes never
-	-- touch the array, so nothing races)
+	-- this runs: the CPU is in reset and port B is tied off; refreshes
+	-- never touch the array, so nothing races). ROM page "10" of ROM_BANK
+	-- 0: SDRAM 0x108000 + A; RAM page "000101": SDRAM 0x14000 + A(13:0).
+	-- The chip's byte_addr = {col, row, lane} = col * 2**14 + row * 2 +
+	-- lane = addr(0): the chip index is the byte address (chip header)
 	procedure preload_program is
 	begin
 		for i in 0 to PROG_N - 1 loop
-			sdram_chip_mem(i) := PROG(i);
+			sdram_chip_mem(16#108000# + i) := PROG(i);
 		end loop;
-		for i in PROG_N to 255 loop
-			sdram_chip_mem(i) := x"00";
+		for i in PROG_N to 511 loop
+			sdram_chip_mem(16#108000# + i) := x"00";
 		end loop;
+		for i in 0 to 16383 loop
+			sdram_chip_mem(16#14000# + i) := x"00";
+		end loop;
+	end procedure;
+
+	-- the chip array after HALT: the RAM page must hold what the program
+	-- computed, and the ROM byte LD (0x0100),A aimed at must be untouched
+	-- (cpu_wr_en = 0 for ROM addresses at the controller's sample)
+	procedure check_bytes (byte_bad : out boolean) is
+		variable want : std_logic_vector(7 downto 0);
+	begin
+		byte_bad := false;
+		for k in 0 to 15 loop
+			want := std_logic_vector(to_unsigned((257 - k) mod 256, 8));
+			if sdram_chip_mem(16#14000# + k) /= want then
+				report "tb_turbo_nowait: chip[" & hx6(16#14000# + k)
+					& "] = " & hx2(sdram_chip_mem(16#14000# + k))
+					& ", expected " & hx2(want);
+				byte_bad := true;
+			end if;
+		end loop;
+		if sdram_chip_mem(16#15000#) /= x"80" then
+			report "tb_turbo_nowait: chip[15000] = "
+				& hx2(sdram_chip_mem(16#15000#)) & ", expected 80";
+			byte_bad := true;
+		end if;
+		if sdram_chip_mem(16#17FFF#) /= x"40" or sdram_chip_mem(16#17FFE#) /= x"10" then
+			report "tb_turbo_nowait: chip stack = "
+				& hx2(sdram_chip_mem(16#17FFF#)) & ","
+				& hx2(sdram_chip_mem(16#17FFE#)) & ", expected 40,10";
+			byte_bad := true;
+		end if;
+		if sdram_chip_mem(16#108100#) /= x"00" then
+			report "tb_turbo_nowait: ROM byte written: chip[108100] = "
+				& hx2(sdram_chip_mem(16#108100#)) & ", expected 00";
+			byte_bad := true;
+		end if;
 	end procedure;
 
 	procedure run_phase (name        : in  string;
@@ -475,15 +518,17 @@ main: process
 	                     tbus_v      : inout time;
 	                     halt_at     : inout time;
 	                     phase_bad_v : inout boolean) is
-		variable t0      : time;
-		variable started : boolean := false;
-		variable halted  : boolean := false;
-		variable trel    : time;
+		variable t0       : time;
+		variable started  : boolean := false;
+		variable halted   : boolean := false;
+		variable trel     : time;
+		variable byte_bad : boolean;
 	begin
 		-- fresh CPU reset for this turbo setting; the controller keeps
 		-- running (refresh stays alive through the M1 and reset windows)
 		cpu_reset_n <= '0';
 		turbo       <= tv;
+		halt_at     := 0 ns;    -- reported even when the phase does not halt
 		rise(8);
 		preload_program;
 		mon_idx := 0;
@@ -514,13 +559,14 @@ main: process
 			end if;
 		end loop watch;
 		rise(4);                  -- the monitor has committed by now
+		check_bytes(byte_bad);
 		phase_bad_v := (not halted) or mon_bad or mon_idx /= EXP_N
-		               or b_over = '1' or viol /= 0;
+		               or viol /= 0 or byte_bad;
 		report "tb_turbo_nowait: " & name & " halt at "
 			& itos(halt_at / 1 ns) & " ns, " & itos(mon_idx) & "/"
 			& itos(EXP_N) & " writes ok, halted=" & bstr(halted)
 			& " seq_bad=" & bstr(mon_bad)
-			& " over=" & bstr(b_over = '1') & " viol=" & itos(viol);
+			& " bytes_bad=" & bstr(byte_bad) & " viol=" & itos(viol);
 	end procedure;
 
 	procedure chk_ratio (nm : in string; a, b : in time; tb : in time) is
@@ -580,10 +626,6 @@ begin
 		chk_ratio("t(10) vs 2 t(11)", t10, t11, tbus);
 	end loop mode;
 
-	if b_over = '1' then
-		bad := true;
-		report "tb_turbo_nowait: FAIL b_overrun rose";
-	end if;
 	if viol /= 0 then
 		bad := true;
 		report "tb_turbo_nowait: FAIL chip violations = " & itos(viol);

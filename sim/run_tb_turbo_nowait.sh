@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # GHDL run of the no-wait system testbench: the clock unit (with the sim pll
 # model), the upstream T80s with the prepare_upstream TS_O/MC_O rewrites
-# (analysed from the generated tree), the no-wait controller
-# rtl/mem/sdram_nowait.vhd, the SDRAM chip model with the small geometry of
+# (analysed from the generated tree), rtl/replaced/memory.vhd with its
+# controller rtl/mem/sdram_nowait.vhd and its video-RAM model
+# sim/models/kg_sdpram.vhd, the SDRAM chip model with the small geometry of
 # the tb_sdram_nowait run and the testbench itself. The last line of the
-# output is the verdict, `tb_turbo_nowait: PASS` or `tb_turbo_nowait: FAIL
 # <reason>`, and it exits non-zero on anything but PASS. Called through
 # tools/sim.sh (GHDL is in the karabas-sim:1 image):
 #   tools/sim.sh sim/run_tb_turbo_nowait.sh
@@ -40,6 +40,7 @@ WORK=build/sim
 SRC="sim/models/pll_model.vhd rtl/clk/clkmux2.vhd rtl/clk/clkgate.vhd
      rtl/clk/clkdiv4.vhd rtl/replaced/clock.vhd
      sim/models/sdram_chip.vhd rtl/mem/sdram_nowait.vhd
+     sim/models/kg_sdpram.vhd rtl/replaced/memory.vhd
      $T80/T80_Pack.vhd $T80/T80_MCode.vhd $T80/T80_ALU.vhd $T80/T80_Reg.vhd
      $T80/T80.vhd $T80/T80s.vhd sim/tb_turbo_nowait.vhd"
 
@@ -64,7 +65,7 @@ ghdl -a $STD --workdir="$WORK" $SRC
 # time plus the 100 us init; the stop time only catches a phase that never
 # ends.
 # shellcheck disable=SC2086
-ghdl -r $STD --workdir="$WORK" tb_turbo_nowait --stop-time=40ms "$@" > "$LOG" 2>&1 || true
+ghdl -r $STD --workdir="$WORK" tb_turbo_nowait --stop-time="${TB_STOP:-40ms}" "$@" > "$LOG" 2>&1 || true
 cat "$LOG"
 # The testbench prints its own verdict (see the end of the main process); grep
 # decides here, so that a run that hangs to the stop time or dies in GHDL also
