@@ -461,6 +461,28 @@ class TestPrepareUpstream(unittest.TestCase):
                       "\tCPU_RESET_N \t\t=> cpu_reset_n,\n"
                       "\tMEM_READY \t\t=> MEM_READY,"), 1)
 
+    def test_profi_rewrites_di_bypass(self):
+        # Task 4 fix (build 20): the selector process drives cpu_di_mux and
+        # cpu_di_bus gets ram_do_bus directly when ram_oe_n = '0' (selector
+        # x"00"), so memory data reaches the T80 through one LUT.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(
+            out.count("signal cpu_di_bus\t\t\t: std_logic_vector(7 downto 0);\n"
+                      "signal cpu_di_mux\t\t\t: std_logic_vector(7 downto 0);"), 1)
+        self.assertEqual(out.count("cpu_di_mux <="), 28)
+        self.assertEqual(out.count(
+            "cpu_di_bus <= ram_do_bus when ram_oe_n = '0' else cpu_di_mux;"), 1)
+        # the only cpu_di_bus driver left is the bypass
+        self.assertEqual(out.count("cpu_di_bus <="), 1)
+        # the selector chain and the DI consumers are untouched
+        self.assertEqual(
+            out.count("selector <= \n"
+                      "\tx\"00\" when (ram_oe_n = '0') else -- ram / rom"), 1)
+        self.assertEqual(
+            out.count("cpu_di_bus = x\"DB\" or cpu_di_bus = x\"D3\""), 1)
+        self.assertEqual(out.count("DI\t\t\t\t\t=> cpu_di_bus,"), 2)
+
     def test_profi_rewrites_core_only(self):
         # The rewritten profi.vhd maps the no-wait ports of the replaced
         # memory.vhd and the T80s TS_O/MC_O ports, so only the core profile

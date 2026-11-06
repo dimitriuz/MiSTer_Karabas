@@ -85,6 +85,47 @@ INIT_REWRITES = [  # (out-relative file, exact old string, new init path suffix)
     ("src/rtl/sound/saa1099.v", '"saa1099_compressor_lut.hex"',
      "src/rtl/sound/saa1099_compressor_lut.hex"),
 ]
+# The upstream selector process (verbatim, so a profi.vhd that changed here
+# fails the anchor): generated with _DI_SELECTOR_OLD.replace below.
+_DI_SELECTOR_OLD = (
+    'process (selector, cpu_a_bus, gx0, serial_ms_do_bus, ram_do_bus, mc146818_do_bus, kb_do_bus, zc_do_bus, ts_do_bus, port_7ffd_reg, port_dffd_reg,' + "\n"
+    '\t\t\tvid_attr, port_eff7_reg, joy_bus, ms_z, ms_b, ms_x, ms_y, port_xxC7_reg, port_008b_reg,' + "\n"
+    '\t\t\tport_018b_reg, port_028b_reg, gs_do_bus, ide_do_bus, fdd_do_bus, TAPE_IN, ' + "\n"
+    '\t\t\tzifi_do_bus, zxuno_uart_do_bus, zxuno_addr_to_cpu, opl3_port_cs, opl3_do_bus)' + "\n"
+    'begin' + "\n"
+    '\tcase selector is' + "\n"
+    '\t\twhen x"00" => cpu_di_bus <= ram_do_bus;' + "\n"
+    '\t\twhen x"01" => cpu_di_bus <= mc146818_do_bus;' + "\n"
+    '\t\twhen x"02" => cpu_di_bus <= GX0 & not(TAPE_IN) & kb_do_bus;' + "\n"
+    '\t\twhen x"03" => cpu_di_bus <= zc_do_bus;' + "\n"
+    '\t\twhen x"04" => cpu_di_bus <= "11111100";\t' + "\n"
+    '\t\twhen x"05" => cpu_di_bus <= joy_bus;' + "\n"
+    '\t\twhen x"06" => cpu_di_bus <= ts_do_bus;' + "\n"
+    '\t\twhen x"08" => cpu_di_bus <= port_dffd_reg;' + "\n"
+    '\t\twhen x"09" => cpu_di_bus <= port_7ffd_reg;' + "\n"
+    '\t\twhen x"0A" => cpu_di_bus <= ms_z(3 downto 0) & \'1\' & not(ms_b(2)) & not(ms_b(0)) & not(ms_b(1)); -- D0=right, D1 = left, D2 = middle, D3 = fourth, D4..D7 - wheel' + "\n"
+    '\t\twhen x"0B" => cpu_di_bus <= ms_x;' + "\n"
+    '\t\twhen x"0C" => cpu_di_bus <= ms_y;' + "\n"
+    '\t\twhen x"0D" => cpu_di_bus <= x"FF"; -- zxuno uart 2 stub' + "\n"
+    '\t\twhen x"0E" => cpu_di_bus <= serial_ms_do_bus;' + "\n"
+    '\t\twhen x"0F" => cpu_di_bus <= zxuno_addr_to_cpu;' + "\n"
+    '\t\twhen x"10" => cpu_di_bus <= zxuno_uart_do_bus;' + "\n"
+    '\t\twhen x"11" => cpu_di_bus <= "0000" & port_xxC7_reg(3) & port_xxC7_reg(2) & \'1\' & \'0\';' + "\n"
+    '\t\twhen x"12" => cpu_di_bus <= x"FF"; -- flash do bus stub' + "\n"
+    '\t\twhen x"13" => cpu_di_bus <= port_008b_reg;' + "\n"
+    '\t\twhen x"14" => cpu_di_bus <= port_018b_reg;' + "\n"
+    '\t\twhen x"15" => cpu_di_bus <= port_028b_reg;' + "\n"
+    '\t\twhen x"16" => cpu_di_bus <= zifi_do_bus;' + "\n"
+    '\t\twhen x"17" => cpu_di_bus <= vid_attr;' + "\n"
+    '\t\twhen x"18" => cpu_di_bus <= fdd_do_bus;' + "\n"
+    '\t\twhen x"19" => cpu_di_bus <= ide_do_bus;' + "\n"
+    '\t\twhen x"1A" => cpu_di_bus <= gs_do_bus;' + "\n"
+    '\t\twhen x"1B" => cpu_di_bus <= opl3_do_bus;' + "\n"
+    "\t\twhen others => cpu_di_bus <= (others => '1');" + "\n"
+    '\tend case;' + "\n"
+    'end process;' + "\n"
+)
+
 
 # profi.vhd rewrites (core profile only). Stage 1's SDRAM-wait rewrites
 # (mem_wait declared, mapped, fed to WAIT_CPU and cpu_wait_n) are gone with
@@ -144,6 +185,28 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "\tCPU_MC \t\t\t=> cpu_mc,\n"
      "\tCPU_RESET_N \t\t=> cpu_reset_n,\n"
      "\tMEM_READY \t\t=> MEM_READY,"),
+    # Task 4 fix (build 20: the capture -> DI path lost clk_bus28 setup by
+    # -1.087 through the selector tree). The process drives a renamed
+    # cpu_di_mux; cpu_di_bus keeps the upstream value, because selector =
+    # x"00" exactly when ram_oe_n = '0' (first, highest-priority branch of
+    # selector <=) and x"00" selects ram_do_bus: memory data reaches the
+    # T80 through one LUT instead of the 28-branch case, the one-clk_mem
+    # path from the SDRAM capture register to the DI latch at turbo 8x.
+    # The sensitivity list is untouched (it never named cpu_di_bus).
+    ("src/rtl/profi.vhd",
+     "signal cpu_di_bus\t\t\t: std_logic_vector(7 downto 0);",
+     "signal cpu_di_bus\t\t\t: std_logic_vector(7 downto 0);\n"
+     "signal cpu_di_mux\t\t\t: std_logic_vector(7 downto 0);"),
+    ("src/rtl/profi.vhd", _DI_SELECTOR_OLD,
+     _DI_SELECTOR_OLD.replace("cpu_di_bus", "cpu_di_mux")),
+    ("src/rtl/profi.vhd",
+     "\tend case;\nend process;\n\nselector <= ",
+     "\tend case;\nend process;\n\n"
+     "-- MiSTer Stage 2: memory reads bypass the selector tree (one LUT\n"
+     "-- between the SDRAM capture and the T80 DI latch, the path with a\n"
+     "-- one clk_mem budget at turbo 8x); x\"00\" == ram_oe_n = '0'.\n"
+     "cpu_di_bus <= ram_do_bus when ram_oe_n = '0' else cpu_di_mux;\n\n"
+     "selector <= "),
 ]
 
 # T80s.vhd rewrites (core profile only). The exception to "never patch T80":
