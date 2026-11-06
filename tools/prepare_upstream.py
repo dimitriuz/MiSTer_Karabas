@@ -15,11 +15,18 @@ submodule) and writes a generated tree (default `build/upstream/`):
     component (e.g. `opl2_top` in `profi.vhd`) keep theirs;
   * the three init-file rewrites (icons.bit, the VG93 microcode hex, the SAA1099
     compressor LUT) so the paths resolve from the profile's Quartus project dir;
-  * the profi.vhd wait rewrites (core profile only, PROFI_REWRITES): the SDRAM
-    wait of the replaced memory.vhd (`MEM_WAIT`) is declared, mapped and, while
-    turbo is on, fed to the clock's WAIT_CPU and to the `cpu_wait_n` term of the
-    T80 WAIT_n pin (at turbo "11" one T-state is one clk_bus, and only WAIT_n
-    stops the clock that samples DI);
+  * the profi.vhd rewrites (core profile only, PROFI_REWRITES): Task 1's
+    clock-port plumbing (CLK_VID buffer port, bus_phase/reset_mem signals,
+    the U1 clock mappings) and Task 4's no-wait wiring (MEM_READY out to the
+    top, cpu_ts/cpu_mc signals, the T80s TS_O/MC_O and the U3 BUS_PHASE/
+    RESET_MEM/CPU_TS/CPU_MC/CPU_RESET_N/MEM_READY mappings). Stage 1's
+    mem_wait rewrites are gone: cpu_wait and cpu_wait_n are upstream's
+    again, no wait reaches the CPU;
+  * the T80s.vhd rewrites (core profile only, T80S_REWRITES): the exception
+    to "never patch T80" — spec §5.2 requires the no-wait controller to see
+    the T-state and M-cycle numbers, so T80s grows TS_O/MC_O output ports
+    wired to its internal TState/MCycle registers (behaviour-neutral
+    visibility);
   * `upstream.qip`: the file list of `src/karabas_go.prj` in prj order, as
     `set_global_assignment` lines whose paths are relative to the profile's Quartus
     project dir; `uart.v` goes to library `zxuno` (its Verilog `uart_tx`/`uart_rx`
@@ -79,26 +86,16 @@ INIT_REWRITES = [  # (out-relative file, exact old string, new init path suffix)
      "src/rtl/sound/saa1099_compressor_lut.hex"),
 ]
 
-# profi.vhd rewrites (core profile only): the SDRAM wait of
-# rtl/mem/sram_bridge.vhd reaches the CPU through the replaced memory.vhd
-# (MEM_WAIT), clock.vhd's WAIT_CPU and the T80 WAIT_n pin (the cpu_wait_n
-# condition). The elab profile keeps upstream's memory.vhd, which has no
-# MEM_WAIT port, so its profi.vhd stays untouched.
+# profi.vhd rewrites (core profile only). Stage 1's SDRAM-wait rewrites
+# (mem_wait declared, mapped, fed to WAIT_CPU and cpu_wait_n) are gone with
+# the no-wait controller: cpu_wait and cpu_wait_n are upstream's again.
+# Stage 2 Task 4 adds the no-wait wiring: MEM_READY out to the top (from the
+# replaced memory.vhd), cpu_ts/cpu_mc signals mapped on the T80s instance
+# (its TS_O/MC_O ports, see T80S_REWRITES) and the U3 memory mappings of
+# BUS_PHASE/RESET_MEM (Task 1's clock signals), CPU_TS/CPU_MC/CPU_RESET_N/
+# MEM_READY. The elab profile keeps upstream's memory.vhd and T80s, so its
+# profi.vhd stays untouched.
 PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
-    ("src/rtl/profi.vhd",
-     "signal cpu_wait \t\t\t: std_logic;",
-     "signal cpu_wait \t\t\t: std_logic;\nsignal mem_wait \t\t\t: std_logic;"),
-    ("src/rtl/profi.vhd",
-     "\tGS_WAIT_N \t\t=> gs_wait_n,",
-     "\tGS_WAIT_N \t\t=> gs_wait_n,\n\tMEM_WAIT \t\t=> mem_wait,"),
-    ("src/rtl/profi.vhd",
-     "cpu_wait <= '0';",
-     "cpu_wait <= mem_wait when turbo_mode /= \"00\" else '0';"
-     " -- MiSTer: SDRAM wait in turbo"),
-    ("src/rtl/profi.vhd",
-     "cpu_wait_n <= '0' when zc_busy = '1' or ",
-     "cpu_wait_n <= '0' when (mem_wait = '1' and turbo_mode /= \"00\") "
-     "or zc_busy = '1' or "),
     # Task 1 (stage 2): clock.vhd grows CLK_VID (fixed 112.5 MHz), BUS_PHASE
     # and RESET_MEM; profi carries the video clock as a buffer port and the
     # other two as signals (Task 4 maps them on to U3 = memory).
@@ -120,20 +117,71 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "\tCLK_VID  \t\t=> CLK_VID,\n"
      "\tBUS_PHASE \t\t=> bus_phase,\n"
      "\tRESET_MEM \t\t=> reset_mem,"),
+    # Task 4 (stage 2): the no-wait controller's wiring. MEM_READY out, the
+    # binary T-state/M-cycle numbers of the T80s (Task 3's controller needs
+    # them; the G_T80pa generate is left alone — the core selects USE_T80s=1),
+    # and U3's new ports.
+    ("src/rtl/profi.vhd",
+     "\tCLK_12: buffer std_logic;",
+     "\tCLK_12: buffer std_logic;\n\tMEM_READY : out std_logic;"),
+    ("src/rtl/profi.vhd",
+     "signal cpu_wait \t\t\t: std_logic;",
+     "signal cpu_wait \t\t\t: std_logic;\n"
+     "signal cpu_ts : std_logic_vector(2 downto 0);\n"
+     "signal cpu_mc : std_logic_vector(2 downto 0);"),
+    # (the DO line below occurs in both CPU generates; the two-line context
+    # with `-- memory manager` selects the G_T80s one)
+    ("src/rtl/profi.vhd",
+     "\tDO\t\t\t\t\t=> cpu_do_bus\n);\nend generate;\n\n\n-- memory manager",
+     "\tDO\t\t\t\t\t=> cpu_do_bus,\n\tTS_O\t\t\t\t=> cpu_ts,\n"
+     "\tMC_O\t\t\t\t=> cpu_mc\n);\nend generate;\n\n\n-- memory manager"),
+    ("src/rtl/profi.vhd",
+     "\tGS_WAIT_N \t\t=> gs_wait_n,",
+     "\tGS_WAIT_N \t\t=> gs_wait_n,\n"
+     "\tBUS_PHASE \t\t=> bus_phase,\n"
+     "\tRESET_MEM \t\t=> reset_mem,\n"
+     "\tCPU_TS \t\t\t=> cpu_ts,\n"
+     "\tCPU_MC \t\t\t=> cpu_mc,\n"
+     "\tCPU_RESET_N \t\t=> cpu_reset_n,\n"
+     "\tMEM_READY \t\t=> MEM_READY,"),
+]
+
+# T80s.vhd rewrites (core profile only). The exception to "never patch T80":
+# spec §5.2 requires the no-wait controller to see the T-state and M-cycle
+# numbers, so T80s grows two output ports wired to its internal TState/MCycle
+# registers. Behaviour-neutral visibility: no existing signal changes.
+T80S_REWRITES = [  # (out-relative file, exact old string, exact new string)
+    ("src/rtl/t80se/T80s.vhd",
+     "\t\tDO      : out std_logic_vector(7 downto 0)\n\t);",
+     "\t\tDO      : out std_logic_vector(7 downto 0);\n"
+     "\t\tTS_O    : out std_logic_vector(2 downto 0);\n"
+     "\t\tMC_O    : out std_logic_vector(2 downto 0)\n\t);"),
+    ("src/rtl/t80se/T80s.vhd",
+     "\tsignal TState\t\t: std_logic_vector(2 downto 0);\n\nbegin\n",
+     "\tsignal TState\t\t: std_logic_vector(2 downto 0);\n\nbegin\n\n"
+     "\tTS_O <= TState;\n\tMC_O <= MCycle;\n"),
 ]
 
 
-def apply_profi_rewrites(text):
-    """PROFI_REWRITES over the text of src/rtl/profi.vhd. Every old string must
-    occur exactly once; anything else is an error naming the file and the
-    string."""
-    for rel, old, new in PROFI_REWRITES:
+def apply_rewrites(text, rewrites):
+    """(file, old, new) rewrites over the text; every old string must occur
+    exactly once; anything else is an error naming the file and the string."""
+    for rel, old, new in rewrites:
         n = text.count(old)
         if n != 1:
             raise SystemExit(f"{rel}: expected exactly one {old!r}, found {n}")
         text = text.replace(old, new)
     return text
 
+
+def apply_profi_rewrites(text):
+    """PROFI_REWRITES over the text of src/rtl/profi.vhd."""
+    return apply_rewrites(text, PROFI_REWRITES)
+
+
+def apply_t80s_rewrites(text):
+    """T80S_REWRITES over the text of src/rtl/t80se/T80s.vhd."""
+    return apply_rewrites(text, T80S_REWRITES)
 
 
 class PortParseError(ValueError):
@@ -324,10 +372,12 @@ def main():
             raise SystemExit(f"{rel}: expected exactly one {old!r}, found {s.count(old)}")
         p.write_text(s.replace(old, new))
 
-    # ---- the profi.vhd wait rewrites (core profile only) -----------------------
+    # ---- the profi.vhd and T80s.vhd rewrites (core profile only) -------------
     if args.profile == "core":
         p = out / "src/rtl/profi.vhd"
         p.write_text(apply_profi_rewrites(p.read_text(errors="replace")))
+        p = out / "src/rtl/t80se/T80s.vhd"
+        p.write_text(apply_t80s_rewrites(p.read_text(errors="replace")))
 
     # ---- the compize_proto rewrite over the compiled (qip-kept) VHDL ----------
     vmods, vhd_ents = {}, set()

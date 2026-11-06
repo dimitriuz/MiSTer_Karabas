@@ -351,7 +351,7 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertIn("nosuchmodule", msg)
         self.assertIn("B=2", msg)
 
-    # ---- profi.vhd SDRAM-wait rewrites (Task 9) --------------------------------
+    # ---- profi.vhd rewrites (Task 9 wait removed, Task 4 no-wait) ------------
 
     PROFIS = "src/rtl/profi.vhd"
 
@@ -359,16 +359,18 @@ class TestPrepareUpstream(unittest.TestCase):
         return (UPSTREAM / "src/rtl/profi.vhd").read_text(errors="replace")
 
     def test_profi_rewrites_on_real_text(self):
-        # Every new string lands exactly once; rewrite 3's old line is gone and
-        # the two upstream comment lines above it are untouched.
+        # Every new string lands exactly once; the stage-1 mem_wait strings
+        # are gone and upstream's own `cpu_wait <= '0';` stands again (with
+        # its two comment lines).
         m = load_tool_module()
         out = m.apply_profi_rewrites(self.upstream_profi())
         for _rel, _old, new in m.PROFI_REWRITES:
             self.assertEqual(out.count(new), 1)
-        self.assertEqual(out.count("cpu_wait <= '0';"), 0)
+        self.assertEqual(out.count("cpu_wait <= '0';"), 1)
         self.assertEqual(
             out.count("-- wait always disabled\n"
                       "-- actual wait signal is controlled by ena_cpu\n"), 1)
+        self.assertEqual(out.count("mem_wait"), 0)
 
     def test_profi_rewrites_anchor_missing(self):
         m = load_tool_module()
@@ -376,7 +378,7 @@ class TestPrepareUpstream(unittest.TestCase):
             m.apply_profi_rewrites("-- some other file\n")
         msg = str(ctx.exception)
         self.assertIn(self.PROFIS, msg)
-        self.assertIn("signal cpu_wait", msg)
+        self.assertIn("signal clk_vid", msg)
 
     def test_profi_rewrites_anchor_duplicated(self):
         m = load_tool_module()
@@ -402,8 +404,7 @@ class TestPrepareUpstream(unittest.TestCase):
     def test_profi_rewrites_each_anchor_duplicated(self):
         m = load_tool_module()
         for _rel, old, _new in m.PROFI_REWRITES:
-            line = old.splitlines()[0]
-            text = self.upstream_profi().replace(old, old + "\n" + line, 1)
+            text = self.upstream_profi().replace(old, old + "\n" + old, 1)
             with self.assertRaises(SystemExit) as ctx:
                 m.apply_profi_rewrites(text)
             self.assertIn(self.PROFIS, str(ctx.exception))
@@ -431,10 +432,40 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertEqual(
             out.count("-- signal clk_vid \t\t: std_logic;"), 1)
 
+    def test_profi_rewrites_nowait_strings(self):
+        # Task 4: MEM_READY port, cpu_ts/cpu_mc signals, the G_T80s TS_O/MC_O
+        # mapping and the U3 no-wait mappings, each exactly once with the
+        # documented adjacency.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(
+            out.count("\tCLK_12: buffer std_logic;\n"
+                      "\tMEM_READY : out std_logic;"), 1)
+        self.assertEqual(
+            out.count("signal cpu_wait \t\t\t: std_logic;\n"
+                      "signal cpu_ts : std_logic_vector(2 downto 0);\n"
+                      "signal cpu_mc : std_logic_vector(2 downto 0);"), 1)
+        self.assertEqual(
+            out.count("\tDO\t\t\t\t\t=> cpu_do_bus,\n"
+                      "\tTS_O\t\t\t\t=> cpu_ts,\n"
+                      "\tMC_O\t\t\t\t=> cpu_mc\n"
+                      ");\nend generate;\n\n\n-- memory manager"), 1)
+        # the T80pa instance (the other DO => cpu_do_bus) stays untouched
+        self.assertEqual(out.count("\tDO\t\t\t\t\t=> cpu_do_bus\n);"), 1)
+        self.assertEqual(
+            out.count("\tGS_WAIT_N \t\t=> gs_wait_n,\n"
+                      "\tBUS_PHASE \t\t=> bus_phase,\n"
+                      "\tRESET_MEM \t\t=> reset_mem,\n"
+                      "\tCPU_TS \t\t\t=> cpu_ts,\n"
+                      "\tCPU_MC \t\t\t=> cpu_mc,\n"
+                      "\tCPU_RESET_N \t\t=> cpu_reset_n,\n"
+                      "\tMEM_READY \t\t=> MEM_READY,"), 1)
+
     def test_profi_rewrites_core_only(self):
-        # The rewritten profi.vhd maps the MEM_WAIT port of the replaced
-        # memory.vhd, so only the core profile may carry the rewrites; the elab
-        # profile keeps upstream's memory.vhd (no MEM_WAIT) and profi.vhd as is.
+        # The rewritten profi.vhd maps the no-wait ports of the replaced
+        # memory.vhd and the T80s TS_O/MC_O ports, so only the core profile
+        # may carry the rewrites; the elab profile keeps upstream's
+        # memory.vhd/T80s and profi.vhd as is.
         m = load_tool_module()
         core = (prepared("core") / "src/rtl/profi.vhd").read_text(errors="replace")
         elab = (prepared("elab") / "src/rtl/profi.vhd").read_text(errors="replace")
@@ -442,6 +473,62 @@ class TestPrepareUpstream(unittest.TestCase):
             self.assertEqual(core.count(new), 1)
             self.assertEqual(elab.count(new), 0)
         self.assertEqual(elab.count("cpu_wait <= '0';"), 1)
+
+    # ---- T80s.vhd TS_O/MC_O rewrites (Task 4; the recorded exception to
+    # "never patch T80": spec §5.2 needs the T-state/M-cycle visibility) ------
+
+    T80S = "src/rtl/t80se/T80s.vhd"
+
+    def upstream_t80s(self):
+        return (UPSTREAM / "src/rtl/t80se/T80s.vhd").read_text(errors="replace")
+
+    def test_t80s_rewrites_on_real_text(self):
+        m = load_tool_module()
+        out = m.apply_t80s_rewrites(self.upstream_t80s())
+        for _rel, _old, new in m.T80S_REWRITES:
+            self.assertEqual(out.count(new), 1)
+        # the ports keep the list legal: DO gains its semicolon, MC_O ends
+        # without one, the assignments are concurrent statements after begin
+        self.assertEqual(
+            out.count("\t\tDO      : out std_logic_vector(7 downto 0);\n"
+                      "\t\tTS_O    : out std_logic_vector(2 downto 0);\n"
+                      "\t\tMC_O    : out std_logic_vector(2 downto 0)\n"
+                      "\t);"), 1)
+        self.assertEqual(
+            out.count("begin\n\n\tTS_O <= TState;\n\tMC_O <= MCycle;\n"), 1)
+
+    def test_t80s_rewrites_anchor_missing(self):
+        m = load_tool_module()
+        with self.assertRaises(SystemExit) as ctx:
+            m.apply_t80s_rewrites("-- some other file\n")
+        msg = str(ctx.exception)
+        self.assertIn(self.T80S, msg)
+        self.assertIn("DO      : out std_logic_vector(7 downto 0)", msg)
+
+    def test_t80s_rewrites_each_anchor_missing(self):
+        m = load_tool_module()
+        for _rel, old, _new in m.T80S_REWRITES:
+            text = self.upstream_t80s().replace(old, "", 1)
+            self.assertNotEqual(text, self.upstream_t80s())
+            with self.assertRaises(SystemExit) as ctx:
+                m.apply_t80s_rewrites(text)
+            self.assertIn(self.T80S, str(ctx.exception))
+
+    def test_t80s_rewrites_each_anchor_duplicated(self):
+        m = load_tool_module()
+        for _rel, old, _new in m.T80S_REWRITES:
+            text = self.upstream_t80s().replace(old, old + "\n" + old, 1)
+            with self.assertRaises(SystemExit) as ctx:
+                m.apply_t80s_rewrites(text)
+            self.assertIn(self.T80S, str(ctx.exception))
+
+    def test_t80s_rewrites_core_only(self):
+        m = load_tool_module()
+        core = (prepared("core") / "src/rtl/t80se/T80s.vhd").read_text(errors="replace")
+        elab = (prepared("elab") / "src/rtl/t80se/T80s.vhd").read_text(errors="replace")
+        for _rel, _old, new in m.T80S_REWRITES:
+            self.assertEqual(core.count(new), 1)
+            self.assertEqual(elab.count(new), 0)
 
 
 if __name__ == "__main__":
