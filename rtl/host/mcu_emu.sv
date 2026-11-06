@@ -7,9 +7,11 @@
 // link, not through this reset.
 //
 // Start sequence (protocol.md section 3, without CAPS, the OSD font, the
-// build ids and the RTC registers): when an hps_io boot.rom download
-// (ioctl_download, index 0) starts, send INIT_START, HW_SETUP board = Go,
-// ROMLOADER on; every ioctl byte as the ROMBANK frames of the address bytes
+// build ids and the RTC registers): once the machine signals mem_ready
+// (SDRAM controller initialised, synchronised here with two flops), and
+// when an hps_io boot.rom download (ioctl_download, index 0) starts, send
+// INIT_START, HW_SETUP board = Go, ROMLOADER on; every ioctl byte as the
+// ROMBANK frames of the address bytes
 // that changed (0..2 = bits 15..8, 23..16, 31..24) plus the ROMDATA frame at
 // the byte's boot.rom address, ioctl_wait held while its frames go out and
 // from the clock ioctl_download rises to S_STRM - there it drops again
@@ -54,6 +56,10 @@ module mcu_emu #(
     // keyboard (ps2_hid)
     input  wire [55:0]  kb_report,
     input  wire         kb_changed,
+
+    // the machine's SDRAM controller ready (sdram_nowait through profi;
+    // async to clk, synchronised below)
+    input  wire         mem_ready,
 
     // link to profi
     output wire         spi_cs_n,
@@ -114,6 +120,16 @@ mcu_spi_master #(
 );
 
 reg waiting;   // a frame went out, its rx_valid has not come back
+
+// ---------------- the mem_ready gate ----------------
+
+// mem_ready is async (clk_mem domain); two flops into clk. The start
+// sequence does not begin before it is 1: while it is 0 the arbiter fires
+// nothing, and the ioctl_wait raise below still holds the download back.
+reg [1:0] mr_sync;
+always @(posedge clk)
+    mr_sync <= reset ? 2'b00 : {mr_sync[0], mem_ready};
+wire mr_ok = mr_sync[1];
 
 // ---------------- boot.rom stream ----------------
 
@@ -177,7 +193,7 @@ always @(*) begin
     if (!waiting && !reset) begin
         case (st)
             S_WAIT:
-                if (ioctl_download && ioctl_index == 16'd0) begin
+                if (mr_ok && ioctl_download && ioctl_index == 16'd0) begin
                     fword   = {C_ISTART, 8'h00, 8'h00};
                     faction = A_START;
                 end
@@ -217,7 +233,7 @@ always @(*) begin
                     faction = A_DONE;
                 end
             S_RUN: begin
-                if (ioctl_download && ioctl_index == 16'd0) begin
+                if (mr_ok && ioctl_download && ioctl_index == 16'd0) begin
                     // a second download: repeat the start sequence
                     fword   = {C_ISTART, 8'h00, 8'h00};
                     faction = A_START;

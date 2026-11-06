@@ -14,6 +14,9 @@
 //                           the address bytes change) is exactly the
 //                           protocol's;
 //   init_and_busy           BUSY 1 until after INIT_DONE, then 0;
+//   mem_ready_gate          mem_ready 0 for 1 ms with a download up: no
+//                           frame at all and ioctl_wait held; after it
+//                           rises the normal start sequence follows;
 //   switch_during_load      status changes while streaming: no 05 frame
 //                           before the ROMLOADER-off frame (the stream
 //                           walk proves it), and the registers hold the
@@ -59,6 +62,7 @@ module tb_mcu_emu;
    reg          osd_reset      = 1'b0;
    reg  [55:0]  kb_report      = 56'd0;
    reg          kb_changed     = 1'b0;
+   reg          mem_ready      = 1'b1;   // the machine's SDRAM ready
    wire         spi_cs_n, spi_sck, spi_mosi;
    wire         sck_dly, mosi_dly;    // the wire transport: the slave and
    assign #5  sck_dly  = spi_sck;     // the decoder see SCK 5 ns and MOSI
@@ -79,6 +83,7 @@ module tb_mcu_emu;
       .ioctl_dout (ioctl_dout), .ioctl_wait (ioctl_wait),
       .status (status), .osd_reset (osd_reset),
       .kb_report (kb_report), .kb_changed (kb_changed),
+      .mem_ready (mem_ready),
       .spi_cs_n (spi_cs_n), .spi_sck (spi_sck), .spi_mosi (spi_mosi),
       .spi_miso (spi_miso),
       .last_reply (last_reply), .reply_valid (reply_valid)
@@ -165,6 +170,7 @@ module tb_mcu_emu;
       .ioctl_wait (),
       .status (128'd0), .osd_reset (1'b0),
       .kb_report (56'd0), .kb_changed (1'b0),
+      .mem_ready (1'b1),
       .spi_cs_n (cs2), .spi_sck (sck2), .spi_mosi (mosi2),
       .spi_miso (miso2),
       .last_reply (rep2_last), .reply_valid (rep2_vld)
@@ -456,6 +462,22 @@ module tb_mcu_emu;
       if (nfrm != 0 || cs_ever_low != 0)
          `FAIL("frames were sent without a boot.rom download")
       if (BUSY !== 1'b1) `FAIL("BUSY is 0 before INIT_START")
+
+      // mem_ready_gate: with the machine's SDRAM controller not ready the
+      // start sequence must not begin: a download up for 1 ms sends no
+      // frame and holds ioctl_wait high; when mem_ready rises the normal
+      // start sequence follows from this very download (the frame walk
+      // below proves INIT_START was its first frame).
+      mem_ready = 1'b0;
+      #1000;
+      ioctl_download = 1'b1;
+      #1000000;
+      if (nfrm != 0 || cs_ever_low != 0)
+         `FAIL("a frame went out while mem_ready was 0")
+      if (ioctl_wait !== 1'b1)
+         `FAIL("ioctl_wait is not held while mem_ready is 0")
+      if (BUSY !== 1'b1) `FAIL("BUSY dropped with mem_ready 0")
+      mem_ready = 1'b1;
 
       // the full download, two status changes while streaming
       ioctl_download = 1'b1;
