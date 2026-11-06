@@ -106,10 +106,14 @@
 -- IO registers: sys/sys.tcl sets FAST_OUTPUT_REGISTER on SDRAM_* and
 -- FAST_INPUT_REGISTER on SDRAM_DQ[*], so every sd_* output comes straight out
 -- of a clk_mem register (dq_r carries 'Z' when the controller does not drive,
--- sdram.sv-style - no logic between register and pin), and the read data is
--- captured into two registers fed directly from sd_dq: cpu_dq_r at S0 + 5 and
--- b_dq_r at W + 5, one register per capture; cpu_dout/b_dout are the byte
--- select off those registers (sdram.sv's dout does the same).
+-- sdram.sv-style - no logic between register and pin). The read data is
+-- captured into two 8-bit byte registers: cpu_byte_r at S0 + 5, b_byte_r at
+-- W + 5. The lane select happens in front of the register (its D input), so
+-- cpu_dout/b_dout are bare register outputs: at turbo 8x the capture -> CPU
+-- DI path has a one clk_mem budget and the byte-select routing no longer
+-- fits behind the register (build 20: clk_bus28 setup -1.087 through the
+-- mux into the T80). The lane select sits on the unconstrained sd_dq ->
+-- register path, exactly as the 16-bit register + trailing mux did before.
 --
 -- Init: NOPs for INIT_CLKS = 11250 + 64 clk_mem (100 us + margin at the
 -- 112.5 MHz rate, also covering 96.43 MHz and the power-up window of the
@@ -212,9 +216,10 @@ signal ba_r  : std_logic_vector(1 downto 0)  := "00";
 signal dqm_r : std_logic_vector(1 downto 0)  := "00";
 signal dq_r  : std_logic_vector(15 downto 0) := (others => 'Z');
 
--- read data capture registers, fed directly from sd_dq
-signal cpu_dq_r : std_logic_vector(15 downto 0) := (others => '0');
-signal b_dq_r   : std_logic_vector(15 downto 0) := (others => '0');
+-- read data capture registers; the byte lane select sits in front of the
+-- register, so the outputs are bare register drives
+signal cpu_byte_r : std_logic_vector(7 downto 0) := (others => '0');
+signal b_byte_r   : std_logic_vector(7 downto 0) := (others => '0');
 signal lane_r   : std_logic := '0';
 signal b_lane_r : std_logic := '0';
 
@@ -270,8 +275,8 @@ begin
 			ba_r      <= "00";
 			dqm_r     <= "00";
 			dq_r      <= (others => 'Z');
-			cpu_dq_r  <= (others => '0');
-			b_dq_r    <= (others => '0');
+			cpu_byte_r <= (others => '0');
+			b_byte_r   <= (others => '0');
 			lane_r    <= '0';
 			b_lane_r  <= '0';
 			s1        <= CMD_NONE;
@@ -312,13 +317,19 @@ begin
 			-- captures (the sample edge of the schedule tables above)
 			if cp_cpu(0) = '1' then
 				if ovr(0) = '1' then
-					cpu_dq_r <= din_r & din_r;   -- write forwarding
+					cpu_byte_r <= din_r;          -- write forwarding
+				elsif lane_r = '1' then
+					cpu_byte_r <= sd_dq(15 downto 8);
 				else
-					cpu_dq_r <= sd_dq;
+					cpu_byte_r <= sd_dq(7 downto 0);
 				end if;
 			end if;
 			if cp_b(0) = '1' then
-				b_dq_r <= sd_dq;
+				if b_lane_r = '1' then
+					b_byte_r <= sd_dq(15 downto 8);
+				else
+					b_byte_r <= sd_dq(7 downto 0);
+				end if;
 			end if;
 			if dn_b(0) = '1' then
 				b_done_r <= not b_done_r;
@@ -573,7 +584,7 @@ sd_ras_n  <= cmd_r(2);
 sd_cas_n  <= cmd_r(1);
 sd_we_n   <= cmd_r(0);
 sd_dq     <= dq_r;
-cpu_dout  <= cpu_dq_r(15 downto 8) when lane_r = '1' else cpu_dq_r(7 downto 0);
-b_dout    <= b_dq_r(15 downto 8) when b_lane_r = '1' else b_dq_r(7 downto 0);
+cpu_dout  <= cpu_byte_r;
+b_dout    <= b_byte_r;
 
 end rtl;
