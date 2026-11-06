@@ -14,8 +14,8 @@
 #     vframe_gen, video_mixer; and clkmux2 branch 0) and general[3]
 #     96.428571 MHz (clkmux2 branch 1).
 #   emu:emu|profi:u_profi|clock:U1|clkmux2:U9|clk_out is the fabric
-#     glitch-free mux output (clk_mem: the SDRAM clock of sram_bridge and
-#     the SDRAM_CLK altddio): two generated clocks on that one pin,
+#     glitch-free mux output (clk_mem: the SDRAM clock of the no-wait
+#     controller and the SDRAM_CLK altddio): two generated clocks on that one pin,
 #     clk_mem112 and clk_mem96, one per PLL input, logically exclusive -
 #     the mux passes one of them at a time. The fitter turns the fabric mux
 #     into a clock-enable cell, so the generated clocks go on its
@@ -24,10 +24,15 @@
 #     plain net).
 #   emu:emu|profi:u_profi|clock:U1|clkdiv4:U11|q: the bus clock, a fabric
 #     register toggling once per 4 clk_mem (50 % duty). clk_bus28 and
-#     clk_bus24 are generated clocks on that register, -divide_by 4 from
-#     general[2] and general[3]; they stay related to clk_mem (the divider
-#     is plain logic and the whole design samples memory against the bus
-#     phase, so between them is ordinary synchronous timing).
+#     clk_bus24 are generated clocks defined ON THE DIVIDER REGISTER'S OWN
+#     CLOCK PIN (-source q|clk, -master_clock clk_mem112/96), so the
+#     analysis carries the full clk_mem launch path (PLL, clkmux2 CLKENA)
+#     as source latency; defining them from the PLL output pin (as the
+#     first stage-2 builds did) starts them at q with zero latency and
+#     invents ~14 ns of bus-vs-mem skew (build 19: clk_bus28 -15.4 ns on a
+#     3.7 ns path). They stay related to clk_mem (the divider is plain
+#     logic and the whole design samples memory against the bus phase, so
+#     between them is ordinary synchronous timing).
 #   clkgate (clock:U1|clkgate:U10, `clk and en_r`): Quartus 17's gated-clock
 #     conversion turns its loads into clk_bus registers with a clock enable
 #     (build 4: "Auto Gated Clock Conversion On", clkgate:U10|gclk appears
@@ -47,10 +52,10 @@
 # (mcu_emu's registers on one side, kg_mcu's synchroniser chain on the
 # other; clk_sys = FPGA_CLK2_50 vs the bus clocks is that link), the quasi-
 # static OSD bits (which only travel as switch frames over that link), the
-# video cdc_fifo handshake between the bus clocks and clk_vid, and the
-# CE_PIXEL sampling of the video outputs. The memory side needs no FIFO
-# since Stage 2: clk_bus and clk_mem are related (the ÷4) and the
-# sram_bridge crosses them with a clock enable on each side.
+# video cdc_fifo handshake between the bus clocks and clk_vid, and the CE_PIXEL
+# sampling of the video outputs. The memory side needs no FIFO since Stage 2:
+# clk_bus and clk_mem are related (the divider) and the SDRAM controller
+# samples the CPU bus at the bus clock's own phase.
 
 derive_pll_clocks
 derive_clock_uncertainty
@@ -68,13 +73,17 @@ create_generated_clock -name clk_mem96 -divide_by 1 -add \
 	[get_pins {emu:emu|profi:u_profi|clock:U1|clkmux2:U9|clk_out~CLKENA*|outclk}]
 
 # clkdiv4: the bus clock is the divider register's q, a quarter of the
-# selected clk_mem. Same two-master pattern as the mux (the second
-# definition carries -add).
-create_generated_clock -name clk_bus28 -divide_by 4 \
-	-source {emu|u_profi|U1|U2|pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk} \
+# selected clk_mem. Defined from the divider register's own clock pin with
+# the mux clocks as masters, so the bus clocks carry the clk_mem source
+# latency (the q|clk pin exists because q is a real register; 2b keeps q
+# non-inverted so the defined polarity matches the register). q's own
+# clock pin is the same net the clk_mem clocks reach, hence -divide_by 4
+# of clk_mem with no extra latency line.
+create_generated_clock -name clk_bus28 -divide_by 4 -master_clock clk_mem112 \
+	-source [get_pins {emu:emu|profi:u_profi|clock:U1|clkdiv4:U11|q|clk}] \
 	[get_registers {emu:emu|profi:u_profi|clock:U1|clkdiv4:U11|q}]
-create_generated_clock -name clk_bus24 -divide_by 4 -add \
-	-source {emu|u_profi|U1|U2|pll_inst|altera_pll_i|general[3].gpll~PLL_OUTPUT_COUNTER|divclk} \
+create_generated_clock -name clk_bus24 -divide_by 4 -add -master_clock clk_mem96 \
+	-source [get_pins {emu:emu|profi:u_profi|clock:U1|clkdiv4:U11|q|clk}] \
 	[get_registers {emu:emu|profi:u_profi|clock:U1|clkdiv4:U11|q}]
 
 # DS80 selects one {clk_mem, clk_bus} pair at a time.

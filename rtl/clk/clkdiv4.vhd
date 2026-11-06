@@ -26,10 +26,13 @@
 -- clock with a register source, clkdiv4|q); no vendor cell is instantiated, so
 -- GHDL analyses this file as it is.
 --
--- rst is synchronous to clk_in: while asserted the counter holds "00" and
--- clk_out '1' (a clock held in its high phase while the machine is in reset);
--- the first edge after its release starts phase 01, so the first clk_out cycle
--- after a reset starts 3 clk_in periods later.
+-- rst is synchronous to clk_in: while asserted the counter holds "11" and
+-- clk_out '0' - the bus clock is held LOW in reset. The memory controller's
+-- cpu_sample is a clk_out rising edge: held high instead, it waited up to 3
+-- extra bus periods for its first sample after release while T80s was
+-- already running. The first clk_in edge after release takes cnt "11" ->
+-- "00" and raises clk_out at BUS_PHASE "00"; q only changes on clk_in
+-- edges, so no runt pulses.
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
@@ -45,8 +48,8 @@ end clkdiv4;
 
 architecture rtl of clkdiv4 is
 
-signal cnt : unsigned(1 downto 0) := "00";
-signal q   : std_logic := '1';
+signal cnt : unsigned(1 downto 0) := "11";
+signal q   : std_logic := '0';
 
 begin
 
@@ -55,8 +58,8 @@ div: process (clk_in)
 begin
 	if rising_edge(clk_in) then
 		if rst = '1' then
-			cnt <= "00";
-			q   <= '1';
+			cnt <= "11";
+			q   <= '0';
 		else
 			nxt := cnt + 1;
 			cnt <= nxt;

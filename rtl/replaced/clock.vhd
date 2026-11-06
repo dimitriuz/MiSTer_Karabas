@@ -201,7 +201,8 @@ ARESET <= not locked;
 -- stretch the release, so RESET_MEM falls only 17 clk_mem edges (more than 16 whole
 -- periods) after `locked` rose, and always on a clk_mem rising edge. The whole chain
 -- clears asynchronously while the PLL is unlocked, so a re-lock always restarts the
--- full stretch. clkdiv4 holds its counter at "00" while this is high.
+-- full stretch. clkdiv4 holds its counter at "11" (bus clock held low) while
+-- this is high.
 not_locked <= not locked;
 synchroniser: process (clk_mem_i, not_locked)
 begin
