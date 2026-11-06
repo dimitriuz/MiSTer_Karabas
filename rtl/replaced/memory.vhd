@@ -112,6 +112,19 @@ architecture RTL of memory is
 	
 	signal is_romDIVMMC : std_logic;
 	signal is_ramDIVMMC : std_logic;
+
+	-- address-only decodes for the controller's sample latch: it latches
+	-- port1_a and cpu_wr_en at the M-cycle's start sample (T1), where
+	-- T80s has not driven MREQ_n low yet (T80s toggles MREQ_n on the
+	-- TState = 1 edge, the end of T1), so the mux may not run through
+	-- is_rom / is_ramDIVMMC, which carry the N_MREQ term (N_OE and the
+	-- DI mux still do, correctly: they act during the cycle). Same
+	-- address terms as those, N_MREQ removed; a stale address (halt,
+	-- refresh counters) is harmless because the controller only latches
+	-- on MREQ cycles.
+	signal rom_a  : std_logic := '0';   -- = is_rom's address part
+	signal romm_a : std_logic := '0';   -- = is_romDIVMMC's
+	signal ramm_a : std_logic := '0';   -- = is_ramDIVMMC's
 	
 	signal vid_spec_wr : std_logic := '0';
 	signal vid_profi_wr : std_logic := '0';
@@ -247,10 +260,14 @@ begin
 
 	-- 1 = the addressed byte may be written: the address part of stage 1's
 	-- port1_wr (RAM and DIVMMC RAM only - ROM reads through this port never
-	-- write). No WR_n term, no ENA_CPU term: the controller latches this on
-	-- the start sample (T1 of the M-cycle), where WR_n is not low yet, and a
-	-- write whose T-states the CPU holds (ENA_CPU = 0) is still a write.
-	cpu_wr_en <= '1' when (is_ram = '1' or is_ramDIVMMC = '1') else '0';
+	-- write). The N_MREQ and N_WR terms of is_ram are dropped ON PURPOSE:
+	-- the controller latches this at the M-cycle's start sample, two
+	-- clk_mem after the clk_bus edge that starts T1, where T80s has not
+	-- driven MREQ_n low yet (it toggles at the end of T1) and WR_n is not
+	-- low either - with the MREQ term the latch saw '0' and every CPU
+	-- write resolved as a precharge. A stale address (halt, refresh
+	-- counters) is harmless: the controller only samples it on MREQ cycles.
+	cpu_wr_en <= '1' when rom_a = '0' or ramm_a = '1' else '0';
 
 	U_SDRAM: entity work.sdram_nowait
 	port map(
@@ -321,9 +338,9 @@ begin
 
 	-- shared port for profi cpu
 	port1_a <= loader_ram_a(20 downto 0) when loader_act = '1' else -- loader ram
-				  "1010000" & A(13 downto 0) when is_romDIVMMC = '1' else -- DIVMMC rom
-				  "11" & REG_E3(5 downto 0) & A(12 downto 0) when is_ramDIVMMC = '1' else -- DIVMMC ram 512 kB from #X180000 SRAM
-				  "100" & EXT_ROM_BANK(1 downto 0) & rom_page(1 downto 0) & A(13 downto 0) when is_rom = '1' else -- rom from sram high bank 
+				  "1010000" & A(13 downto 0) when romm_a = '1' else -- DIVMMC rom
+				  "11" & REG_E3(5 downto 0) & A(12 downto 0) when ramm_a = '1' else -- DIVMMC ram 512 kB from #X180000 SRAM
+				  "100" & EXT_ROM_BANK(1 downto 0) & rom_page(1 downto 0) & A(13 downto 0) when rom_a = '1' else -- rom from sram high bank
 				  '0' & ram_page(5 downto 0) & A(13 downto 0);  -- ram
 	-- (stage 1's port1_rd/port1_wr/port1_di drivers of the sram_bridge are
 	-- gone: the controller reads the CPU strobes itself, its write mask is
@@ -349,6 +366,10 @@ begin
 	
 	is_rom <= '1' when N_MREQ = '0' and A(15 downto 14)  = "00"  and (WOROM = '0' or DIVMMC_EN = '1') else '0';
 	is_ram <= '1' when N_MREQ = '0' and is_rom = '0' else '0';	
+
+	rom_a   <= '1' when A(15 downto 14) = "00" and (WOROM = '0' or DIVMMC_EN = '1') else '0';
+	romm_a  <= '1' when DIVMMC_EN = '1' and (AUTOMAP = '1' or REG_E3(7) = '1') and A(15 downto 13) = "000" else '0';
+	ramm_a  <= '1' when DIVMMC_EN = '1' and (AUTOMAP = '1' or REG_E3(7) = '1') and A(15 downto 13) = "001" else '0';
 	
 	-- 00 - bank 0, CPM
 	-- 01 - bank 1, TRDOS
