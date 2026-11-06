@@ -50,9 +50,13 @@
 --                       two refreshes happened during it (the debt stays
 --                       below 9 - the controller asserts it)
 --   6 portb_under_8x (turbo 11) 300 port B writes one every 2 us while the
---                       mix runs, then CPU reads of every byte; no overrun
+--                       mix runs, then CPU reads of every byte (every 40th
+--                       read replaced by a fetch: the M1 window rule keeps
+--                       the refresh debt alive even for pure read bursts);
+--                       no overrun
 --   7 portb_in_reset    4096 port B writes with cpu_reset_n = '0', one per 4
---                       clk_bus, then CPU reads of all of them
+--                       clk_bus, then CPU reads of all of them, paced by a
+--                       fetch every 40th like case 6
 --   8 ds80_switch (turbo 11) the mix with DS80 toggled every 50 us
 --
 -- The verdict line `tb_sdram_nowait: PASS` / `tb_sdram_nowait: FAIL <reason>`
@@ -203,10 +207,11 @@ architecture sim of tb_sdram_nowait is
 	shared variable n_latch : natural := 0;    -- DI latches
 	shared variable be      : natural := 0;    -- clk_bus rising edges
 	shared variable ds80_run : boolean := false;
+	shared variable ds80_want : std_logic := '0';
 	shared variable mon_on   : boolean := false;
 
-	shared variable seed : unsigned(63 downto 0) :=
-		to_unsigned(107303923, 64);
+	shared variable seed : unsigned(31 downto 0) :=
+		to_unsigned(107303923, 32);
 
 	-- the 50 MHz MiSTer clock
 	signal clk50 : std_logic := '0';
@@ -257,9 +262,11 @@ architecture sim of tb_sdram_nowait is
 	function mc_of (k : kind_t) return std_logic_vector is
 	begin
 		if k = K_M1 or k = K_M1X then
-			return "001";
+			return "001";                -- opcode fetch
+		elsif k = K_RD or k = K_WR then
+			return "010";                -- memory read / write
 		else
-			return "010";
+			return "000";                -- I/O, interrupt acknowledge: MC = 0
 		end if;
 	end function;
 
@@ -345,13 +352,18 @@ U3: sdram_chip
 	violations => viol, refreshes => n_ref
 );
 
--- the DS80 flipper of case 8
+-- the single driver of ds80: it holds ds80_want, and flips every 50 us
+-- while case 8 runs (two drivers would resolve ds80 to 'X' and kill the
+-- clock mux - this process owns the signal alone)
 dsflip: process
 begin
 	loop
-		wait for 50 us;
 		if ds80_run then
+			wait for 50 us;
 			ds80 <= not ds80;
+		else
+			wait for 200 ns;
+			ds80 <= ds80_want;
 		end if;
 	end loop;
 end process;
@@ -508,8 +520,8 @@ begin
 						case kind is
 							when K_IOR | K_IOW =>
 								expd := io_val(cadr);
-								-- the controller read too, on the CPU path
-								shadow := ref(cadr);
+								-- MC = 0: the controller holds cpu_dout,
+								-- so the shadow stands
 							when K_WR =>
 								if cwe = '1' then
 									expd := cdin;   -- the write forwarding
@@ -518,8 +530,7 @@ begin
 								end if;
 								shadow := expd;
 							when K_INT =>
-								expd := shadow;     -- the old capture stands
-								shadow := ref(cadr);
+								expd := shadow;  -- MC = 0: old capture stands
 							when others =>          -- M1, M1X, RD
 								expd := ref(cadr);
 								shadow := expd;
@@ -579,16 +590,19 @@ main: process
 
 	procedure rnd_reset is
 	begin
-		seed := to_unsigned(107303923, 64);
+		seed := to_unsigned(107303923, 32);
 	end procedure;
 
 	-- deterministic LCG draw in [0, n): 64-bit state, the draw takes the
 	-- high bits (the weak part of an LCG is its low bits)
 	impure function rnd (n : natural) return natural is
+		variable p : unsigned(63 downto 0);
 		variable m : unsigned(30 downto 0);
 	begin
-		seed := seed * to_unsigned(1664525, 64) + to_unsigned(1013904223, 64);
-		m := seed(62 downto 32) mod to_unsigned(n, 31);
+		p := seed * to_unsigned(1664525, 32);  -- 32 x 32 -> 64 wide
+		p := p + to_unsigned(1013904223, 64);
+		seed := p(31 downto 0);
+		m := p(62 downto 32) mod to_unsigned(n, 31);
 		return to_integer(m);
 	end function;
 
@@ -632,9 +646,9 @@ main: process
 		check(false, "clk_bus edges stalled");
 	end procedure;
 
-	procedure line_end (constant tag : string; constant bad0 : boolean) is
+	procedure line_end (constant tag : string; constant bad0 : natural) is
 	begin
-		if bad = bad0 then
+		if nbad = bad0 then
 			report "tb_sdram_nowait: " & tag & ": ok";
 		else
 			report "tb_sdram_nowait: FAIL " & tag & " (see the errors above)"
@@ -699,7 +713,7 @@ main: process
 	end procedure;
 
 	variable v      : std_logic_vector(7 downto 0);
-	variable bad0   : boolean;
+	variable bad0   : natural;
 	variable n0     : natural;
 	variable mism   : natural;
 	variable t_init : time := 0 ns;
@@ -743,15 +757,15 @@ cfgs:
 				when 2 => turbo <= "10";
 				when others => turbo <= "11";
 			end case;
-			ds80 <= '0';
+			ds80_want := '0';
 			if dd = 1 then
-				ds80 <= '1';
+				ds80_want := '1';
 			end if;
 			wait for 300 ns;
 			rnd_reset;
 
 			-- case 1: the long random mix
-			bad0 := bad;
+			bad0 := nbad;
 			for i in 1 to MIX_N loop
 				push_mix(false);
 			end loop;
@@ -760,7 +774,7 @@ cfgs:
 				& " d" & natural'image(dd), bad0);
 
 			-- case 2: read X, write X+1 (same word, other lane), fetch X
-			bad0 := bad;
+			bad0 := nbad;
 			push(K_RD, 700002);
 			push(K_WR, 700003, '1', x"9E");
 			push(K_M1, 700002);
@@ -773,7 +787,7 @@ cfgs:
 				& " d" & natural'image(dd), bad0);
 
 			-- case 3: back-to-back writes, same address, different rows
-			bad0 := bad;
+			bad0 := nbad;
 			push(K_WR, 131072, '1', x"11");
 			push(K_WR, 131072, '1', x"22");
 			push(K_WR, 131072, '1', x"33");
@@ -788,7 +802,7 @@ cfgs:
 				& " d" & natural'image(dd), bad0);
 
 			-- case 4: I/O and internal cycles between memory cycles
-			bad0 := bad;
+			bad0 := nbad;
 			push(K_M1, 900004);
 			push(K_IOR, 16#3B#);
 			push(K_INT, 0);
@@ -810,7 +824,7 @@ cfgs:
 
 			if tt = 3 then
 				-- case 5: a memory read with T2 held 20 us by WAIT_CPU
-				bad0 := bad;
+				bad0 := nbad;
 				push(K_M1, 500000);
 				wait_idle("case5-pre");
 				n0 := n_ref;
@@ -827,7 +841,7 @@ cfgs:
 
 			if tt = 3 then
 				-- case 6: port B writes under the running mix at turbo 11
-				bad0 := bad;
+				bad0 := nbad;
 				rnd_reset;
 				for i in 1 to 600 loop
 					push_mix(true);
@@ -838,7 +852,13 @@ cfgs:
 					b_access(PB_BASE + i, v, '1');
 				end loop;
 				wait_idle("case6-mix");
+				-- the M1 rule of the design: even a pure read burst lives on
+				-- the fetch windows, so every 40th cycle is a fetch (480 clk
+				-- stay under the 700 clk refresh clock)
 				for i in 0 to PB_N - 1 loop
+					if i mod 40 = 39 then
+						push(K_M1, IDLE_WORD);
+					end if;
 					push(K_RD, PB_BASE + i);
 				end loop;
 				wait_idle("case6-read");
@@ -846,7 +866,7 @@ cfgs:
 			end if;
 
 			-- case 7: port B while the CPU sits in reset, then CPU reads
-			bad0 := bad;
+			bad0 := nbad;
 			cpu_reset_n <= '0';
 			wait_be(2);
 			for i in 0 to R7_N - 1 loop
@@ -856,6 +876,9 @@ cfgs:
 			end loop;
 			cpu_reset_n <= '1';
 			for i in 0 to R7_N - 1 loop
+				if i mod 40 = 39 then
+					push(K_M1, IDLE_WORD);
+				end if;
 				push(K_RD, R7_BASE + i);
 			end loop;
 			wait_idle("case7");
@@ -864,7 +887,7 @@ cfgs:
 
 			if tt = 3 then
 				-- case 8: the mix while DS80 flips every 50 us
-				bad0 := bad;
+				bad0 := nbad;
 				rnd_reset;
 				ds80_run := true;
 				for i in 1 to 800 loop
@@ -872,6 +895,7 @@ cfgs:
 				end loop;
 				wait_idle("case8");
 				ds80_run := false;
+				wait for 400 ns;          -- let dsflip restore ds80_want
 				line_end("case8 ds80_switch", bad0);
 			end if;
 		end loop;
