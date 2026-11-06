@@ -38,13 +38,21 @@
 --
 -- Cases, each printing one line (`tb_sdram_nowait: <case> ...: ok`), all at
 -- turbo 00/01/10/11 x DS80 0/1 unless noted:
---   1 fetch_read_write  MIX_N random cycles of all kinds over the whole 2 MiB
---                       (8 % of the writes target ROM: wr_en = '0'), every DI
---                       latch compared against the reference model
+--   1 fetch_read_write  MIX_N random instructions over the whole 2 MiB:
+--                       M1 + 0..4 following M-cycles, MC numbers the
+--                       position (M2..M5); 8 % of the writes target ROM
+--                       (wr_en = '0'); every DI latch except internal
+--                       cycles is compared against the reference model,
+--                       and memory reads / writes are counted per
+--                       M-position (each of M2..M5 at least 100 times)
 --   2 rmw_same_address  read X, write X+1 (same word, other lane), fetch X
 --   3 back_to_back_writes to the same address and to different rows, read back
---   4 io_and_internal   I/O and internal cycles between memory cycles; the
---                       memory must be unchanged by them (array check)
+--   4 io_and_internal   I/O and internal M-cycles inside instructions
+--                       after an M1 (MC = their M2..M5 position); I/O
+--                       reads latch the device byte (the profi.vhd mux
+--                       model), internal cycles have no DI check, reads
+--                       after them must still be right; the memory must
+--                       be unchanged by them (array check)
 --   5 wait_in_t2 (turbo 11) memory read whose T2 is held 20 us by WAIT_CPU;
 --                       the byte latched after the wait is right and at least
 --                       two refreshes happened during it (the debt stays
@@ -190,8 +198,10 @@ architecture sim of tb_sdram_nowait is
 		we   : std_logic;
 		d    : std_logic_vector(7 downto 0);
 		stay : time;               -- WAIT_CPU time asserted at E1 (0: none)
+		mc   : std_logic_vector(2 downto 0);  -- the T80 M-cycle number
 	end record;
-	constant CYC_NOP : cyc_t := (K_INT, 0, '1', (others => '0'), 0 ns);
+	constant CYC_NOP : cyc_t :=
+		(K_INT, 0, '1', (others => '0'), 0 ns, "000");
 
 	-- the script queue (main pushes, the driver pops at each cycle end)
 	type cyc_q_t is array (0 to QN - 1) of cyc_t;
@@ -200,6 +210,10 @@ architecture sim of tb_sdram_nowait is
 
 	-- the reference memory model; every write path is mirrored into it
 	shared variable ref : chip_byte_array := (others => (others => 'U'));
+	-- memory accesses per M-position (the MC number of the cycle)
+	type poscnt_t is array (2 to 5) of natural;
+	shared variable cnt_rd : poscnt_t := (others => 0);
+	shared variable cnt_wr : poscnt_t := (others => 0);
 
 	-- results
 	shared variable bad     : boolean := false;
@@ -259,16 +273,6 @@ architecture sim of tb_sdram_nowait is
 	-- the alignment ruling: every clk_bus rising edge is stamped here
 	signal t_bus_rise : time := 0 ns;
 
-	function mc_of (k : kind_t) return std_logic_vector is
-	begin
-		if k = K_M1 or k = K_M1X then
-			return "001";                -- opcode fetch
-		elsif k = K_RD or k = K_WR then
-			return "010";                -- memory read / write
-		else
-			return "000";                -- I/O, interrupt acknowledge: MC = 0
-		end if;
-	end function;
 
 	function slv21 (v : natural) return std_logic_vector is
 	begin
@@ -402,6 +406,7 @@ end process;
 -- the T80s-shaped bus driver: a behavioural model, no T80 instance
 bus_drv: process (clk_bus)
 	variable kind       : kind_t := K_M1;
+	variable cmc        : std_logic_vector(2 downto 0) := "001";
 	variable ts         : natural range 0 to 7 := 0;
 	variable hold       : natural range 0 to 2 := 0;
 	variable cadr       : natural range 0 to 2 * 1024 * 1024 - 1 := 0;
@@ -412,7 +417,6 @@ bus_drv: process (clk_bus)
 	variable gap        : natural range 0 to 15 := 0;
 	variable di         : std_logic_vector(7 downto 0);
 	variable expd       : std_logic_vector(7 downto 0);
-	variable shadow     : std_logic_vector(7 downto 0) := (others => '0');
 
 	procedure pop is
 		variable e : cyc_t;
@@ -420,6 +424,7 @@ bus_drv: process (clk_bus)
 		e := q(qi mod QN);
 		qi := qi + 1;
 		kind := e.k;
+		cmc := e.mc;
 		cadr := e.a;
 		cwe  := e.we;
 		cdin := e.d;
@@ -430,7 +435,7 @@ bus_drv: process (clk_bus)
 	begin
 		ts := 1;
 		ts_o <= "001";
-		mc_o <= mc_of(kind);
+		mc_o <= cmc;
 		cpu_addr <= slv21(cadr);
 		cpu_wr_en <= cwe;
 		cpu_din <= cdin;
@@ -456,6 +461,7 @@ bus_drv: process (clk_bus)
 			start_cyc;
 		else
 			kind := K_M1;
+			cmc := "001";
 			cadr := IDLE_WORD;
 			cwe := '1';
 			cdin := (others => '0');
@@ -512,38 +518,45 @@ begin
 					when 2 =>
 						-- the DI latch edge (T80s: TState = 2, Wait_n = '1')
 						if kind = K_IOR or kind = K_IOW then
-							di := io_val(cadr);
+							di := io_val(cadr);   -- profi.vhd's I/O mux
 						else
 							di := cpu_dout;
 						end if;
-						n_latch := n_latch + 1;
 						case kind is
 							when K_IOR | K_IOW =>
 								expd := io_val(cadr);
-								-- MC = 0: the controller holds cpu_dout,
-								-- so the shadow stands
 							when K_WR =>
 								if cwe = '1' then
 									expd := cdin;   -- the write forwarding
 								else
 									expd := ref(cadr);
 								end if;
-								shadow := expd;
 							when K_INT =>
-								expd := shadow;  -- MC = 0: old capture stands
+								null;     -- no DI check: the T80 ignores it
 							when others =>          -- M1, M1X, RD
 								expd := ref(cadr);
-								shadow := expd;
 						end case;
-						if di /= expd then
-							bad := true;
-							nbad := nbad + 1;
-							report "tb_sdram_nowait: FAIL DI latch at t"
-								& integer'image(now / 1 ns) & " ns: kind "
-								& integer'image(kind_t'pos(kind))
-								& " addr " & integer'image(cadr)
-								& " got " & img8(di) & " want " & img8(expd)
-								severity error;
+						if kind /= K_INT then
+							n_latch := n_latch + 1;
+							if kind = K_RD then
+								cnt_rd(to_integer(unsigned(cmc))) :=
+									cnt_rd(to_integer(unsigned(cmc))) + 1;
+							elsif kind = K_WR then
+								cnt_wr(to_integer(unsigned(cmc))) :=
+									cnt_wr(to_integer(unsigned(cmc))) + 1;
+							end if;
+							if di /= expd then
+								bad := true;
+								nbad := nbad + 1;
+								report "tb_sdram_nowait: FAIL DI latch at t"
+									& integer'image(now / 1 ns) & " ns: kind "
+									& integer'image(kind_t'pos(kind))
+									& " mc "
+									& integer'image(to_integer(unsigned(cmc)))
+									& " addr " & integer'image(cadr)
+									& " got " & img8(di) & " want " & img8(expd)
+									severity error;
+							end if;
 						end if;
 						if kind = K_IOR or kind = K_IOW then
 							-- T80s: RD/WR/IORQ were a one-period pulse
@@ -611,10 +624,15 @@ main: process
 		constant a    : natural;
 		constant we   : std_logic := '1';
 		constant d    : std_logic_vector(7 downto 0) := (others => '0');
-		constant stay : time := 0 ns
+		constant stay : time := 0 ns;
+		constant mc   : std_logic_vector(2 downto 0) := "010"
 	) is
 	begin
-		q(qh mod QN) := (k, a, we, d, stay);
+		if k = K_M1 or k = K_M1X then
+			q(qh mod QN) := (k, a, we, d, stay, "001");
+		else
+			q(qh mod QN) := (k, a, we, d, stay, mc);
+		end if;
 		qh := qh + 1;
 		while qh - qi > 3000 loop
 			wait for 100 ns;
@@ -666,26 +684,53 @@ main: process
 		return a;
 	end function;
 
+	-- one random instruction: an M1 (sometimes with two extra wait edges
+	-- in T2) plus 0..4 further M-cycles; MC is the position number, as on
+	-- the real T80 (the M-cycle counter is binary, not a kind code)
 	procedure push_mix (constant reserve : boolean) is
-		variable k  : kind_t;
-		variable r  : natural;
-		variable we : std_logic;
+		variable k   : kind_t;
+		variable r   : natural;
+		variable len : natural range 1 to 5;
+		variable we  : std_logic;
 	begin
 		r := rnd(100);
-		if    r < 30 then k := K_M1;
-		elsif r < 35 then k := K_M1X;
-		elsif r < 60 then k := K_RD;
-		elsif r < 85 then k := K_WR;
-		elsif r < 92 then k := K_IOR;
-		elsif r < 97 then k := K_IOW;
-		else k := K_INT;
+		if    r < 25 then len := 1;
+		elsif r < 50 then len := 2;
+		elsif r < 70 then len := 3;
+		elsif r < 85 then len := 4;
+		else len := 5;
 		end if;
-		we := '0';
-		if rnd(100) < 88 then
-			we := '1';
+		if rnd(100) < 8 then
+			push(K_M1X, mix_addr(reserve));
+		else
+			push(K_M1, mix_addr(reserve));
 		end if;
-		push(k, mix_addr(reserve), we,
-			std_logic_vector(to_unsigned(rnd(256), 8)));
+		for p in 2 to len loop
+			r := rnd(100);
+			if p = len and len >= 3 then
+				-- the tail of a longer instruction favours memory
+				if    r < 45 then k := K_RD;
+				elsif r < 88 then k := K_WR;
+				elsif r < 91 then k := K_IOR;
+				elsif r < 94 then k := K_IOW;
+				else k := K_INT;
+				end if;
+			else
+				if    r < 30 then k := K_RD;
+				elsif r < 60 then k := K_WR;
+				elsif r < 72 then k := K_IOR;
+				elsif r < 78 then k := K_IOW;
+				else k := K_INT;
+				end if;
+			end if;
+			we := '0';
+			if rnd(100) < 88 then
+				we := '1';
+			end if;
+			push(k, mix_addr(reserve), we,
+				std_logic_vector(to_unsigned(rnd(256), 8)),
+				0 ns, std_logic_vector(to_unsigned(p, 3)));
+		end loop;
 	end procedure;
 
 	-- one port B access: b_req rising, completion on the b_done toggle
@@ -717,6 +762,8 @@ main: process
 	variable n0     : natural;
 	variable mism   : natural;
 	variable t_init : time := 0 ns;
+	variable cr     : poscnt_t;
+	variable cw     : poscnt_t;
 begin
 
 	-- the reference model and the chip boot with the same pattern (back
@@ -764,14 +811,33 @@ cfgs:
 			wait for 300 ns;
 			rnd_reset;
 
-			-- case 1: the long random mix
+			-- case 1: the long random instruction stream; the case line
+			-- prints the memory accesses per M-position (M2..M5)
 			bad0 := nbad;
+			cr := cnt_rd;
+			cw := cnt_wr;
 			for i in 1 to MIX_N loop
 				push_mix(false);
 			end loop;
 			wait_idle("case1");
+			for p in 2 to 5 loop
+				check(cnt_rd(p) - cr(p) >= 100,
+					"case1: only " & integer'image(cnt_rd(p) - cr(p))
+					& " memory reads at position M" & natural'image(p));
+				check(cnt_wr(p) - cw(p) >= 100,
+					"case1: only " & integer'image(cnt_wr(p) - cw(p))
+					& " memory writes at position M" & natural'image(p));
+			end loop;
 			line_end("case1 fetch_read_write t" & natural'image(tt)
-				& " d" & natural'image(dd), bad0);
+				& " d" & natural'image(dd)
+				& " r" & natural'image(cnt_rd(2) - cr(2))
+				& "," & natural'image(cnt_rd(3) - cr(3))
+				& "," & natural'image(cnt_rd(4) - cr(4))
+				& "," & natural'image(cnt_rd(5) - cr(5))
+				& " w" & natural'image(cnt_wr(2) - cw(2))
+				& "," & natural'image(cnt_wr(3) - cw(3))
+				& "," & natural'image(cnt_wr(4) - cw(4))
+				& "," & natural'image(cnt_wr(5) - cw(5)), bad0);
 
 			-- case 2: read X, write X+1 (same word, other lane), fetch X
 			bad0 := nbad;
@@ -801,21 +867,23 @@ cfgs:
 			line_end("case3 back_to_back_writes t" & natural'image(tt)
 				& " d" & natural'image(dd), bad0);
 
-			-- case 4: I/O and internal cycles between memory cycles
+			-- case 4: I/O and internal M-cycles inside instructions (MC
+			-- numbers their position after the M1 of the instruction)
 			bad0 := nbad;
 			push(K_M1, 900004);
-			push(K_IOR, 16#3B#);
-			push(K_INT, 0);
-			push(K_WR, 900040, '1', x"5A");
-			push(K_IOW, 16#1F#, '1', x"77");
-			push(K_INT, 0);
-			push(K_RD, 900040);
-			push(K_IOR, 16#FF#);
+			push(K_IOR, 16#3B#, '1', x"00", 0 ns, "010");
+			push(K_M1, 900006);
+			push(K_INT, 0, '1', x"00", 0 ns, "010");
+			push(K_WR, 900040, '1', x"5A", 0 ns, "011");
+			push(K_M1, 900010);
+			push(K_IOW, 16#1F#, '1', x"77", 0 ns, "010");
+			push(K_INT, 0, '1', x"00", 0 ns, "011");
+			push(K_RD, 900040, '1', x"00", 0 ns, "100");
 			push(K_M1, 900080);
-			push(K_WR, 900120, '0', x"12");   -- ROM: must not be written
-			push(K_IOR, 16#7E#);
-			push(K_INT, 0);
-			push(K_RD, 900120);
+			push(K_WR, 900120, '0', x"12", 0 ns, "010");  -- ROM: no write
+			push(K_IOR, 16#7E#, '1', x"00", 0 ns, "011");
+			push(K_INT, 0, '1', x"00", 0 ns, "100");
+			push(K_RD, 900120, '1', x"00", 0 ns, "101");
 			wait_idle("case4");
 			check(sdram_chip_mem(900120) = ref(900120),
 				"case4: the ROM write left the array alone");
