@@ -171,6 +171,7 @@ mcu_emu u_mcu (
 
 	.kb_report(kb_report),
 	.kb_changed(kb_changed),
+	.mem_ready(mem_ready),
 
 	.spi_cs_n(mcu_cs_n),
 	.spi_sck(mcu_sck),
@@ -190,8 +191,8 @@ wire [8:0]  rgb;
 wire        rgb_hs, rgb_vs, rgb_blank, rgb_clk, vga_clk;
 wire        rgb_frame, rgb_pixel, adc_clk;
 wire [3:0]  vmode;               // ds80, screen mode, vsync (video blank polarity)
-wire [15:0] profi_audio_l, profi_audio_r;
 wire [1:0]  sdr_dqm;
+wire        mem_ready;         // sdram_nowait init done (memory.vhd -> mcu_emu)
 
 // The VHDL entity binds by name; generics per the Stage-1 constraints.
 profi #(
@@ -212,7 +213,7 @@ profi #(
 	.CLK_12(),                    // '0' in clock.vhd; FT812/MIDI only
 	.CLK_8(),
 	.RESET(profi_reset),
-	.ARESET(profi_areset),        // the only reset of sram_bridge/sdram
+	.ARESET(profi_areset),        // the one reset of sdram_nowait (via profi)
 	.KB_RESET(profi_kb_reset),
 
 	.UART_RX(1'b1),               // no UART, SD card, CF, tape or ADC here:
@@ -223,7 +224,7 @@ profi #(
 	.MWR_N(),
 	.MRD_N(),
 
-	.SDR_BA(SDRAM_BA),            // memory.vhd -> sram_bridge -> sdram.sv
+	.SDR_BA(SDRAM_BA),            // memory.vhd -> sdram_nowait -> the SDRAM
 	.SDR_A(SDRAM_A),
 	.SDR_CLK(),                   // the top drives SDRAM_CLK (altddio below)
 	.SDR_DQM(sdr_dqm),
@@ -231,9 +232,9 @@ profi #(
 	.SDR_CAS_N(SDRAM_nCAS),
 	.SDR_RAS_N(SDRAM_nRAS),
 	.SDR_DQ(SDRAM_DQ),
+	.MEM_READY(mem_ready),        // init done, gate of mcu_emu's start
 
 	.SD_CS_N(),
-	.SD_DI(),
 	.SD_DO(1'b1),
 	.SD_CLK(),
 	.SD_DET_N(1'b1),
@@ -298,8 +299,9 @@ assign SDRAM_nCS = 1'b0;
 assign SDRAM_CKE = 1'b1;
 
 // SDRAM_CLK: the memory clock leaves through a DDR output register, the
-// same trick as at the end of rtl/mem/sdram.sv (copied from there verbatim,
-// the .outclock net is clk_sdr = clk_mem here and the dataout the MiSTer pin).
+// trick of upstream's rtl/mem/sdram.sv (gone with Stage 2; sim/tb_turbo_nowait
+// models the same clock as not clk_mem delayed 1 ns). The .outclock net is
+// clk_sdr = clk_mem here and the dataout the MiSTer pin.
 altddio_out
 #(
 	.extend_oe_disable("OFF"),

@@ -40,7 +40,18 @@ port (
 	GS_N_WR		: in std_logic;
 	GS_N_RFSH	: in std_logic;
 	GS_WAIT_N		: out STD_LOGIC:='1';
-	MEM_WAIT		: out std_logic := '0';
+
+	-- Stage 2 (the no-wait SDRAM controller rtl/mem/sdram_nowait.vhd): the
+	-- clk_mem-domain clock signals and the CPU visibility the controller
+	-- needs; MEM_WAIT is gone, no memory wait reaches the CPU. The defaults
+	-- keep the entity elaborable without them (the core profile's
+	-- profi.vhd rewrites map all six; MEM_READY may stay unmapped).
+	BUS_PHASE	: in std_logic_vector(1 downto 0) := "00";
+	RESET_MEM	: in std_logic := '1';
+	CPU_TS		: in std_logic_vector(2 downto 0) := "000";
+	CPU_MC		: in std_logic_vector(2 downto 0) := "000";
+	CPU_RESET_N	: in std_logic := '1';
+	MEM_READY	: out std_logic;
 	GS_MREQ_N	: in STD_LOGIC;
 	
 	MA 			: out 	std_logic_vector(20 downto 0);
@@ -111,17 +122,17 @@ architecture RTL of memory is
 	signal vid_spec_do, vid_profi_do : std_logic_vector(7 downto 0);
 	
 	signal port1_a, port2_a : std_logic_vector(20 downto 0);
-	signal port1_di, port2_di : std_logic_vector(7 downto 0);
-	signal port1_rd, port1_wr, port1_rfsh, port2_rd, port2_wr, port2_rfsh : std_logic;
+	signal port2_di : std_logic_vector(7 downto 0);
+	signal port1_rfsh, port2_rd, port2_wr, port2_rfsh : std_logic;
+	signal cpu_wr_en : std_logic;
 	signal port2_a_sdr : std_logic_vector(20 downto 0);
 	signal port2_di_sdr : std_logic_vector(7 downto 0);
 	signal port2_rd_sdr, port2_wr_sdr, port2_rfsh_sdr , n_mreq_sdr: std_logic;
 	signal sdr_wr, sdr_rfsh, sdr_idle, sdr_rd,sdr_gs_wait_n : std_logic;
 
-	-- The physical memory moved into MiSTer's SDRAM: rtl/mem/sram_bridge.vhd behind the
-	-- client interface of rtl/mem/sdram.sv. Both are Verilog, so they are reached
-	-- through a component declaration; the kg_sdpram one is the declaration
-	-- tools/prepare_upstream.py generates for that module.
+	-- The physical memory is the no-wait SDRAM controller rtl/mem/sdram_nowait.vhd
+	-- (Stage 2); the kg_sdpram declaration is the one tools/prepare_upstream.py
+	-- generates for that Verilog module.
 	component kg_sdpram
 	generic (
 		DW : integer := 8;
@@ -140,37 +151,16 @@ architecture RTL of memory is
 	);
 	end component;
 
-	component sdram
-	port (
-		init : in std_logic := '0';
-		clk : in std_logic := '0';
-		SDRAM_DQ : inout std_logic_vector(15 downto 0);
-		SDRAM_A : out std_logic_vector(12 downto 0);
-		SDRAM_DQML : out std_logic;
-		SDRAM_DQMH : out std_logic;
-		SDRAM_BA : out std_logic_vector(1 downto 0);
-		SDRAM_nCS : out std_logic;
-		SDRAM_nWE : out std_logic;
-		SDRAM_nRAS : out std_logic;
-		SDRAM_nCAS : out std_logic;
-		SDRAM_CKE : out std_logic;
-		SDRAM_CLK : out std_logic;
-		addr : in std_logic_vector(24 downto 0) := (others => '0');
-		dout : out std_logic_vector(7 downto 0);
-		din : in std_logic_vector(7 downto 0) := (others => '0');
-		we : in std_logic := '0';
-		rd : in std_logic := '0';
-		ready : out std_logic
-	);
-	end component;
-
-	signal sram_rd_req : std_logic;
 	signal sram_dout : std_logic_vector(7 downto 0);
-	signal sd_addr : std_logic_vector(24 downto 0);
-	signal sd_din, sd_dout : std_logic_vector(7 downto 0);
-	signal sd_rd, sd_we, sd_ready : std_logic;
-	signal sram_wait : std_logic;
-	signal SDRAM_DQML, SDRAM_DQMH : std_logic;
+
+	-- port B (the loader) into sdram_nowait: a one-entry buffer, `b_req_r`
+	-- raised by a loader byte and dropped when b_done toggles (the
+	-- controller answers one access per rising edge; see its header)
+	signal b_req_r, b_we_r : std_logic := '0';
+	signal b_addr_r : std_logic_vector(20 downto 0) := (others => '0');
+	signal b_din_r : std_logic_vector(7 downto 0) := (others => '0');
+	signal b_done, b_done_s1, b_done_s2 : std_logic := '0';
+	signal b_overrun : std_logic;
 
 	
 begin
@@ -245,66 +235,89 @@ begin
 	GS_DO <= x"FF";
 	GS_WAIT_N <= '1';
 
-	-- the main memory is the MiSTer SDRAM now; sram_bridge (rtl/mem/sram_bridge.vhd)
-	-- keeps the asynchronous SRAM service the cpu expects from it. The SRAM pins of
-	-- the board are not driven.
+	-- the main memory is the MiSTer SDRAM behind the Stage 2 no-wait
+	-- controller rtl/mem/sdram_nowait.vhd: every M-cycle the CPU runs is
+	-- served inside the M-cycle, no wait state exists (MEM_WAIT is gone from
+	-- the entity). The SRAM pins of the board are not driven.
 	MA <= (others => '0');
 	MD <= (others => 'Z');
 	N_MWR <= "11";
 	N_MRD <= "11";
 	DO <= sram_dout;
 
-	-- the bridge's hold signal: high while a CPU read is not served yet or the
-	-- write queue is nearly full (see sram_bridge); profi.vhd applies it to the
-	-- clock's WAIT_CPU in the turbo modes only
-	MEM_WAIT <= sram_wait;
+	-- 1 = the addressed byte may be written: the address part of stage 1's
+	-- port1_wr (RAM and DIVMMC RAM only - ROM reads through this port never
+	-- write). No WR_n term, no ENA_CPU term: the controller latches this on
+	-- the start sample (T1 of the M-cycle), where WR_n is not low yet, and a
+	-- write whose T-states the CPU holds (ENA_CPU = 0) is still a write.
+	cpu_wr_en <= '1' when (is_ram = '1' or is_ramDIVMMC = '1') else '0';
 
-	-- the shared port of the profi cpu, served by the bridge
-	sram_rd_req <= not N_MREQ and not N_RD and not loader_act;
-
-	U_SRAM_BRIDGE: entity work.sram_bridge
+	U_SDRAM: entity work.sdram_nowait
 	port map(
-		clk_bus => CLK_BUS,
-		clk_sdr => CLK_SDR,
-		reset => ARESET,
-		rd_req => sram_rd_req,
-		wr_stb => port1_wr,
-		addr => port1_a,
-		din => port1_di,
-		dout => sram_dout,
-		cpu_wait => sram_wait,
-		sd_addr => sd_addr,
-		sd_din => sd_din,
-		sd_rd => sd_rd,
-		sd_we => sd_we,
-		sd_dout => sd_dout,
-		sd_ready => sd_ready
+		clk_mem => CLK_SDR,
+		reset => RESET_MEM,
+		bus_phase => BUS_PHASE,
+		ready => MEM_READY,
+		cpu_reset_n => CPU_RESET_N,
+		cpu_ena => ENA_CPU,
+		cpu_ts => CPU_TS,
+		cpu_mc => CPU_MC,
+		cpu_mreq_n => N_MREQ,
+		cpu_rd_n => N_RD,
+		cpu_wr_n => N_WR,
+		cpu_iorq_n => N_IORQ,
+		cpu_addr => port1_a,
+		cpu_wr_en => cpu_wr_en,
+		cpu_din => D,
+		cpu_dout => sram_dout,
+		b_req => b_req_r,
+		b_we => b_we_r,
+		b_addr => b_addr_r,
+		b_din => b_din_r,
+		b_dout => open,           -- port B reads return only to the GS port (stage 3)
+		b_done => b_done,
+		b_overrun => open,        -- nothing in synthesis; the sims watch it
+		sd_ba => SDR_BA,
+		sd_a => SDR_A,
+		sd_dqm => SDR_DQM,
+		sd_ras_n => SDR_RAS_N,
+		sd_cas_n => SDR_CAS_N,
+		sd_we_n => SDR_WE_N,
+		sd_dq => SDR_DQ
 	);
 
-	U_SDRAM: sdram
-	port map(
-		init => ARESET,
-		clk => CLK_SDR,
-		SDRAM_DQ => SDR_DQ,
-		SDRAM_A => SDR_A,
-		SDRAM_DQML => SDRAM_DQML,
-		SDRAM_DQMH => SDRAM_DQMH,
-		SDRAM_BA => SDR_BA,
-		SDRAM_nCS => open,
-		SDRAM_nWE => SDR_WE_N,
-		SDRAM_nRAS => SDR_RAS_N,
-		SDRAM_nCAS => SDR_CAS_N,
-		SDRAM_CKE => open,
-		SDRAM_CLK => open,
-		addr => sd_addr,
-		dout => sd_dout,
-		din => sd_din,
-		we => sd_we,
-		rd => sd_rd,
-		ready => sd_ready
-	);
-
-	SDR_DQM <= SDRAM_DQMH & SDRAM_DQML;
+	-- the loader writes a byte of boot.rom into the SDRAM through port B.
+	-- The CPU is in reset while loader_act = '1' (profi.vhd: reset <= ... or
+	-- loader_act ...), so the controller serves every request in its free
+	-- window right away: 8 clk_mem per byte against one byte every >= 128
+	-- clk_sys (one ROMDATA SPI frame per byte, see rtl/host/mcu_emu.sv) -
+	-- the one-entry buffer can never be given the next byte before the last
+	-- was served, so b_overrun never rises. b_req is a level and the
+	-- controller takes one access per rising edge: it drops when b_done
+	-- toggled, so the next byte makes exactly one new rising edge. GS ROM
+	-- bytes (loader_ram_a(31) = '1') are dropped as in stage 1 (the GS
+	-- returns to the memory in stage 3).
+	loader_b: process (CLK_BUS)
+	begin
+		if rising_edge(CLK_BUS) then
+			b_done_s1 <= b_done;    -- the toggle synchroniser into clk_bus
+			b_done_s2 <= b_done_s1;
+			if ARESET = '1' then
+				b_req_r <= '0';
+				b_we_r  <= '0';
+			else
+				if b_done_s1 /= b_done_s2 then
+					b_req_r <= '0';
+				end if;
+				if loader_act = '1' and loader_ram_wr = '1' and loader_ram_a(31) = '0' then
+					b_addr_r <= loader_ram_a(20 downto 0);
+					b_din_r  <= loader_ram_do;
+					b_we_r   <= '1';
+					b_req_r  <= '1';
+				end if;
+			end if;
+		end if;
+	end process;
 
 	-- shared port for profi cpu
 	port1_a <= loader_ram_a(20 downto 0) when loader_act = '1' else -- loader ram
@@ -312,15 +325,9 @@ begin
 				  "11" & REG_E3(5 downto 0) & A(12 downto 0) when is_ramDIVMMC = '1' else -- DIVMMC ram 512 kB from #X180000 SRAM
 				  "100" & EXT_ROM_BANK(1 downto 0) & rom_page(1 downto 0) & A(13 downto 0) when is_rom = '1' else -- rom from sram high bank 
 				  '0' & ram_page(5 downto 0) & A(13 downto 0);  -- ram
-	port1_rd <= '0' when loader_act = '1' else
-					'1' when N_MREQ = '0' and N_RD = '0' and ENA_CPU = '1' else 
-					'0'; 
-	port1_wr <= loader_ram_wr when loader_act = '1' and loader_ram_a(31) = '0' else
-					'0' when loader_act = '1' and loader_ram_a(31) = '1' else
-					'1' when (is_ram = '1' or is_ramDIVMMC = '1') and N_WR = '0' and ENA_CPU = '1' else 
-					'0';
-	port1_di <= loader_ram_do when loader_act = '1' else -- loader DO
-					D(7 downto 0); -- data from CPU
+	-- (stage 1's port1_rd/port1_wr/port1_di drivers of the sram_bridge are
+	-- gone: the controller reads the CPU strobes itself, its write mask is
+	-- the cpu_wr_en above, and the loader arrives through port B)
 
 	-- shared port for GS cpu
 	port2_a <= loader_ram_a(20 downto 0) when loader_act = '1' else 

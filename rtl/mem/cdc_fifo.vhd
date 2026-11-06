@@ -17,8 +17,8 @@
 -- not expect.
 --
 -- `wr = '1'` while `full = '1'` silently loses the datum; the caller must size the
--- queue for its traffic. sram_bridge guards its write queue with an assertion and
--- watches `afull` (below) to slow its writer long before that point.
+-- queue for its traffic (the video CDC's queue in rtl/video/video_cdc.sv is;
+-- stage 1's sram_bridge, which also guarded its queue, is gone with Stage 2).
 -------------------------------------------------------------------------------
 library IEEE;
 use IEEE.std_logic_1164.all;

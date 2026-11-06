@@ -124,16 +124,23 @@ set_clock_groups -exclusive \
 # and falling-edge sampling keeps its wrong-sample cost at one lost cycle.
 set_false_path -to [get_registers {emu:emu|profi:u_profi|clock:U1|clkmux2:U9|d0 emu:emu|profi:u_profi|clock:U1|clkmux2:U9|q0 emu:emu|profi:u_profi|clock:U1|clkmux2:U9|en0 emu:emu|profi:u_profi|clock:U1|clkmux2:U9|en1}]
 
-# sram_bridge's cdc_fifos are the designed crossing between clk_bus and
-# clk_mem (gray pointers, two-flop sync - cdc_fifo.vhd). Stage 2 made the
-# two clocks related (the ÷4), so STA now checks the pointer crossings
-# against their worst edge pair: build 17 saw the fitter clock-invert a
-# capture FF (report: "Latch Clock: clk_bus28 (INVERTED)", a mem rising
-# launch with nominal 0 ns to the capture) - with the gray code the crossing
-# is immune to which edge samples it, so only the synchronizer input paths
-# are cut; _s1 -> _s2 and everything downstream stay timed, and the ÷4
-# relation keeps checking every real bus<->memory path.
-set_false_path -from [get_registers {*sram_bridge:*|wbg*}] \
-	-to [get_registers {*sram_bridge:*|wbg_s1*}]
-set_false_path -from [get_registers {*sram_bridge:*|rbg*}] \
-	-to [get_registers {*sram_bridge:*|rbg_s1*}]
+# The no-wait controller samples the clk_bus-domain CPU signals (addr, din,
+# wr_en, TS, MC, the strobes, cpu_reset_n, ena) only at the clk_mem clock
+# edge whose previous registered BUS_PHASE sample is "01" (the clock unit
+# drives BUS_PHASE = "01" for 2 clk_mem starting one clk_mem after each
+# clk_bus rising edge, so the sample edge lands 2 clk_mem after it; the
+# inputs of that flop path go through only the controller's first pipeline
+# registers): a clk_bus -> clk_mem path therefore has 2 clk_mem to settle -
+# setup 2. The matching hold counts unchanged clock edges: with setup at 2,
+# -hold 1 keeps the paths timed against the very next clk_mem edge, so no
+# combinational loop opens. (The reverse direction has no paths: the
+# controller's outputs are registered on clk_mem into clk_bus-domain CPU
+# inputs, which STA already times at the clock boundary.)
+set_multicycle_path -setup 2 -from [get_clocks {clk_bus28}] -to [get_clocks {clk_mem112}]
+set_multicycle_path -hold 1 -from [get_clocks {clk_bus28}] -to [get_clocks {clk_mem112}]
+set_multicycle_path -setup 2 -from [get_clocks {clk_bus24}] -to [get_clocks {clk_mem96}]
+set_multicycle_path -hold 1 -from [get_clocks {clk_bus24}] -to [get_clocks {clk_mem96}]
+
+# (the stage 1 sram_bridge cdc_fifo false paths went with the bridge: the
+# no-wait controller has no gray-pointer crossing between these clocks)
+

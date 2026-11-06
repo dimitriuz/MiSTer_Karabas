@@ -18,8 +18,6 @@ set_global_assignment -name VHDL_FILE rtl/clk/clkgate.vhd
 set_global_assignment -name VHDL_FILE rtl/clk/clkdiv4.vhd
 
 set_global_assignment -name VHDL_FILE rtl/mem/cdc_fifo.vhd
-set_global_assignment -name VHDL_FILE rtl/mem/sram_bridge.vhd
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/sdram.sv
 set_global_assignment -name VHDL_FILE rtl/mem/sdram_nowait.vhd
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/ps2_hid.sv
