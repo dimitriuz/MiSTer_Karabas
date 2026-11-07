@@ -6,7 +6,7 @@
 // FA 0B 06 clears the RTC's BCD mode, as a CPU write of register B does).
 //
 // Checks:
-//   start_rtc   after the 14 switch frames and before the keyboard clear,
+//   start_rtc   after the 15 switch frames and before the keyboard clear,
 //               256 RTC frames: the seven time registers of the fixed BCD
 //               RTC 23:59:58 31.12.25 weekday 3, then 01 00, 03 00, 05 00,
 //               0A 26, 0B 02, 0C 00, 0D 80 and FA 0E..FF FF;
@@ -292,9 +292,9 @@ module tb_mcu_input;
       find_frame(0, 24'hFE0000, 20000);
       base = find_i;                 // INIT_DONE
 
-      // start_rtc: the RTC block sits between the last switch (index 14)
-      // and the keyboard clear
-      find_frame(0, 24'h050E00, 20000);
+      // start_rtc: the RTC block sits between the last switch (index 15,
+      // the Mode item) and the keyboard clear
+      find_frame(0, 24'h050F00, 20000);
       j = find_i;
       for (i = 0; i < 256; i = i + 1)
          chkfrm(j + 1 + i, rtc_start(i));

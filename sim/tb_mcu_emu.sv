@@ -1,6 +1,6 @@
 // Testbench for rtl/host/mcu_emu.sv: the emulated MCU behind upstream's
 // unmodified kg_mcu (generics and the tied inputs as in profi.vhd U7) on a
-// 28.125 MHz clk_bus of unrelated phase, plus kg_soft_switches #(.N(15))
+// 28.125 MHz clk_bus of unrelated phase, plus kg_soft_switches #(.N(16))
 // fed by SOFTSW_COMMAND as in profi.vhd U9.
 //
 // A behavioural ioctl source streams a 0x58000-byte pseudo-random boot.rom
@@ -22,7 +22,7 @@
 //                           before the ROMLOADER-off frame (the stream
 //                           walk proves it), and the registers hold the
 //                           last value after INIT_DONE;
-//   switches                every soft-switch register 0..14 holds the
+//   switches                every soft-switch register 0..15 holds the
 //                           osd_items table's value after INIT_DONE; a
 //                           status change reaches register 0 in 50 us;
 //   keyboard                a kb_changed report reaches KB_STATUS/KB_DAT0;
@@ -115,7 +115,7 @@ module tb_mcu_emu;
    wire [15:0] SOFTSW_COMMAND;
    wire [7:0]  HWID;
    wire        BUSY;
-   wire [15*8-1:0] softsw_regs;
+   wire [16*8-1:0] softsw_regs;
 
    kg_mcu #(
       .BURST_MAX_MHZ (0), .CS_FILTER (3), .ENABLE_RTC (1), .ENABLE_UART (1),
@@ -159,7 +159,7 @@ module tb_mcu_emu;
       .BUSY (BUSY)
    );
 
-   kg_soft_switches #(.N (15)) u_sw (
+   kg_soft_switches #(.N (16)) u_sw (
       .clk (clk_bus), .command (SOFTSW_COMMAND),
       .regs (softsw_regs), .upd ()
    );
@@ -329,6 +329,7 @@ module tb_mcu_emu;
             8:       exp_sw = 8'd1;      // HDD: constant 1
             10:      exp_sw = 8'd1;
             11:      exp_sw = 8'd1;
+            15:      exp_sw = 8'd0;      // Mode: Pentagon
             default: exp_sw = 8'd0;      // 9, and the triggers 12..14
          endcase
       end
@@ -436,7 +437,7 @@ module tb_mcu_emu;
 
    // compare the frames [fbase, ...) with the protocol's stream for source
    // bytes [lo, hi): start sequence, banks only when they change, data,
-   // ROMLOADER off, the 14 switches, the keyboard clear, INIT_DONE.
+   // ROMLOADER off, the 15 switches, the keyboard clear, INIT_DONE.
    task walk_stream;
       input integer fbase;
       input integer lo;
@@ -464,7 +465,7 @@ module tb_mcu_emu;
             chkfrm(j, {8'h07, a[7:0], exp_data[k]}); j = j + 1;
          end
          chkfrm(j, 24'h080000);   j = j + 1;
-         for (b = 0; b <= 14; b = b + 1)
+         for (b = 0; b <= 15; b = b + 1)
             if (b != 9) begin
                bb = b;
                chkfrm(j, {8'h05, bb, exp_sw(b)});   j = j + 1;
@@ -483,7 +484,7 @@ module tb_mcu_emu;
 
    // ---------------- main ----------------
 
-   integer i, base;
+   integer i, base, n0, mseen;
 
    initial begin
       // the image (the fixed LFSR the source plays)
@@ -563,7 +564,7 @@ module tb_mcu_emu;
       // value for the last status (the walk proved no 05 frame went out
       // before the ROMLOADER-off frame)
       #10000;
-      for (i = 0; i <= 14; i = i + 1)
+      for (i = 0; i <= 15; i = i + 1)
          if (softsw_regs[i*8 +: 8] !== exp_sw(i)) begin
             $display("tb_mcu_emu: FAIL reg %0d is %02h expected %02h",
                      i, softsw_regs[i*8 +: 8], exp_sw(i));
@@ -575,6 +576,25 @@ module tb_mcu_emu;
       status[2:1] = 2'b01;
       curbank     = 1;
       `WAIT_GT(softsw_regs[0*8 +: 8] !== 8'd1, 50000, "register 0 did not follow status");
+
+      // the Mode item: a status[26] change at run time sends 05 0F 01 and,
+      // back to 0, 05 0F 00 (the walk proved the start frame was 05 0F 00)
+      n0 = nfrm;
+      @(negedge clk);
+      status[26] = 1'b1;
+      `WAIT_GT(softsw_regs[15*8 +: 8] !== 8'd1, 50000, "register 15 did not follow status");
+      mseen = 0;
+      for (i = n0; i < nfrm; i = i + 1)
+         if (flog[i] === 24'h050F01) mseen = 1;
+      if (!mseen) `FAIL("no 05 0F 01 frame for status[26] = 1");
+      n0 = nfrm;
+      @(negedge clk);
+      status[26] = 1'b0;
+      `WAIT_GT(softsw_regs[15*8 +: 8] !== 8'd0, 50000, "register 15 did not follow status back");
+      mseen = 0;
+      for (i = n0; i < nfrm; i = i + 1)
+         if (flog[i] === 24'h050F00) mseen = 1;
+      if (!mseen) `FAIL("no 05 0F 00 frame for status[26] = 0");
 
       // keyboard
       @(negedge clk);
