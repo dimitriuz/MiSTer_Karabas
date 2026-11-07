@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Icarus run of the RTC clock testbench: compiles sim/tb_bcd_clock.sv with
+# rtl/host/bcd_clock.sv (iverilog -g2012) and runs it. The last line of the
+# output is the verdict, `tb_bcd_clock: PASS` or `tb_bcd_clock: FAIL <case>`,
+# and it exits non-zero on anything but PASS. Called through tools/sim.sh
+# (Icarus is in the karabas-sim:1 image):
+#   tools/sim.sh sim/run_tb_bcd_clock.sh
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+LOG=""
+# Whatever fails - compilation, the run, or the check of the verdict - the
+# verdict line stays the last line this script prints.
+verdict() {
+    local code=$?
+    if [ "$code" -ne 0 ]; then
+        echo "tb_bcd_clock: FAIL the run did not print it (exit $code), see the Icarus log above"
+    fi
+    [ -n "$LOG" ] && rm -f "$LOG"
+    return $code
+}
+trap verdict EXIT
+LOG=$(mktemp)
+
+mkdir -p build/sim
+iverilog -g2012 -o build/sim/tb_bcd_clock.vvp \
+    sim/tb_bcd_clock.sv rtl/host/bcd_clock.sv
+vvp build/sim/tb_bcd_clock.vvp > "$LOG" 2>&1 || true
+cat "$LOG"
+# The testbench prints its own verdict (see the end of its initial block);
+# grep decides here, so a run that dies inside VVP fails as well.
+grep -q 'tb_bcd_clock: PASS' "$LOG"
+echo "tb_bcd_clock: PASS"

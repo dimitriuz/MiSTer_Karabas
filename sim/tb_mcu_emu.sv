@@ -85,7 +85,8 @@ module tb_mcu_emu;
    mcu_emu #(
       .TRIGGER_CLKS (2000),   // 40 us at 50 MHz
       .NOP_CLKS     (200),    // 4 us
-      .RTC_CLKS     (100000000)
+      .RTC_CLKS     (100000000),
+      .SEC_CLKS     (2000000000)
    ) dut (
       .clk (clk), .reset (reset),
       .ioctl_download (ioctl_download), .ioctl_index (ioctl_index),
@@ -176,7 +177,8 @@ module tb_mcu_emu;
    integer      cs2_cnt = 0;
 
    mcu_emu #(
-      .TRIGGER_CLKS (2000), .NOP_CLKS (200), .RTC_CLKS (100000000)
+      .TRIGGER_CLKS (2000), .NOP_CLKS (200), .RTC_CLKS (100000000),
+      .SEC_CLKS (2000000000)
    ) dut2 (
       .clk (clk), .reset (reset),
       .ioctl_download (dl2), .ioctl_index (16'd0),

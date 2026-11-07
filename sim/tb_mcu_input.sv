@@ -11,7 +11,10 @@
 //               RTC 23:59:58 31.12.25 weekday 3, then 01 00, 03 00, 05 00,
 //               0A 26, 0B 02, 0C 00, 0D 80 and FA 0E..FF FF;
 //   rtc_toggle  the first toggle of RTC[64] sends the time frames at once:
-//               they are the first frames after INIT_DONE;
+//               they are the first frames after INIT_DONE; the clock then
+//               ticks in the FPGA, so the next burst is one second later
+//               (SEC_CLKS = RTC_CLKS here, and the bench reloads the clock
+//               through RTC[64] right before each checked burst);
 //   mouse       X=+5, Y=+3 (up), wheel +1, left button is 02 00 05,
 //               02 01 FD, 02 02 01, 02 03 01; X=-200 clamps to 81; two
 //               reports of X=+5 arriving while a keyboard burst holds the
@@ -83,7 +86,8 @@ module tb_mcu_input;
    mcu_emu #(
       .TRIGGER_CLKS (2000),   // 40 us
       .NOP_CLKS     (200),    // 4 us
-      .RTC_CLKS     (5000)    // 100 us, so run-loop refreshes come quickly
+      .RTC_CLKS     (5000),   // 100 us, so run-loop refreshes come quickly
+      .SEC_CLKS     (5000)    // and one RTC second per refresh interval
    ) dut (
       .clk (clk), .reset (reset),
       .ioctl_download (ioctl_download), .ioctl_index (ioctl_index),
@@ -184,7 +188,8 @@ module tb_mcu_input;
             if (g_n >= budget_us * 50 || g_n < 0) begin
                $display("tb_mcu_input: FAIL frame %6h not seen from %0d at %0t",
                         want, from, $time);
-               for (i = from; i < nfrm && i < from + 40; i = i + 1)
+               for (i = (from > 16 ? from - 16 : 0);
+                    i < nfrm && i < from + 40; i = i + 1)
                   $display("  frame %0d: %6h", i, flog[i]);
                $finish;
             end
@@ -204,6 +209,33 @@ module tb_mcu_input;
             $display("tb_mcu_input: FAIL frame %0d is %6h expected %6h at %0t",
                      j, flog[j], want, $time);
             $finish;
+         end
+      end
+   endtask
+
+   // wait for a CMD_RTC seconds frame (FA 00), the first frame of a time
+   // burst, at or after `from`
+   integer find_sec_i;
+   task find_sec;
+      input integer from;
+      input integer budget_us;
+      begin
+         find_sec_i = from;
+         g_n = 0;
+         while (find_sec_i >= nfrm ||
+                flog[find_sec_i][23:16] !== 8'hFA ||
+                flog[find_sec_i][15:8] !== 8'h00) begin
+            if (g_n >= budget_us * 50 || g_n < 0) begin
+               $display("tb_mcu_input: FAIL no RTC seconds frame from %0d at %0t",
+                        from, $time);
+               $finish;
+            end
+            g_n = g_n + 1;
+            @(negedge clk);
+            if (find_sec_i < nfrm &&
+                !(flog[find_sec_i][23:16] === 8'hFA &&
+                  flog[find_sec_i][15:8] === 8'h00))
+               find_sec_i = find_sec_i + 1;
          end
       end
    endtask
@@ -245,6 +277,17 @@ module tb_mcu_input;
       // a 16-byte boot.rom download carries the whole start sequence
       stream16;
 
+      // pin the FPGA clock: ROMLOADER off, then a reload keeps the start
+      // block (latched at the last switch) at 23:59:58
+      find_frame(0, 24'h080000, 20000);
+      @(negedge clk);
+      rtc[64] = ~rtc[64];
+      // and another reload right before INIT_DONE pins the first run-loop
+      // burst the same way
+      find_frame(0, 24'h010600, 20000);
+      @(negedge clk);
+      rtc[64] = ~rtc[64];
+
       `WAIT_GT(nfrm < 1, 20000, "no frame at all")
       find_frame(0, 24'hFE0000, 20000);
       base = find_i;                 // INIT_DONE
@@ -265,6 +308,17 @@ module tb_mcu_input;
       `WAIT_GT(nfrm < base + 8, 5000, "no RTC time frames after INIT_DONE")
       for (i = 0; i < 7; i = i + 1)
          chkfrm(base + 1 + i, rtc_time(i));
+
+      // the FPGA clock ticks: the next burst is one second later
+      find_frame(base + 8, 24'hFA0059, 5000);
+      j = find_i;
+      `WAIT_GT(nfrm < j + 7, 5000, "the second time burst did not finish")
+      chkfrm(j + 1, 24'hFA0259);
+      chkfrm(j + 2, 24'hFA0423);
+      chkfrm(j + 3, 24'hFA0604);
+      chkfrm(j + 4, 24'hFA0731);
+      chkfrm(j + 5, 24'hFA0812);
+      chkfrm(j + 6, 24'hFA0925);
 
       // mouse: X=+5, Y=+3 (up), wheel +1, left button
       @(negedge clk);
@@ -324,6 +378,35 @@ module tb_mcu_input;
             n0 = n0 + 1;
       if (n0 != 1) `FAIL("the two mouse reports were not one 0A report")
 
+      // a toggle on the very edge that fires the burst's first frame must
+      // not add to the deltas already on their way: the next report carries
+      // only the new delta
+      @(negedge clk);
+      ps2_mouse[7:0]   = 8'h00;
+      ps2_mouse[15:8]  = 8'h05;
+      ps2_mouse[23:16] = 8'h00;
+      ps2_mouse[24]    = ~ps2_mouse[24];   // a report waits for the link
+      // wait until the arbiter is one clock away from firing its frame 0
+      g_n = 0;
+      while (!(dut.fire && dut.faction == 5'd14 && dut.ms_i == 2'd0)) begin
+         if (g_n >= 5000 * 50) `FAIL("the mouse burst never came up")
+         g_n = g_n + 1;
+         @(negedge clk);
+      end
+      ps2_mouse[24] = ~ps2_mouse[24];      // a report on that same edge
+      find_frame(j + 4, 24'h020005, 2000);
+      j = find_i;
+      `WAIT_GT(nfrm < j + 4, 5000, "the edge report did not finish")
+      chkfrm(j + 1, 24'h020100);
+      chkfrm(j + 2, 24'h020200);
+      chkfrm(j + 3, 24'h020300);
+      find_frame(j + 4, 24'h020005, 2000);
+      j = find_i;
+      `WAIT_GT(nfrm < j + 4, 5000, "the second edge report did not finish")
+      chkfrm(j + 1, 24'h020100);
+      chkfrm(j + 2, 24'h020200);
+      chkfrm(j + 3, 24'h020300);
+
       // joystick_0 = up + A: word 0x0043; joystick_1 is the idle word
       @(negedge clk);
       joy0 = (1 << 3) | (1 << 4);
@@ -334,12 +417,16 @@ module tb_mcu_input;
       chkfrm(j + 2, 24'h030201);
       chkfrm(j + 3, 24'h030300);
 
-      // a reply FA 0B 06 clears BCD mode: the next time burst is binary
+      // a reply FA 0B 06 clears BCD mode; the clock is reloaded right after
+      // a burst so the next one is the binary form of the pinned 23:59:58
       @(negedge clk);
       stub_word = 24'hFA0B06;
       #5000;                          // a frame carries the reply
       stub_word = 24'hFF0000;
-      find_frame(j + 4, 24'hFA003A, 5000);
+      find_sec(nfrm, 5000);           // a time burst is in flight
+      @(negedge clk);
+      rtc[64] = ~rtc[64];
+      find_frame(find_sec_i + 1, 24'hFA003A, 5000);
       j = find_i;
       `WAIT_GT(nfrm < j + 7, 5000, "the binary time burst did not finish")
       chkfrm(j + 1, 24'hFA023B);

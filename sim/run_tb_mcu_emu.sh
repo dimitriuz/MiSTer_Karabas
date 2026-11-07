@@ -59,6 +59,7 @@ mkdir -p build/sim
 iverilog -g2012 -I rtl/host -I "$U/mcu" -o build/sim/tb_mcu_emu.vvp \
     sim/tb_mcu_emu.sv \
     rtl/host/mcu_spi_master.sv \
+    rtl/host/bcd_clock.sv \
     rtl/host/mcu_emu.sv \
     "$U/mem/kg_fifo.v" \
     "$U/mem/kg_sdpram.v" \

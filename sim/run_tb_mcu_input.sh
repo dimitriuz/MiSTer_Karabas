@@ -55,6 +55,7 @@ mkdir -p build/sim
 iverilog -g2012 -I rtl/host -o build/sim/tb_mcu_input.vvp \
     sim/tb_mcu_input.sv \
     rtl/host/mcu_spi_master.sv \
+    rtl/host/bcd_clock.sv \
     rtl/host/mcu_emu.sv \
     "$U/mcu/kg_spi_slave.v"
 vvp build/sim/tb_mcu_input.vvp > "$LOG" 2>&1 || true
