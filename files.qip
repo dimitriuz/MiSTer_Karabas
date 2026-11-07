@@ -22,6 +22,7 @@ set_global_assignment -name VHDL_FILE rtl/mem/sdram_nowait.vhd
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/ps2_hid.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/mcu_spi_master.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/bcd_clock.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/mcu_emu.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/vframe_gen.sv

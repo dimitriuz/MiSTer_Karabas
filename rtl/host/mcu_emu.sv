@@ -35,7 +35,9 @@
 // saturating at +-127), the joysticks (four CMD_JOY frames when either
 // 13-bit word changes), the RTC time registers (seven CMD_RTC frames every
 // RTC_CLKS and right after the first toggle of RTC[64], in BCD or binary as
-// register B's DM bit last said), the GS Reset / NMI / Reset trigger pulses
+// register B's DM bit last said; the bytes are bcd_clock's, which loads
+// hps_io's RTC on every RTC[64] toggle and ticks it itself in between), the
+// GS Reset / NMI / Reset trigger pulses
 // (value 1, then 0 after TRIGGER_CLKS), and one
 // CMD_NOPE poll every NOP_CLKS when idle. A report burst is never reordered:
 // its frames keep their protocol order even when a higher-priority source
@@ -48,7 +50,8 @@
 module mcu_emu #(
     parameter integer TRIGGER_CLKS = 5000000,  // 100 ms at clk_sys = 50 MHz
     parameter integer NOP_CLKS     = 5000,     // a NOP poll every 100 us when idle
-    parameter integer RTC_CLKS     = 25000000  // an RTC refresh every 500 ms
+    parameter integer RTC_CLKS     = 25000000, // an RTC refresh every 500 ms
+    parameter integer SEC_CLKS     = 50000000  // one RTC second at 50 MHz
 ) (
     input  wire         clk,
     input  wire         reset,
@@ -242,15 +245,27 @@ reg [12:0] jb_l, jb_r;           // the burst's words
 reg        jy_go;
 reg [1:0]  jy_i;
 
-// RTC: hps_io's BCD time bytes; the weekday is 0-6 there and 1-7 in the
-// MC146818A. Some of them are converted when the machine cleared BCD mode.
-wire [7:0] rt_s  = rtc[7:0];
-wire [7:0] rt_m  = rtc[15:8];
-wire [7:0] rt_h  = rtc[23:16];
-wire [7:0] rt_d  = rtc[31:24];
-wire [7:0] rt_mo = rtc[39:32];
-wire [7:0] rt_y  = rtc[47:40];
-wire [7:0] rt_wd = rtc[55:48] + 8'd1;
+// RTC: hps_io's BCD time bytes, loaded into bcd_clock and ticked there
+// between the HPS updates. Some of them are converted when the machine
+// cleared BCD mode.
+wire [55:0] clk_now;
+
+bcd_clock #(
+    .SEC_CLKS (SEC_CLKS)
+) u_bcd_clock (
+    .clk   (clk),
+    .reset (reset),
+    .rtc   (rtc),
+    .now   (clk_now)
+);
+
+wire [7:0] rt_s  = clk_now[7:0];
+wire [7:0] rt_m  = clk_now[15:8];
+wire [7:0] rt_h  = clk_now[23:16];
+wire [7:0] rt_d  = clk_now[31:24];
+wire [7:0] rt_mo = clk_now[39:32];
+wire [7:0] rt_y  = clk_now[47:40];
+wire [7:0] rt_wd = clk_now[55:48];
 
 function [7:0] rt_norm;
     input [7:0] b;
