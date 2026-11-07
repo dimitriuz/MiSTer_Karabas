@@ -11,7 +11,8 @@
 //                           in order, no duplicates, ROMLOADER_ACTIVE from
 //                           before the first write to after the last, and
 //                           the whole frame stream (bank frames only when
-//                           the address bytes change) is exactly the
+//                           the address bytes change; the 256-frame RTC
+//                           block after the switches) is exactly the
 //                           protocol's;
 //   init_and_busy           BUSY 1 until after INIT_DONE, then 0;
 //   mem_ready_gate          mem_ready 0 for 1 ms with a download up: no
@@ -63,6 +64,14 @@ module tb_mcu_emu;
    reg  [55:0]  kb_report      = 56'd0;
    reg          kb_changed     = 1'b0;
    reg          mem_ready      = 1'b1;   // the machine's SDRAM ready
+   // the other MCU inputs, fixed: BCD 23:59:58 31.12.25 weekday 3, no
+   // mouse reports, released joysticks. RTC_CLKS is far beyond this run,
+   // so the run loop's periodic refresh never adds frames.
+   reg  [64:0]  rtc = {1'b0, 8'h00, 8'h03, 8'h25, 8'h12, 8'h31,
+                       8'h23, 8'h59, 8'h58};
+   reg  [24:0]  ps2_mouse     = 25'd0;
+   reg  [15:0]  ps2_mouse_ext = 16'd0;
+   reg  [31:0]  joy0 = 32'd0, joy1 = 32'd0;
    wire         spi_cs_n, spi_sck, spi_mosi;
    wire         sck_dly, mosi_dly;    // the wire transport: the slave and
    assign #5  sck_dly  = spi_sck;     // the decoder see SCK 5 ns and MOSI
@@ -75,7 +84,8 @@ module tb_mcu_emu;
 
    mcu_emu #(
       .TRIGGER_CLKS (2000),   // 40 us at 50 MHz
-      .NOP_CLKS     (200)     // 4 us
+      .NOP_CLKS     (200),    // 4 us
+      .RTC_CLKS     (100000000)
    ) dut (
       .clk (clk), .reset (reset),
       .ioctl_download (ioctl_download), .ioctl_index (ioctl_index),
@@ -83,6 +93,8 @@ module tb_mcu_emu;
       .ioctl_dout (ioctl_dout), .ioctl_wait (ioctl_wait),
       .status (status), .osd_reset (osd_reset),
       .kb_report (kb_report), .kb_changed (kb_changed),
+      .rtc (rtc), .ps2_mouse (ps2_mouse), .ps2_mouse_ext (ps2_mouse_ext),
+      .joy0 (joy0), .joy1 (joy1),
       .mem_ready (mem_ready),
       .spi_cs_n (spi_cs_n), .spi_sck (spi_sck), .spi_mosi (spi_mosi),
       .spi_miso (spi_miso),
@@ -163,13 +175,17 @@ module tb_mcu_emu;
    reg  [23:0]  rep2_get = 24'd0;
    integer      cs2_cnt = 0;
 
-   mcu_emu #(.TRIGGER_CLKS (2000), .NOP_CLKS (200)) dut2 (
+   mcu_emu #(
+      .TRIGGER_CLKS (2000), .NOP_CLKS (200), .RTC_CLKS (100000000)
+   ) dut2 (
       .clk (clk), .reset (reset),
       .ioctl_download (dl2), .ioctl_index (16'd0),
       .ioctl_wr (1'b0), .ioctl_addr (27'd0), .ioctl_dout (8'd0),
       .ioctl_wait (),
       .status (128'd0), .osd_reset (1'b0),
       .kb_report (56'd0), .kb_changed (1'b0),
+      .rtc (rtc), .ps2_mouse (ps2_mouse), .ps2_mouse_ext (ps2_mouse_ext),
+      .joy0 (joy0), .joy1 (joy1),
       .mem_ready (1'b1),
       .spi_cs_n (cs2), .spi_sck (sck2), .spi_mosi (mosi2),
       .spi_miso (miso2),
@@ -316,6 +332,31 @@ module tb_mcu_emu;
       end
    endfunction
 
+   // the RTC block of the start sequence: the fixed BCD time above, the
+   // control registers and FF through 0xFF
+   function [23:0] exp_rtc;
+      input integer k;
+      begin
+         case (k)
+            0:  exp_rtc = 24'hFA0058;    // sec
+            1:  exp_rtc = 24'hFA0259;    // min
+            2:  exp_rtc = 24'hFA0423;    // hour
+            3:  exp_rtc = 24'hFA0604;    // weekday 3 + 1
+            4:  exp_rtc = 24'hFA0731;    // date
+            5:  exp_rtc = 24'hFA0812;    // month
+            6:  exp_rtc = 24'hFA0925;    // year
+            7:  exp_rtc = 24'hFA0100;
+            8:  exp_rtc = 24'hFA0300;
+            9:  exp_rtc = 24'hFA0500;
+            10: exp_rtc = 24'hFA0A26;
+            11: exp_rtc = 24'hFA0B02;    // BCD, 24 h
+            12: exp_rtc = 24'hFA0C00;
+            13: exp_rtc = 24'hFA0D80;
+            default: exp_rtc = {8'hFA, k[7:0], 8'hFF};
+         endcase
+      end
+   endfunction
+
    // wait for a condition to stop holding, with a timeout in microseconds
    // (50 clocks at the 20 ns clock); the guard counts clock edges instead
    // of comparing $time differences: a 32-bit snapshot truncates $time
@@ -426,6 +467,9 @@ module tb_mcu_emu;
                bb = b;
                chkfrm(j, {8'h05, bb, exp_sw(b)});   j = j + 1;
             end
+         for (b = 0; b < 256; b = b + 1) begin
+            chkfrm(j, exp_rtc(b));                  j = j + 1;
+         end
          for (b = 0; b <= 6; b = b + 1) begin
             bb = b;
             chkfrm(j, {8'h01, bb, 8'h00});          j = j + 1;
