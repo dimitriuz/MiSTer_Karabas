@@ -300,6 +300,11 @@ architecture sim of tb_turbo_nowait is
 	-- the memory unit (the controller inside it)
 	signal ready  : std_logic;
 
+	-- launch-phase monitor: DO (= the controller's cpu_byte_r) must change
+	-- only on the clk_mem edge 3 clk_mem after a clk_bus rising edge
+	signal ph_n    : natural := 0;      -- DO changes checked
+	signal ph_bad  : boolean := false;  -- any check failed
+
 	-- SDRAM pins
 	signal sd_ba  : std_logic_vector(1 downto 0);
 	signal sd_a   : std_logic_vector(12 downto 0);
@@ -444,6 +449,52 @@ begin
 		end if;
 	end process;
 
+	-- Launch-phase monitor for Karabas_Profi.sdc's
+	-- `set_multicycle_path -start -hold 3` on cpu_byte_r/b_byte_r: those
+	-- registers load only on a clk_mem edge that is 3 clk_mem after a
+	-- clk_bus rising edge (the sample edge is bus + 2 and every CPU-side
+	-- event is a bus-edge register, so capture S0 + 5 and the write-forward
+	-- rearm both land at bus + 3, one clk_mem before the next bus edge,
+	-- never on one). DO is the controller's cpu_byte_r, so every DO change
+	-- must satisfy that. The clk_mem period is measured, not assumed
+	-- (112.5 vs 96.43 MHz), and the check is +/-1 ps.
+	phase_chk: process
+		variable t_bus  : time := 0 ns;   -- last clk_bus rising edge
+		variable t_mem  : time := 0 ns;   -- last clk_mem rising edge
+		variable per    : time := 0 ns;   -- measured clk_mem period
+		variable n      : natural := 0;
+		variable badv   : boolean := false;
+		variable expct  : time;
+	begin
+		loop
+			wait on clk_bus, clk_mem, di_bus;
+			if clk_bus'event and clk_bus = '1' then
+				t_bus := now;
+			end if;
+			if clk_mem'event and clk_mem = '1' then
+				if t_mem > 0 ns then
+					per := now - t_mem;
+				end if;
+				t_mem := now;
+			end if;
+			if di_bus'event and ready = '1' and cpu_reset_n = '1'
+			   and per > 0 ns then
+				n := n + 1;
+				expct := t_bus + 3 * per;
+				if now - expct > 1 ps or expct - now > 1 ps then
+					badv := true;
+					report "tb_turbo_nowait: DO changed at "
+						& itos(now / 1 ps) & " ps, expected "
+						& itos(expct / 1 ps) & " ps (3 x "
+						& itos(per / 1 ps) & " ps after the bus edge at "
+						& itos(t_bus / 1 ps) & " ps)";
+				end if;
+			end if;
+			ph_n   <= n;
+			ph_bad <= badv;
+		end loop;
+	end process;
+
 main: process
 
 	constant TMAX : time := 9 ms;
@@ -523,6 +574,8 @@ main: process
 		variable halted   : boolean := false;
 		variable trel     : time;
 		variable byte_bad : boolean;
+		variable n0       : natural;
+		variable pn       : natural;
 	begin
 		-- fresh CPU reset for this turbo setting; the controller keeps
 		-- running (refresh stays alive through the M1 and reset windows)
@@ -534,6 +587,7 @@ main: process
 		mon_idx := 0;
 		mon_bad := false;
 		rise(4);
+		n0 := ph_n;             -- launch-phase checks of this phase
 
 		-- one clk_bus period of this mode, the ratio tolerance
 		wait until rising_edge(clk_bus);
@@ -560,13 +614,19 @@ main: process
 		end loop watch;
 		rise(4);                  -- the monitor has committed by now
 		check_bytes(byte_bad);
+		pn := ph_n - n0;
+		if pn = 0 or ph_bad then
+			report "tb_turbo_nowait: launch-phase checks: " & itos(pn)
+				& " changes checked, ph_bad=" & bstr(ph_bad);
+		end if;
 		phase_bad_v := (not halted) or mon_bad or mon_idx /= EXP_N
-		               or viol /= 0 or byte_bad;
+		               or viol /= 0 or byte_bad or pn = 0 or ph_bad;
 		report "tb_turbo_nowait: " & name & " halt at "
 			& itos(halt_at / 1 ns) & " ns, " & itos(mon_idx) & "/"
 			& itos(EXP_N) & " writes ok, halted=" & bstr(halted)
 			& " seq_bad=" & bstr(mon_bad)
-			& " bytes_bad=" & bstr(byte_bad) & " viol=" & itos(viol);
+			& " bytes_bad=" & bstr(byte_bad) & " viol=" & itos(viol)
+			& " launch_n=" & itos(pn);
 	end procedure;
 
 	procedure chk_ratio (nm : in string; a, b : in time; tb : in time) is
