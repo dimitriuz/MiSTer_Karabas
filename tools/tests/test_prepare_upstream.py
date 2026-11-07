@@ -462,19 +462,32 @@ class TestPrepareUpstream(unittest.TestCase):
                       "\tMEM_READY \t\t=> MEM_READY,"), 1)
 
     def test_profi_rewrites_di_bypass(self):
-        # Task 4 fix (build 20): the selector process drives cpu_di_mux and
-        # cpu_di_bus gets ram_do_bus directly when ram_oe_n = '0' (selector
-        # x"00"), so memory data reaches the T80 through one LUT.
+        # Task 4 fix (build 20/21): the selector process drives cpu_di_mux
+        # and cpu_di_bus gets ram_do_bus directly when ram_oe_n = '0'
+        # (selector x"00"), so memory data reaches the T80 through one LUT.
+        # The x"00" branch must not read ram_do_bus and ram_do_bus must
+        # leave the sensitivity list: otherwise synthesis keeps the
+        # capture -> selector tree -> bypass mux -> DI path (build 21:
+        # -1.907) instead of capture -> bypass mux -> DI.
         m = load_tool_module()
         out = m.apply_profi_rewrites(self.upstream_profi())
         self.assertEqual(
             out.count("signal cpu_di_bus\t\t\t: std_logic_vector(7 downto 0);\n"
                       "signal cpu_di_mux\t\t\t: std_logic_vector(7 downto 0);"), 1)
         self.assertEqual(out.count("cpu_di_mux <="), 28)
+        self.assertEqual(
+            out.count("when x\"00\" => cpu_di_mux <= (others => '1');"), 1)
         self.assertEqual(out.count(
             "cpu_di_bus <= ram_do_bus when ram_oe_n = '0' else cpu_di_mux;"), 1)
         # the only cpu_di_bus driver left is the bypass
         self.assertEqual(out.count("cpu_di_bus <="), 1)
+        # nothing of the case process reads ram_do_bus or drives cpu_di_bus
+        proc = out[out.index("process (selector"):]
+        proc = proc[:proc.index("end process;")]
+        self.assertNotIn("ram_do_bus", proc)
+        self.assertNotIn("cpu_di_bus", proc)
+        # ram_do_bus left in the file: declaration, U3 DO, the bypass mux
+        self.assertEqual(out.count("ram_do_bus"), 3)
         # the selector chain and the DI consumers are untouched
         self.assertEqual(
             out.count("selector <= \n"

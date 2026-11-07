@@ -189,22 +189,32 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
     # -1.087 through the selector tree). The process drives a renamed
     # cpu_di_mux; cpu_di_bus keeps the upstream value, because selector =
     # x"00" exactly when ram_oe_n = '0' (first, highest-priority branch of
-    # selector <=) and x"00" selects ram_do_bus: memory data reaches the
-    # T80 through one LUT instead of the 28-branch case, the one-clk_mem
-    # path from the SDRAM capture register to the DI latch at turbo 8x.
-    # The sensitivity list is untouched (it never named cpu_di_bus).
+    # selector <=). For the same reason the x"00" branch of the renamed
+    # case must not read ram_do_bus (build 21: with the tree still on that
+    # path, synthesis built capture -> tree -> bypass mux -> DI and closed
+    # -1.907): it drives '1' instead and ram_do_bus leaves the sensitivity
+    # list, so the only ram_do_bus consumer left is the final mux and
+    # memory data reaches the T80 through one LUT - the one-clk_mem path
+    # from the SDRAM capture register to the DI latch at turbo 8x. The
+    # x"00" value of cpu_di_mux is never used (the final mux takes
+    # ram_do_bus whenever selector could be x"00").
     ("src/rtl/profi.vhd",
      "signal cpu_di_bus\t\t\t: std_logic_vector(7 downto 0);",
      "signal cpu_di_bus\t\t\t: std_logic_vector(7 downto 0);\n"
      "signal cpu_di_mux\t\t\t: std_logic_vector(7 downto 0);"),
     ("src/rtl/profi.vhd", _DI_SELECTOR_OLD,
-     _DI_SELECTOR_OLD.replace("cpu_di_bus", "cpu_di_mux")),
+     _DI_SELECTOR_OLD.replace("cpu_di_bus", "cpu_di_mux")
+     .replace("serial_ms_do_bus, ram_do_bus,", "serial_ms_do_bus,")
+     .replace('when x"00" => cpu_di_mux <= ram_do_bus;',
+              "when x\"00\" => cpu_di_mux <= (others => '1');")),
     ("src/rtl/profi.vhd",
      "\tend case;\nend process;\n\nselector <= ",
      "\tend case;\nend process;\n\n"
      "-- MiSTer Stage 2: memory reads bypass the selector tree (one LUT\n"
      "-- between the SDRAM capture and the T80 DI latch, the path with a\n"
-     "-- one clk_mem budget at turbo 8x); x\"00\" == ram_oe_n = '0'.\n"
+     "-- one clk_mem budget at turbo 8x); x\"00\" == ram_oe_n = '0', and\n"
+     "-- that branch of the case above drives '1' so the memory data\n"
+     "-- cannot enter the tree.\n"
      "cpu_di_bus <= ram_do_bus when ram_oe_n = '0' else cpu_di_mux;\n\n"
      "selector <= "),
 ]
