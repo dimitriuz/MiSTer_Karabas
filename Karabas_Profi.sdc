@@ -165,8 +165,11 @@ set_multicycle_path -hold 1 -from [get_clocks {clk_bus24}] -to [get_clocks {clk_
 # of routing, clk_bus28 setup -1.472). -hold 3 with -start moves the hold
 # check to the bus edge 3 clk_mem before the launch, i.e. the edge that
 # really must still see the old data.
+# cpu_byte_r only: the same argument holds for b_byte_r, but in the core
+# profile nothing consumes b_dout, so synthesis drops that register and a
+# filter naming it is an ignored-filter warning (332174).
 set_multicycle_path -start -hold 3 \
-	-from [get_registers {*sdram_nowait:U_SDRAM|cpu_byte_r[*] *sdram_nowait:U_SDRAM|b_byte_r[*]}] \
+	-from [get_registers {*sdram_nowait:U_SDRAM|cpu_byte_r[*]}] \
 	-to [get_clocks {clk_bus28 clk_bus24}]
 
 # b_done is a toggle: sdram_nowait's b_done_r (clk_mem) is consumed in
