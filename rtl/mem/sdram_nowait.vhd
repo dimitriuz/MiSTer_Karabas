@@ -119,7 +119,10 @@
 -- 112.5 MHz rate, also covering 96.43 MHz and the power-up window of the
 -- chip), then PRECHARGE ALL, 2 x AUTO REFRESH TRFC apart, LOAD MODE (CL2, BL1,
 -- single write); ready rises when MODE is issued. CPU events are ignored and
--- port B waits until then.
+-- port B waits until then. The counters' terminal values reach the command
+-- mux as registered one-bit flags (the compare itself is a short
+-- counter -> flag path; build 21's worst clk_mem112 path was
+-- init_cnt[9] -> cmd_r[1] through the 14-bit compare).
 --
 -- Plain VHDL-93; sim-only assertions live in pragma translate_off blocks.
 -------------------------------------------------------------------------------
@@ -245,6 +248,13 @@ signal owed        : unsigned(3 downto 0) := (others => '0');
 signal rcnt        : unsigned(9 downto 0) := (others => '0');
 signal init_cnt    : unsigned(13 downto 0) := (others => '0');
 signal ist         : unsigned(2 downto 0) := (others => '0');  -- init phase
+-- the two init terminals as registered flags: the command mux tests one
+-- bit instead of a 14-bit compare from the clocked counter (build 21:
+-- init_cnt[9] -> cmd_r[1] was the worst clk_mem112 path). A flag is the
+-- compare of the PREVIOUS counter value, and the counter steps exactly
+-- one per clk_mem, so the command edges do not move.
+signal init_hit    : std_logic := '0';    -- init_cnt = INIT_CLKS - 1 next
+signal init_hit7   : std_logic := '0';    -- init_cnt = 7 next
 signal b_pending   : std_logic := '0';
 signal b_req_q     : std_logic := '0';
 signal b_done_r    : std_logic := '0';
@@ -295,6 +305,8 @@ begin
 			rcnt      <= (others => '0');
 			init_cnt  <= (others => '0');
 			ist       <= (others => '0');
+			init_hit  <= '0';
+			init_hit7 <= '0';
 			b_pending <= '0';
 			b_req_q   <= '0';
 			b_done_r  <= '0';
@@ -335,10 +347,24 @@ begin
 				b_done_r <= not b_done_r;
 			end if;
 
+			-- init terminals, registered: one bit into the command mux
+			-- (the counter steps once per clk_mem, so a flag equals
+			-- "the terminal value is current" on the next edge)
+			if init_cnt = INIT_CLKS - 2 then
+				init_hit <= '1';
+			else
+				init_hit <= '0';
+			end if;
+			if init_cnt = 6 then
+				init_hit7 <= '1';
+			else
+				init_hit7 <= '0';
+			end if;
+
 			-- init: NOPs, PRECHARGE ALL, 2 x REFRESH TRFC apart, LOAD MODE
 			case ist is
 				when "000" =>
-					if init_cnt = INIT_CLKS - 1 then
+					if init_hit = '1' then
 						d := (v => '1', driven => '0', cmd => CMD_PRECHARGE,
 							a => (10 => '1', others => '0'),
 							dqm => "00", dq => (others => 'Z'));
@@ -349,7 +375,7 @@ begin
 						init_cnt <= init_cnt + 1;
 					end if;
 				when "001" | "010" =>
-					if init_cnt = 7 then
+					if init_hit7 = '1' then
 						d := (v => '1', driven => '0', cmd => CMD_REFRESH,
 							a => (others => '0'),
 							dqm => "00", dq => (others => 'Z'));
@@ -360,7 +386,7 @@ begin
 						init_cnt <= init_cnt + 1;
 					end if;
 				when "011" =>
-					if init_cnt = 7 then
+					if init_hit7 = '1' then
 						d := (v => '1', driven => '0', cmd => CMD_MODE,
 							a => MODE_WORD, dqm => "00", dq => (others => 'Z'));
 						hd := true;
