@@ -150,6 +150,25 @@ set_multicycle_path -hold 1 -from [get_clocks {clk_bus28}] -to [get_clocks {clk_
 set_multicycle_path -setup 2 -from [get_clocks {clk_bus24}] -to [get_clocks {clk_mem96}]
 set_multicycle_path -hold 1 -from [get_clocks {clk_bus24}] -to [get_clocks {clk_mem96}]
 
+# The controller's read-capture registers load only on a clk_mem edge that
+# is 3 clk_mem after a clk_bus rising edge (the sample edge lands 2 clk_mem
+# after the bus edge, capture is sample + 5 and the write-forward rearm is
+# sample + 3 - both 3 mod 4, one clk_mem before the next bus edge and never
+# on one; tb_turbo_nowait checks every DO change against this). The T80
+# latches one clk_mem after the capture, so setup is the default one
+# clk_mem, but the default HOLD check compares a capture launched on the
+# clk_mem edge that coincides with a bus edge against a latch edge at
+# 0 ns - a phase that never happens. clk_bus also reaches its registers
+# ~3.5 ns later than clk_mem (divider + its CLKENA), so the router meets
+# that impossible hold in the fast corner by padding the next
+# cpu_byte_r -> T80 route (build 22: two neighbouring LABs, 5.85 + 6.25 ns
+# of routing, clk_bus28 setup -1.472). -hold 3 with -start moves the hold
+# check to the bus edge 3 clk_mem before the launch, i.e. the edge that
+# really must still see the old data.
+set_multicycle_path -start -hold 3 \
+	-from [get_registers {*sdram_nowait:U_SDRAM|cpu_byte_r[*] *sdram_nowait:U_SDRAM|b_byte_r[*]}] \
+	-to [get_clocks {clk_bus28 clk_bus24}]
+
 # b_done is a toggle: sdram_nowait's b_done_r (clk_mem) is consumed in
 # memory.vhd only through the 2-flop synchroniser b_done_s1 -> b_done_s2
 # into clk_bus, and the logic acts on the second stage alone (the s1 /= s2
