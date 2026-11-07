@@ -340,6 +340,11 @@ reg [23:0] fword;
 reg [4:0]  faction;
 reg [1:0]  bank_pick;
 
+// this edge fires the mouse report's first frame: a report sampled on the
+// same edge starts from an empty accumulator, not from the deltas that are
+// already on their way
+wire ms_take = fire && faction == A_MOUSE && ms_i == 2'd0;
+
 always @(*) begin
     fire        = 1'b0;
     fword       = {C_NOPE, 8'h00, 8'h00};
@@ -708,9 +713,9 @@ always @(posedge clk) begin
         // has not gone out yet (the buttons are the newest), so two quick
         // moves are delivered as their sum rather than overwriting it
         if (ps2_mouse[24] != ms_prev) begin
-            acc_dx  <= clamp7(acc_dx + ms_dx);
-            acc_dy  <= clamp7(acc_dy + ms_dy);
-            acc_dz  <= clamp7(acc_dz + ms_dz);
+            acc_dx  <= ms_take ? clamp7(ms_dx) : clamp7(acc_dx + ms_dx);
+            acc_dy  <= ms_take ? clamp7(ms_dy) : clamp7(acc_dy + ms_dy);
+            acc_dz  <= ms_take ? clamp7(ms_dz) : clamp7(acc_dz + ms_dz);
             acc_btn <= ps2_mouse[2:0];
             acc_any <= 1'b1;
         end
