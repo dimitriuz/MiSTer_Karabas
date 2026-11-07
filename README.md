@@ -79,11 +79,13 @@ SPI link; the emulation feeds the same frames:
   the wheel and the three buttons travel too.
 - **Joysticks**: `J1` with A, B, C, X, Y, Z, Start and Mode; the OSD picks
   the type of each port (Kempston, Sinclair 1/2, cursor keys, QAOPM/QAOPS).
-- **RTC**: the time comes from MiSTer's clock, sent every 500 ms and once
-  right after the first HPS time update. The MC146818A's BCD/binary mode
-  follows the register B the machine writes; other CPU writes of time or
-  CMOS are ignored - MiSTer's clock is the time source. The CMOS bytes start
-  as FF on every core load: persistent CMOS comes with stage 4's storage.
+- **RTC**: the time comes from MiSTer's clock (the HPS sends it about once a
+  minute); the core keeps it ticking in the FPGA, second by second, between
+  those updates, and sends it every 500 ms and once right after the first
+  HPS time update. The MC146818A's BCD/binary mode follows the register B
+  the machine writes; other CPU writes of time or CMOS are ignored -
+  MiSTer's clock is the time source. The CMOS bytes start as FF on every
+  core load: persistent CMOS comes with stage 4's storage.
 
 
 Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, Icarus with
