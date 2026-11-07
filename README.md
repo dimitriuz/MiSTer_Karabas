@@ -63,10 +63,17 @@ start (offsets per `tools/build_boot_rom.py`); MiSTer downloads it as ioctl inde
 ## OSD items
 
 The machine's own switches (ROM Bank, Turbo, PSG Mix, Covox, joysticks, DivMMC,
-Keyboard, Pause, VSync 50/60 Hz, GS Reset, NMI, Reset) travel over the emulated
-MCU SPI link - the table of indices and status bits is `rtl/host/osd_items.svh`.
+Keyboard, Pause, Mode, VSync 50/60 Hz, GS Reset, NMI, Reset) travel over the
+emulated MCU SPI link - the table of indices and status bits is
+`rtl/host/osd_items.svh`.
 MiSTer-side: Aspect ratio and Scandoubler Fx (None, HQ2x, CRT filters) on the
 Video page; `boot.rom` is loaded automatically at core start.
+
+`Mode` is the screen timing: Pentagon (the upstream default, 320 lines) or 48k
+(the classic 312-line frame with memory contention). It is soft-switch register
+15, the one register the Karabas Go layout has no OSD item for (the board
+hard-wires it to Pentagon), so the core profile's `profi.vhd` rewrite widens
+`kg_soft_switches` to 16 registers and feeds `kb_screen_mode` from it.
 
 ## Mouse, joysticks and RTC
 
