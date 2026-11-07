@@ -68,6 +68,23 @@ MCU SPI link - the table of indices and status bits is `rtl/host/osd_items.svh`.
 MiSTer-side: Aspect ratio and Scandoubler Fx (None, HQ2x, CRT filters) on the
 Video page; `boot.rom` is loaded automatically at core start.
 
+## Mouse, joysticks and RTC
+
+The board's MCU sends more than the keyboard and the OSD switches over the
+SPI link; the emulation feeds the same frames:
+
+- **Mouse**: the MiSTer PS/2 mouse reaches the machine the way the board's
+  USB mouse does - through the Profi's Kempston-mouse ports (0A-0C) and
+  upstream's serial-mouse emulation. Movement is relative (the PS/2 packet);
+  the wheel and the three buttons travel too.
+- **Joysticks**: `J1` with A, B, C, X, Y, Z, Start and Mode; the OSD picks
+  the type of each port (Kempston, Sinclair 1/2, cursor keys, QAOPM/QAOPS).
+- **RTC**: the time comes from MiSTer's clock, sent every 500 ms and once
+  right after the first HPS time update. The MC146818A's BCD/binary mode
+  follows the register B the machine writes; other CPU writes of time or
+  CMOS are ignored - MiSTer's clock is the time source. The CMOS bytes start
+  as FF on every core load: persistent CMOS comes with stage 4's storage.
+
 
 Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, Icarus with
 `-g2012`); `sim/run_all.sh` runs all of them.
@@ -76,7 +93,7 @@ Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, I
 
 - CPU turbo runs without memory wait states (no-wait SDRAM controller).
 - General Sound is disabled.
-- No RTC, mouse, joysticks, disks or tape yet.
+- No disks or tape yet.
 - 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
   112.5 MHz video clock, so the analog scandoubler may duplicate pixels;
   HDMI is unaffected.
