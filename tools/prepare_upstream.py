@@ -217,6 +217,21 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "-- cannot enter the tree.\n"
      "cpu_di_bus <= ram_do_bus when ram_oe_n = '0' else cpu_di_mux;\n\n"
      "selector <= "),
+    # Task 6 (stage 2): register 15 is the MiSTer Mode item (Pentagon /
+    # 48k). Upstream's Karabas Go layout has no OSD item for it and hard-wires
+    # kb_screen_mode to "00" (pentagon_video: "00" is Pentagon, "01" the
+    # classic 312-line frame with contention), so the core profile grows
+    # softsw_regs to 16 registers, gives kg_soft_switches N = 16 and feeds
+    # kb_screen_mode from register 15. The Mini layout keeps its register 6.
+    ("src/rtl/profi.vhd",
+     "signal softsw_regs\t\t: std_logic_vector(15*8-1 downto 0);",
+     "signal softsw_regs\t\t: std_logic_vector(16*8-1 downto 0);"),
+    ("src/rtl/profi.vhd",
+     "\tN \t\t\t\t\t=> 15\n)\nport map (",
+     "\tN \t\t\t\t\t=> 16\n)\nport map ("),
+    ("src/rtl/profi.vhd",
+     "\tkb_screen_mode <= \"00\";",
+     "\tkb_screen_mode <= softsw_regs(15*8+1 downto 15*8);"),
 ]
 
 # T80s.vhd rewrites (core profile only). The exception to "never patch T80":

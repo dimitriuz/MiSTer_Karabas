@@ -496,6 +496,27 @@ class TestPrepareUpstream(unittest.TestCase):
             out.count("cpu_di_bus = x\"DB\" or cpu_di_bus = x\"D3\""), 1)
         self.assertEqual(out.count("DI\t\t\t\t\t=> cpu_di_bus,"), 2)
 
+    def test_profi_rewrites_mode_strings(self):
+        # Task 6: register 15 is the MiSTer Mode item (Pentagon / 48k).
+        # Upstream's Go layout has no OSD item for it and hard-wires "00"
+        # (pentagon_video: "00" is Pentagon, "01" the classic 312-line
+        # frame), so the core profile grows softsw_regs to 16 registers,
+        # tells kg_soft_switches N = 16 and feeds kb_screen_mode from
+        # register 15.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(
+            out.count("signal softsw_regs\t\t: std_logic_vector(16*8-1 downto 0);"), 1)
+        self.assertEqual(out.count("\tN \t\t\t\t\t=> 16\n)\nport map ("), 1)
+        self.assertEqual(
+            out.count('\tkb_screen_mode <= softsw_regs(15*8+1 downto 15*8);'), 1)
+        # upstream's hard-wired value and the 15-register width are gone
+        self.assertEqual(out.count('\tkb_screen_mode <= "00";'), 0)
+        self.assertEqual(out.count("15*8-1 downto 0"), 0)
+        # the Mini layout keeps its own register 6, untouched
+        self.assertEqual(
+            out.count("\tkb_screen_mode <= softsw_regs(6*8+1 downto 6*8);"), 1)
+
     def test_profi_rewrites_core_only(self):
         # The rewritten profi.vhd maps the no-wait ports of the replaced
         # memory.vhd and the T80s TS_O/MC_O ports, so only the core profile
