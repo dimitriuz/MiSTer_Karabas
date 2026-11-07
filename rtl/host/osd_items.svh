@@ -5,7 +5,8 @@
 // stay together. Index = CMD_SWITCHES frame index = kg_soft_switches
 // register (profi.vhd G_SOFTSW_GO: register n = OSD item n of core.json,
 // the Karabas Go layout). Item 9 is the HDF file slot of that layout: no
-// register, no frame, no field here.
+// register, no frame, no field here. Register 15 has no item in the Go
+// layout (upstream hard-wires it): it is the MiSTer Mode item.
 //
 // The value a switch sends is the option chosen in the Karabas OSD, in
 // CONF_STR order (docs/protocol.md section 4: switches carry the selected
@@ -29,6 +30,7 @@
 //   12  GS Reset    [19] trigger
 //   13  NMI         [20] trigger
 //   14  Reset       osd_reset    trigger
+//   15  Mode        [26]         field (Pentagon / 48k)
 //
 // Triggers are not status fields: mcu_emu sends their frames itself (1, then
 // 0 after TRIGGER_CLKS), so osd_value is 0 for them and the run-loop value
@@ -48,6 +50,7 @@ localparam int OSD_PAUSE    = 11;
 localparam int OSD_GS_RESET = 12;
 localparam int OSD_NMI      = 13;
 localparam int OSD_RESET    = 14;
+localparam int OSD_MODE     = 15;
 
 // osd_value: the CMD_SWITCHES value of item idx for the status vector.
 function automatic [7:0] osd_value(input int idx, input [127:0] status);
@@ -66,6 +69,7 @@ function automatic [7:0] osd_value(input int idx, input [127:0] status);
             OSD_HDD:      v = 4'd1;
             OSD_KEYBOARD: v = {3'd0, status[17]};
             OSD_PAUSE:    v = {3'd0, status[18]};
+            OSD_MODE:     v = {3'd0, status[26]};
             default:      v = 4'd0;  // 9, and the triggers 12..14
         endcase
         osd_value = {4'd0, v};

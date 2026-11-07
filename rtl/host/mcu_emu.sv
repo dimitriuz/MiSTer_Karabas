@@ -18,7 +18,7 @@
 // while no byte is pending, so a source that strobes only on the low can
 // start it (a byte strobed in the held window is latched, none is lost);
 // ROMLOADER off, all
-// 14 switch frames (indices 0-8 and 10-14; 9 is the HDF slot), the RTC
+// 15 switch frames (indices 0-8 and 10-15; 9 is the HDF slot), the RTC
 // registers (256 CMD_RTC frames: the time registers from hps_io's BCD RTC,
 // 01/03/05/0A/0B/0C/0D, then FF through 0xFF - persistent CMOS is stage 4's
 // storage, so this load starts it filled), the cleared
@@ -177,7 +177,7 @@ wire [7:0] bank2 = cur_a[31:24];
 
 // ---------------- OSD switches, keyboard, triggers ----------------
 
-reg [7:0] sent_val [0:14];   // last CMD_SWITCHES value sent per index
+reg [7:0] sent_val [0:15];   // last CMD_SWITCHES value sent per index
 reg [3:0] sw_i;              // start sequence: the index being sent
 
 reg        kb_pend;              // a report burst is in flight
@@ -414,8 +414,11 @@ always @(*) begin
                     faction = A_START;
                 end else begin
                     // 1. a switch value that differs from the last sent
-                    for (cv = 0; cv <= 14; cv = cv + 1)
-                        if (cv != 9 && osd_value(cv, status) != sent_val[cv])
+                    //    (0-8, 10-11, 15; 9 is the HDF slot, 12-14 the
+                    //    triggers, whose value is always 0)
+                    for (cv = 0; cv <= 15; cv = cv + 1)
+                        if (cv != 9 && cv != 12 && cv != 13 && cv != 14 &&
+                            osd_value(cv, status) != sent_val[cv])
                             sw_target = cv;
                     if (sw_target >= 0) begin
                         fword   = {C_SW, sw_target[7:0],
@@ -541,7 +544,7 @@ always @(posedge clk) begin
         bank_sent[0] <= 8'hFF;
         bank_sent[1] <= 8'hFF;
         bank_sent[2] <= 8'hFF;
-        for (iv = 0; iv <= 14; iv = iv + 1)
+        for (iv = 0; iv <= 15; iv = iv + 1)
             sent_val[iv] <= 8'h00;
     end else begin
         tx_start    <= 1'b0;
@@ -581,7 +584,7 @@ always @(posedge clk) begin
                 A_SW: begin
                     sent_val[sw_target] <= fword[7:0];
                     if (st == S_SWALL) begin
-                        if (sw_i == 4'd14) begin
+                        if (sw_i == 4'd15) begin
                             st      <= S_RTC;
                             rtc_si  <= 8'd0;
                             rt_time <= rt_now;

@@ -80,6 +80,7 @@ localparam CONF_STR = {
 	"O[16],DivMMC,Off,On;",
 	"O[17],Keyboard,Profi XT,Spectrum;",
 	"O[18],Pause,Off,On;",
+	"O[26],Mode,Pentagon,48k;",
 	"-;",
 	"T[19],GS Reset;",
 	"T[20],NMI;",
