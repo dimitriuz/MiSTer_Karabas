@@ -84,6 +84,7 @@ localparam CONF_STR = {
 	"T[19],GS Reset;",
 	"T[20],NMI;",
 	"R[0],Reset;",
+	"J1,A,B,C,X,Y,Z,Start,Mode;",
 	"V,v",`BUILD_DATE
 };
 
@@ -130,6 +131,12 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.ps2_key(ps2_key),
 
+	.RTC(hps_rtc),
+	.ps2_mouse(ps2_mouse),
+	.ps2_mouse_ext(ps2_mouse_ext),
+	.joystick_0(joystick_0),
+	.joystick_1(joystick_1),
+
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_index),
 	.ioctl_wr(ioctl_wr),
@@ -139,6 +146,13 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 );
 
 ///////////////////////   KEYBOARD AND MCU LINK   //////////////////////////
+
+// the rest of the MCU's board inputs: MiSTer's RTC, PS/2 mouse (bit 24
+// toggles per report, ps2_mouse_ext[7:0] is the wheel) and joystick words
+wire [64:0]  hps_rtc;
+wire [24:0]  ps2_mouse;
+wire [15:0]  ps2_mouse_ext;
+wire [31:0]  joystick_0, joystick_1;
 
 wire [55:0] kb_report;
 wire        kb_changed;
@@ -171,6 +185,13 @@ mcu_emu u_mcu (
 
 	.kb_report(kb_report),
 	.kb_changed(kb_changed),
+
+	.rtc(hps_rtc),
+	.ps2_mouse(ps2_mouse),
+	.ps2_mouse_ext(ps2_mouse_ext),
+	.joy0(joystick_0),
+	.joy1(joystick_1),
+
 	.mem_ready(mem_ready),
 
 	.spi_cs_n(mcu_cs_n),
