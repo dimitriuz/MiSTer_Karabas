@@ -2,7 +2,7 @@
 // sim/run_tb_video_cdc.sh (Icarus cannot bind the VHDL entity). Same
 // interface, same Cummings pointer protocol: gray pointers, two-flop
 // synchronisers, combinational q from the read pointer. The real cell is
-// exercised through the VHDL side by tb_sram_bridge.
+// exercised through the VHDL side by tb_cdc_fifo.
 `default_nettype none
 
 module cdc_fifo #(

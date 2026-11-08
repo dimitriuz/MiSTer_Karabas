@@ -3,7 +3,7 @@
 # rtl/video/video_cdc.sv and the Icarus-side behaviour model of the async
 # FIFO (sim/models/cdc_fifo_model.sv - Icarus cannot bind the VHDL
 # rtl/mem/cdc_fifo.vhd, whose own tests live on the GHDL side in
-# tb_sram_bridge). The last line of the output is the verdict,
+# tb_cdc_fifo). The last line of the output is the verdict,
 # `tb_video_cdc: PASS` or `tb_video_cdc: FAIL <reason>`, and it exits
 # non-zero on anything but PASS.
 # Called through tools/sim.sh (Icarus is in the karabas-sim:1 image):

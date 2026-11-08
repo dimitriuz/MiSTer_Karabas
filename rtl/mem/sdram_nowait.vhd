@@ -5,7 +5,7 @@
 -- wait state: every CPU M-cycle that can carry data runs its SDRAM burst fully
 -- inside the M-cycle, so no wait depends on memory timing (spec §5.2). The
 -- command encoding, the address map, the init sequence and the MODE word
--- follow rtl/mem/sdram.sv; the chip-side behaviour is what
+-- follow stage 1's sdram.sv (removed in Stage 2); the chip-side behaviour is what
 -- sim/models/sdram_chip.vhd models.
 --
 -- Timing facts this rests on (build/upstream/src/rtl/t80se/T80s.vhd, T2Write=1):

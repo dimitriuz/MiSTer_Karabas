@@ -34,7 +34,7 @@
 -- The sdc keeps clk_bus and clk_mem related (a divide-by-4) and cuts the fixed PLL
 -- outputs general[0] (CLK_GS) and general[2] (CLK_VID) asynchronous against the two
 -- {clk_mem, clk_bus} groups, so what crosses those cuts is synchronised by design:
--- the cdc_fifo handshakes of the SDRAM bridge and the video CDC. What the Xilinx PLL
+-- the cdc_fifo handshake of the video CDC. What the Xilinx PLL
 -- gave and this one does not:
 --
 --   clk_gs  = clk_28, not a second 28.125 MHz PLL output of the same frequency and

@@ -86,6 +86,9 @@ SPI link; the emulation feeds the same frames:
   the wheel and the three buttons travel too.
 - **Joysticks**: `J1` with A, B, C, X, Y, Z, Start and Mode; the OSD picks
   the type of each port (Kempston, Sinclair 1/2, cursor keys, QAOPM/QAOPS).
+  Upstream maps Sinclair 1 to keys 1-5 and Sinclair 2 to keys 6-0 (left,
+  right, down, up, fire); on the Sinclair and cursor types only B fires,
+  while A is Kempston bit 5.
 - **RTC**: the time comes from MiSTer's clock (the HPS sends it about once a
   minute); the core keeps it ticking in the FPGA, second by second, between
   those updates, and sends it every 500 ms and once right after the first
