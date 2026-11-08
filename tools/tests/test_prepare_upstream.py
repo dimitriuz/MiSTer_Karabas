@@ -391,23 +391,32 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertIn("signal cpu_wait", msg)
 
     def test_profi_rewrites_each_anchor_missing(self):
-        # Every rewrite's old string is required exactly once: removing any
-        # one of them raises, naming the file and the string.
+        # Every rewrite's old string is required exactly once at the point it
+        # is applied; later rewrites anchor on text the earlier ones produce
+        # (the GS ports on the MEM_READY line), so the text is built up in
+        # order. Removing any one anchor raises, naming the file and the
+        # string.
         m = load_tool_module()
-        for _rel, old, _new in m.PROFI_REWRITES:
-            text = self.upstream_profi().replace(old, "", 1)
-            self.assertNotEqual(text, self.upstream_profi())
+        text = self.upstream_profi()
+        for i, (_rel, old, _new) in enumerate(m.PROFI_REWRITES):
+            self.assertEqual(text.count(old), 1)
+            broken = text.replace(old, "", 1)
             with self.assertRaises(SystemExit) as ctx:
-                m.apply_profi_rewrites(text)
+                m.apply_rewrites(broken, m.PROFI_REWRITES[i:])
             self.assertIn(self.PROFIS, str(ctx.exception))
+            text = m.apply_rewrites(text, [m.PROFI_REWRITES[i]])
+        self.assertEqual(text, m.apply_profi_rewrites(self.upstream_profi()))
 
     def test_profi_rewrites_each_anchor_duplicated(self):
         m = load_tool_module()
-        for _rel, old, _new in m.PROFI_REWRITES:
-            text = self.upstream_profi().replace(old, old + "\n" + old, 1)
+        text = self.upstream_profi()
+        for i, (_rel, old, _new) in enumerate(m.PROFI_REWRITES):
+            dup = text.replace(old, old + "\n" + old, 1)
+            self.assertNotEqual(dup, text)
             with self.assertRaises(SystemExit) as ctx:
-                m.apply_profi_rewrites(text)
+                m.apply_rewrites(dup, m.PROFI_REWRITES[i:])
             self.assertIn(self.PROFIS, str(ctx.exception))
+            text = m.apply_rewrites(text, [m.PROFI_REWRITES[i]])
 
     def test_profi_rewrites_clocktree_strings(self):
         # Task 1: CLK_VID port, bus_phase/reset_mem signals and the U1
@@ -460,6 +469,39 @@ class TestPrepareUpstream(unittest.TestCase):
                       "\tCPU_MC \t\t\t=> cpu_mc,\n"
                       "\tCPU_RESET_N \t\t=> cpu_reset_n,\n"
                       "\tMEM_READY \t\t=> MEM_READY,"), 1)
+
+    def test_profi_rewrites_gs_strings(self):
+        # Task 3: the GS memory is rtl/mem/gs_mem.sv at the top (BRAM + the
+        # MiSTer DDR3), so profi exposes the GS bus, the loader's GS-byte
+        # path and the GS clock for gs_mem; each block once, right after its
+        # anchor.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(
+            out.count("\tMEM_READY : out std_logic;\n"
+                      "\tCLK_GS_O : out std_logic;\n"
+                      "\tGSM_A : out std_logic_vector(20 downto 0);\n"
+                      "\tGSM_DI : out std_logic_vector(7 downto 0);\n"
+                      "\tGSM_RD : out std_logic;\n"
+                      "\tGSM_WR : out std_logic;\n"
+                      "\tGSM_DO : in std_logic_vector(7 downto 0) := x\"FF\";\n"
+                      "\tGSM_WAIT_N : in std_logic := '1';\n"
+                      "\tGSL_A : out std_logic_vector(20 downto 0);\n"
+                      "\tGSL_D : out std_logic_vector(7 downto 0);\n"
+                      "\tGSL_TGL : out std_logic;"), 1)
+        self.assertEqual(
+            out.count("\tMEM_READY \t\t=> MEM_READY,\n"
+                      "\tGSM_A \t\t\t=> gs_mem_a,\n"
+                      "\tGSM_DI \t\t\t=> gs_mem_di,\n"
+                      "\tGSM_RD \t\t\t=> GSM_RD,\n"
+                      "\tGSM_WR \t\t\t=> GSM_WR,\n"
+                      "\tGSM_DO \t\t\t=> GSM_DO,\n"
+                      "\tGSM_WAIT_N \t\t=> GSM_WAIT_N,\n"
+                      "\tGSL_A \t\t\t=> GSL_A,\n"
+                      "\tGSL_D \t\t\t=> GSL_D,\n"
+                      "\tGSL_TGL \t\t=> GSL_TGL,"), 1)
+        self.assertEqual(out.count("MIDI_RESET_N <= not reset;\n"
+                                   "CLK_GS_O <= clk_gs;"), 1)
 
     def test_profi_rewrites_di_bypass(self):
         # Task 4 fix (build 20/21): the selector process drives cpu_di_mux

@@ -232,6 +232,41 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
     ("src/rtl/profi.vhd",
      "\tkb_screen_mode <= \"00\";",
      "\tkb_screen_mode <= softsw_regs(15*8+1 downto 15*8);"),
+    # Task 3 (stage 3): the GS memory is rtl/mem/gs_mem.sv at the MiSTer top
+    # (64 KB BRAM + the rest of the 2 MB in the DDR3 behind DDRAM_*), not a
+    # second SDRAM controller inside profi. profi therefore exposes the GS bus
+    # (memory.vhd's GSM_* mirrors of GS_* and the wait/read data back), the
+    # loader's GS bytes (GSL_*: memory.vhd's loader_b registers, to gs_mem's
+    # toggle handshake) and clk_gs for gs_mem and the DDRAM_CLK.
+    ("src/rtl/profi.vhd",
+     "\tMEM_READY : out std_logic;",
+     "\tMEM_READY : out std_logic;\n"
+     "\tCLK_GS_O : out std_logic;\n"
+     "\tGSM_A : out std_logic_vector(20 downto 0);\n"
+     "\tGSM_DI : out std_logic_vector(7 downto 0);\n"
+     "\tGSM_RD : out std_logic;\n"
+     "\tGSM_WR : out std_logic;\n"
+     "\tGSM_DO : in std_logic_vector(7 downto 0) := x\"FF\";\n"
+     "\tGSM_WAIT_N : in std_logic := '1';\n"
+     "\tGSL_A : out std_logic_vector(20 downto 0);\n"
+     "\tGSL_D : out std_logic_vector(7 downto 0);\n"
+     "\tGSL_TGL : out std_logic;"),
+    ("src/rtl/profi.vhd",
+     "\tMEM_READY \t\t=> MEM_READY,",
+     "\tMEM_READY \t\t=> MEM_READY,\n"
+     "\tGSM_A \t\t\t=> gs_mem_a,\n"
+     "\tGSM_DI \t\t\t=> gs_mem_di,\n"
+     "\tGSM_RD \t\t\t=> GSM_RD,\n"
+     "\tGSM_WR \t\t\t=> GSM_WR,\n"
+     "\tGSM_DO \t\t\t=> GSM_DO,\n"
+     "\tGSM_WAIT_N \t\t=> GSM_WAIT_N,\n"
+     "\tGSL_A \t\t\t=> GSL_A,\n"
+     "\tGSL_D \t\t\t=> GSL_D,\n"
+     "\tGSL_TGL \t\t=> GSL_TGL,"),
+    ("src/rtl/profi.vhd",
+     "MIDI_RESET_N <= not reset;",
+     "MIDI_RESET_N <= not reset;\n"
+     "CLK_GS_O <= clk_gs;"),
 ]
 
 # T80s.vhd rewrites (core profile only). The exception to "never patch T80":
