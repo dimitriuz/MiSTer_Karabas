@@ -72,7 +72,10 @@ sed -i '0,/^module tzxplayer$/s//module tzxplayer #(parameter TZX_MS = 3500)/' \
 # the simulation copy of tape.sv spells the 128-element clear out. The RTL
 # file stays a verbatim copy. The copy holds only the `tape` module: the
 # second module of the file (smart_tape) is not part of this core and its
-# `.*` plus name collisions do not elaborate in Icarus.
+# `.*` plus name collisions do not elaborate in Icarus. Three playback
+# registers are block-local and have no reset value in tape.sv (Quartus
+# powers them up as 0, Icarus starts them X and their arithmetic or
+# comparisons then never change): give the copy the hardware power-up value.
 python3 - <<'PY'
 from pathlib import Path
 
@@ -87,6 +90,11 @@ src = src[:src.index(marker)] + "\n"
 oldport = "\toutput [24:0] addr,"
 assert src.count(oldport) == 1, "tape.sv: expected one addr output port"
 src = src.replace(oldport, "\toutput reg [24:0] addr,")
+for decl, init in (("\treg [12:0] tick;", "\treg [12:0] tick = 13'd0;"),
+                   ("\treg [31:0] clk_play_cnt;",
+                    "\treg [31:0] clk_play_cnt = 32'd0;")):
+    assert src.count(decl) == 1, "tape.sv: expected one %r" % decl
+    src = src.replace(decl, init)
 clear = " ".join("blk_list[%d] <= 0;" % i for i in range(128))
 Path("build/sim/tape_sim.v").write_text(src.replace(old, clear))
 PY

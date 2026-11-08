@@ -295,7 +295,7 @@ module tb_tape_play;
     // mount, check the sniff result, start and decode both TAP blocks
     task decode_tape(input [8*24-1:0] name, input [31:0] sz,
                      input [8*64-1:0] hexf, input [1:0] mode_want);
-        integer b;
+        integer b, i;
         begin
             case_errors = errors;
             shown = 0;
@@ -310,6 +310,14 @@ module tb_tape_play;
             for (b = 0; b < nblocks; b = b + 1)
                 decode_block(block_len[b], name);
             fail_int(name, "decoded bytes", ref_pos, nref);
+            // exactly those bytes: no bit-pair edge may follow the last one
+            // (TAP stops, TZX/CSW go silent for their 1 s pause)
+            i = 0;
+            while (i < 2000 && fifo_w == fifo_r) begin
+                @(posedge clk);
+                i = i + 1;
+            end
+            fail_int(name, "audio after the last block", fifo_w == fifo_r, 1);
             if (errors == case_errors && !dead) $display("%0s: ok", name);
             else $display("%0s: FAIL", name);
         end
