@@ -505,6 +505,21 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertEqual(out.count("MIDI_RESET_N <= not reset;\n"
                                    "CLK_GS_O <= clk_gs;"), 1)
 
+    def test_profi_rewrites_ena_cpu_strings(self):
+        # Task 3 (stage 4a): the tape player's ce is the CPU's ENA_CPU, so
+        # profi carries it out as its own port. The port sits directly below
+        # GSL_TGL and the assignment directly below CLK_GS_O.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(
+            out.count("\tGSL_TGL : out std_logic;\n"
+                      "\tENA_CPU_O : out std_logic;"), 1)
+        self.assertEqual(
+            out.count("MIDI_RESET_N <= not reset;\n"
+                      "CLK_GS_O <= clk_gs;\n"
+                      "ENA_CPU_O <= ena_cpu;"), 1)
+        self.assertEqual(out.count("ENA_CPU_O"), 2)
+
     def test_profi_rewrites_di_bypass(self):
         # Task 4 fix (build 20/21): the selector process drives cpu_di_mux
         # and cpu_di_bus gets ram_do_bus directly when ram_oe_n = '0'

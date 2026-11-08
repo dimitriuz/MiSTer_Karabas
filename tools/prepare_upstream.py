@@ -267,6 +267,16 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "MIDI_RESET_N <= not reset;",
      "MIDI_RESET_N <= not reset;\n"
      "CLK_GS_O <= clk_gs;"),
+    # Task 3 (stage 4a): the tape player's clock enable is the CPU's own
+    # enable (one pulse per T-state at every turbo, clock.vhd's ENA_CPU), so
+    # profi exposes it. The ZX core clocks its tape player the same way.
+    ("src/rtl/profi.vhd",
+     "\tGSL_TGL : out std_logic;",
+     "\tGSL_TGL : out std_logic;\n\tENA_CPU_O : out std_logic;"),
+    ("src/rtl/profi.vhd",
+     "MIDI_RESET_N <= not reset;\nCLK_GS_O <= clk_gs;",
+     "MIDI_RESET_N <= not reset;\nCLK_GS_O <= clk_gs;\n"
+     "ENA_CPU_O <= ena_cpu;"),
 ]
 
 # T80s.vhd rewrites (core profile only). The exception to "never patch T80":
