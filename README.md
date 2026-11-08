@@ -101,10 +101,17 @@ SPI link; the emulation feeds the same frames:
 Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, Icarus with
 `-g2012`); `sim/run_all.sh` runs all of them.
 
+## Sound
+
+The machine's sound is upstream's: TurboSound FM, SAA1099 and OPL2 on the
+Z80 side, and the General Sound (GS) card. The GS is enabled: its 2 MB of
+sample memory is `rtl/mem/gs_mem.sv`, the low 64 KB in BRAM and the rest in
+MiSTer's DDR3 (the `DDRAM_*` port), and it runs on its own fixed 28.125 MHz
+clock from the machine PLL. `GS Reset` in the OSD restarts the GS CPU.
+
 ## Known limitations (stage 1)
 
 - CPU turbo runs without memory wait states (no-wait SDRAM controller).
-- General Sound is disabled.
 - No disks or tape yet.
 - 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
   112.5 MHz video clock, so the analog scandoubler may duplicate pixels;

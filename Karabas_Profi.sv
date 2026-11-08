@@ -36,8 +36,6 @@ assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
-assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
-
 assign VGA_F1 = 0;
 assign VGA_SCALER  = 0;
 assign VGA_DISABLE = 0;
@@ -218,10 +216,15 @@ wire [3:0]  vmode;               // ds80, screen mode, vsync (video blank polari
 wire [1:0]  sdr_dqm;
 wire        mem_ready;         // sdram_nowait init done (memory.vhd -> mcu_emu)
 
+wire        gs_clk;            // CLK_GS 28.125 MHz: the GS CPU, gs_mem, DDRAM_CLK
+wire [20:0] gsm_a, gsl_a;      // GS bus out of memory.vhd / its loader bytes
+wire  [7:0] gsm_di, gsm_do, gsl_d;
+wire        gsm_rd, gsm_wr, gsm_wait_n, gsl_tgl;
+
 // The VHDL entity binds by name; generics per the Stage-1 constraints.
 profi #(
 	.ENABLE_FDD(1),
-	.ENABLE_GS(0),
+	.ENABLE_GS(1),
 	.ENABLE_OPL3(1),
 	.ENABLE_SAA(1),
 	.ENABLE_SERIAL_MOUSE(1),
@@ -257,6 +260,16 @@ profi #(
 	.SDR_RAS_N(SDRAM_nRAS),
 	.SDR_DQ(SDRAM_DQ),
 	.MEM_READY(mem_ready),        // init done, gate of mcu_emu's start
+	.CLK_GS_O(gs_clk),
+	.GSM_A(gsm_a),
+	.GSM_DI(gsm_di),
+	.GSM_RD(gsm_rd),
+	.GSM_WR(gsm_wr),
+	.GSM_DO(gsm_do),
+	.GSM_WAIT_N(gsm_wait_n),
+	.GSL_A(gsl_a),
+	.GSL_D(gsl_d),
+	.GSL_TGL(gsl_tgl),
 
 	.SD_CS_N(),
 	.SD_DO(1'b1),
@@ -317,6 +330,41 @@ profi #(
 	.FDC_RDATA(1'b0),
 	.FDC_SIDE_N()
 );
+
+// The General Sound's memory: 64 KB of GS RAM in BRAM and the rest of the
+// 2 MB in MiSTer's DDR3 through the DDRAM_* Avalon port. Its clock is the
+// GS clock itself (CLK_GS, 28.125 MHz), asynchronous to the bus clocks; the
+// GS bus and the ROM loader bytes cross by design (see Karabas_Profi.sdc).
+// reset is the PLL lock (profi_areset), never the OSD reset: the GS CPU is
+// reset inside profi, and aborting a DDR3 transaction mid-flight would break
+// the Avalon protocol.
+gs_mem u_gs_mem (
+	.clk(gs_clk),
+	.reset(profi_areset),
+
+	.a(gsm_a),
+	.din(gsm_di),
+	.rd(gsm_rd),
+	.wr(gsm_wr),
+	.dout(gsm_do),
+	.wait_n(gsm_wait_n),
+
+	.ldr_a(gsl_a),
+	.ldr_d(gsl_d),
+	.ldr_tgl(gsl_tgl),
+
+	.ddr_busy(DDRAM_BUSY),
+	.ddr_burstcnt(DDRAM_BURSTCNT),
+	.ddr_addr(DDRAM_ADDR),
+	.ddr_dout(DDRAM_DOUT),
+	.ddr_dout_ready(DDRAM_DOUT_READY),
+	.ddr_rd(DDRAM_RD),
+	.ddr_din(DDRAM_DIN),
+	.ddr_be(DDRAM_BE),
+	.ddr_we(DDRAM_WE)
+);
+
+assign DDRAM_CLK = gs_clk;
 
 assign {SDRAM_DQMH, SDRAM_DQML} = sdr_dqm;
 assign SDRAM_nCS = 1'b0;

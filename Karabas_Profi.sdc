@@ -90,16 +90,22 @@ create_generated_clock -name clk_bus24 -divide_by 4 -add -master_clock clk_mem96
 set_clock_groups -logically_exclusive -group {clk_mem112 clk_bus28} \
 	-group {clk_mem96 clk_bus24}
 
-# The fixed PLL output general[2] (drives the video chain directly as
-# CLK_VIDEO) is asynchronous to the memory/bus pairs: everything between the
-# video chain and the machine goes through the video cdc_fifo. This cut does
-# not touch the clock network itself: clk_mem112 and clk_bus28 keep their
-# derivation from general[2], and clk_bus stays related to clk_mem.
-# (general[0] would belong here too, but with ENABLE_GS = 0 nothing loads
-# CLK_GS, the fitter prunes the output counter, and referencing the pruned
-# clock in an sdc line fails the build - restore it together with the GS.)
+# The fixed PLL outputs general[2] (drives the video chain directly as
+# CLK_VIDEO) and general[0] (CLK_GS: the GS CPU plus gs_mem, its DDRAM_CLK)
+# are asynchronous to the memory/bus pairs.
+# general[2]: everything between the video chain and the machine goes through
+# the video cdc_fifo. This cut does not touch the clock network itself:
+# clk_mem112 and clk_bus28 keep their derivation from general[2], and clk_bus
+# stays related to clk_mem.
+# general[0]: gs.v's host side is level-based on strobes at least three bus
+# clocks long, the GS output samples cross with the two-equal-samples rule,
+# the GS ROM loader crosses as gs_mem's toggle handshake, and Task 1's clock
+# alignment attempt was dropped (builds 31-35).
 set_clock_groups -asynchronous \
 	-group {emu|u_profi|U1|U2|pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk} \
+	-group {clk_mem112 clk_mem96 clk_bus28 clk_bus24}
+set_clock_groups -asynchronous \
+	-group {emu|u_profi|U1|U2|pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk} \
 	-group {clk_mem112 clk_mem96 clk_bus28 clk_bus24}
 
 # The mirror of sys_top.sdc's decoupling line (which our PLL's instance
