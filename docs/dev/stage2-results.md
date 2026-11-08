@@ -44,3 +44,10 @@ joysticks with an Xbox 360 pad. Status bits: ROM bank [2:1], VSync [7] (128), Tu
 3. **uinput mouse buttons do not reach the core** (a test-tool limitation, not the
    core): movement and wheel from the same virtual device do. Button checks need a real
    mouse.
+4. **The core had no usable sound since a83303d.** That commit (Task 4) deleted
+   `wire [15:0] profi_audio_l, profi_audio_r;` from `Karabas_Profi.sv`; Quartus turned
+   both into implicit 1-bit nets (map warning 10236 at lines 286/287), so AUDIO_L/R
+   carried only bit 0 of profi's 16-bit samples. Fixed in 0d732a7: the declarations are
+   restored, `default_nettype none` makes any other undeclared net a compile error, and
+   `tools/check_timing.py` now fails a build whose map report has a 10236 warning in
+   `Karabas_Profi.sv` or `rtl/`. Board: pending (owner listens on build 30).
