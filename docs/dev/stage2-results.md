@@ -35,7 +35,7 @@ joysticks with an Xbox 360 pad. Status bits: ROM bank [2:1], VSync [7] (128), Tu
    (mousedev ImPS/2), which reports wheel up as a negative step, and hps_io passes that
    in `ps2_mouse_ext[7:0]`. The real board's MCU sends the USB HID wheel, where up is
    positive, and profi's `kg_cursor` (Z_NEG 0) adds it as is. Fix: `mcu_emu` negates the
-   wheel delta (Task 9).
+   wheel delta (Task 9). Fixed in 02caf64; board recheck: pending.
 2. **The Kempston mouse starts at X = Y = 0, not 127.** On every fresh core load, with no
    mouse activity, #FBDF/#FFDF read 0 0 while the wheel nibble reads its start value 7.
    `kg_cursor` declares `x`/`y` as `output reg ... = 8'h7F`; the likely cause is that
