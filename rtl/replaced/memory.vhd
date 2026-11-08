@@ -1,4 +1,4 @@
--- Replaces upstream src/rtl/memory/memory.vhd @ 01dcd6c (tools/upstream-pins.txt); keep the page mapping, the DivMMC decode, the bus contention, both video RAMs and the loader routing identical.
+-- Replaces upstream src/rtl/memory/memory.vhd @ 01dcd6c (tools/upstream-pins.txt); keep the page mapping, the DivMMC decode, the bus contention, both video RAMs and the main-memory loader routing identical. The GS bus leaves through GSM_* and the GS ROM loader bytes through GSL_*: the GS memory is rtl/mem/gs_mem.sv at the top (64 KB BRAM + DDR3), outside this entity.
 -------------------------------------------------------------------------------
 -- Memory controller
 -------------------------------------------------------------------------------
@@ -40,6 +40,20 @@ port (
 	GS_N_WR		: in std_logic;
 	GS_N_RFSH	: in std_logic;
 	GS_WAIT_N		: out STD_LOGIC:='1';
+
+	-- The GS memory is rtl/mem/gs_mem.sv at the top (64 KB BRAM + the
+	-- DDR3 behind DDRAM_*). GSM_* mirror the GS bus for it, and GSL_* carry
+	-- the loader's GS ROM bytes out of loader_b; GSM_DO/GSM_WAIT_N return
+	-- the read data and the wait to the GS top.
+	GSM_A			: out std_logic_vector(20 downto 0);
+	GSM_DI			: out std_logic_vector(7 downto 0);
+	GSM_RD			: out std_logic;
+	GSM_WR			: out std_logic;
+	GSM_DO			: in std_logic_vector(7 downto 0) := x"FF";
+	GSM_WAIT_N		: in std_logic := '1';
+	GSL_A			: out std_logic_vector(20 downto 0);
+	GSL_D			: out std_logic_vector(7 downto 0);
+	GSL_TGL			: out std_logic;
 
 	-- Stage 2 (the no-wait SDRAM controller rtl/mem/sdram_nowait.vhd): the
 	-- clk_mem-domain clock signals and the CPU visibility the controller
@@ -134,14 +148,8 @@ architecture RTL of memory is
 	signal vid_wr_page : std_logic;
 	signal vid_spec_do, vid_profi_do : std_logic_vector(7 downto 0);
 	
-	signal port1_a, port2_a : std_logic_vector(20 downto 0);
-	signal port2_di : std_logic_vector(7 downto 0);
-	signal port1_rfsh, port2_rd, port2_wr, port2_rfsh : std_logic;
+	signal port1_a : std_logic_vector(20 downto 0);
 	signal cpu_wr_en : std_logic;
-	signal port2_a_sdr : std_logic_vector(20 downto 0);
-	signal port2_di_sdr : std_logic_vector(7 downto 0);
-	signal port2_rd_sdr, port2_wr_sdr, port2_rfsh_sdr , n_mreq_sdr: std_logic;
-	signal sdr_wr, sdr_rfsh, sdr_idle, sdr_rd,sdr_gs_wait_n : std_logic;
 
 	-- The physical memory is the no-wait SDRAM controller rtl/mem/sdram_nowait.vhd
 	-- (Stage 2); the kg_sdpram declaration is the one tools/prepare_upstream.py
@@ -174,6 +182,13 @@ architecture RTL of memory is
 	signal b_din_r : std_logic_vector(7 downto 0) := (others => '0');
 	signal b_done, b_done_s1, b_done_s2 : std_logic := '0';
 	signal b_overrun : std_logic;
+
+	-- the GS ROM byte path to gs_mem: address/data are registered before
+	-- GSL_TGL toggles on the same clk_bus edge (gs_mem's 2-FF synchroniser
+	-- therefore sees them stable)
+	signal gsl_a_r : std_logic_vector(20 downto 0) := (others => '0');
+	signal gsl_d_r : std_logic_vector(7 downto 0) := (others => '0');
+	signal gsl_tgl_r : std_logic := '0';
 
 	
 begin
@@ -241,12 +256,20 @@ begin
 	vid_spec_rd_a_bus <= VID_PAGE & VA(12 downto 0);
 	vid_profi_rd_a_bus <= VID_RD & VID_PAGE & VA(13 downto 0);
 
-	-- The GS SDRAM controller (U_SDRAM, upstream's entity work.sdram, and the clk_sdr
-	-- state machine that stepped it) is gone with the move to MiSTer's SDRAM: the GS
-	-- cpu is reconnected to the sdram instance below in stage 3. Until then the GS bus
-	-- never waits and its reads read 0xFF. (port2_* keeps its assignment below.)
-	GS_DO <= x"FF";
-	GS_WAIT_N <= '1';
+	-- The GS bus leaves to rtl/mem/gs_mem.sv at the top (MiSTer's BRAM and
+	-- DDR3); memory.vhd no longer holds GS memory and its old SDRAM
+	-- controller is gone with the move to MiSTer's SDRAM. RD_n/WR_n are
+	-- inverted here because gs_mem takes the levels (~MRD_n/~MWE_n); the
+	-- read data and the wait come back through GSM_DO/GSM_WAIT_N.
+	GSM_A <= GS_A;
+	GSM_DI <= GS_D;
+	GSM_RD <= not GS_N_RD;
+	GSM_WR <= not GS_N_WR;
+	GS_DO <= GSM_DO;
+	GS_WAIT_N <= GSM_WAIT_N;
+	GSL_A <= gsl_a_r;
+	GSL_D <= gsl_d_r;
+	GSL_TGL <= gsl_tgl_r;
 
 	-- the main memory is the MiSTer SDRAM behind the Stage 2 no-wait
 	-- controller rtl/mem/sdram_nowait.vhd: every M-cycle the CPU runs is
@@ -291,7 +314,7 @@ begin
 		b_we => b_we_r,
 		b_addr => b_addr_r,
 		b_din => b_din_r,
-		b_dout => open,           -- port B reads return only to the GS port (stage 3)
+		b_dout => open,           -- the loader only writes; GS memory has its own loader path
 		b_done => b_done,
 		b_overrun => open,        -- nothing in synthesis; the sims watch it
 		sd_ba => SDR_BA,
@@ -303,7 +326,10 @@ begin
 		sd_dq => SDR_DQ
 	);
 
-	-- the loader writes a byte of boot.rom into the SDRAM through port B.
+	-- the loader writes a byte of boot.rom: main-memory bytes go into the
+	-- SDRAM through port B; GS ROM bytes (loader_ram_a(31) = '1') go out on
+	-- GSL_* to gs_mem at the top, whose own 2-FF synchroniser and toggle
+	-- handshake write them into the GS BRAM.
 	-- The CPU is in reset while loader_act = '1' (profi.vhd: reset <= ... or
 	-- loader_act ...), so the controller serves every request in its free
 	-- window right away: 8 clk_mem per byte against one byte every >= 128
@@ -311,9 +337,7 @@ begin
 	-- the one-entry buffer can never be given the next byte before the last
 	-- was served, so b_overrun never rises. b_req is a level and the
 	-- controller takes one access per rising edge: it drops when b_done
-	-- toggled, so the next byte makes exactly one new rising edge. GS ROM
-	-- bytes (loader_ram_a(31) = '1') are dropped as in stage 1 (the GS
-	-- returns to the memory in stage 3).
+	-- toggled, so the next byte makes exactly one new rising edge.
 	loader_b: process (CLK_BUS)
 	begin
 		if rising_edge(CLK_BUS) then
@@ -326,23 +350,31 @@ begin
 				if b_done_s1 /= b_done_s2 then
 					b_req_r <= '0';
 				end if;
-				if loader_act = '1' and loader_ram_wr = '1' and loader_ram_a(31) = '0' then
-					-- pragma translate_off
-					-- A byte arriving while the previous request is still
-					-- pending (b_req_r high and no done toggle to clear it
-					-- this clock) would overwrite b_addr_r/b_din_r without
-					-- a new rising edge on b_req: the controller would serve
-					-- the later byte and the earlier one would vanish. The
-					-- SPI frame rate keeps this from happening today; this
-					-- assertion is the report if it ever does.
-					assert not (b_req_r = '1' and b_done_s1 = b_done_s2)
-						report "memory: loader write while the previous one is pending"
-						severity failure;
-					-- pragma translate_on
-					b_addr_r <= loader_ram_a(20 downto 0);
-					b_din_r  <= loader_ram_do;
-					b_we_r   <= '1';
-					b_req_r  <= '1';
+				if loader_act = '1' and loader_ram_wr = '1' then
+					if loader_ram_a(31) = '1' then
+						-- the GS ROM: address/data and the toggle on
+						-- the same clk_bus edge (gs_mem syncs 2 FF)
+						gsl_a_r   <= loader_ram_a(20 downto 0);
+						gsl_d_r   <= loader_ram_do;
+						gsl_tgl_r <= not gsl_tgl_r;
+					else
+						-- pragma translate_off
+						-- A byte arriving while the previous request is still
+						-- pending (b_req_r high and no done toggle to clear it
+						-- this clock) would overwrite b_addr_r/b_din_r without
+						-- a new rising edge on b_req: the controller would serve
+						-- the later byte and the earlier one would vanish. The
+						-- SPI frame rate keeps this from happening today; this
+						-- assertion is the report if it ever does.
+						assert not (b_req_r = '1' and b_done_s1 = b_done_s2)
+							report "memory: loader write while the previous one is pending"
+							severity failure;
+						-- pragma translate_on
+						b_addr_r <= loader_ram_a(20 downto 0);
+						b_din_r  <= loader_ram_do;
+						b_we_r   <= '1';
+						b_req_r  <= '1';
+					end if;
 				end if;
 			end if;
 		end if;
@@ -357,21 +389,6 @@ begin
 	-- (stage 1's port1_rd/port1_wr/port1_di drivers of the sram_bridge are
 	-- gone: the controller reads the CPU strobes itself, its write mask is
 	-- the cpu_wr_en above, and the loader arrives through port B)
-
-	-- shared port for GS cpu
-	port2_a <= loader_ram_a(20 downto 0) when loader_act = '1' else 
-				  GS_A;
-	port2_rd <= '0' when loader_act = '1' else 
-					'1' when GS_N_RD = '0' else 
-					'0';
-	port2_wr <= loader_ram_wr when loader_act = '1' and loader_ram_a(31) = '1' else 
-					'0' when loader_act = '1' and loader_ram_a(31) = '0' else
-					'1' when GS_N_WR = '0' else
-					'0';
-	port2_rfsh <= '0' when loader_act = '1' else 
-						not GS_N_RFSH ;
-	port2_di <= loader_ram_do when loader_act = '1' else 
-					GS_D(7 downto 0);
 
 	is_romDIVMMC <= '1' when DIVMMC_EN = '1' and N_MREQ = '0' and (AUTOMAP ='1' or REG_E3(7) = '1') and A(15 downto 13) = "000" else '0';
 	is_ramDIVMMC <= '1' when DIVMMC_EN = '1' and N_MREQ = '0' and (AUTOMAP ='1' or REG_E3(7) = '1') and A(15 downto 13) = "001" else '0';
