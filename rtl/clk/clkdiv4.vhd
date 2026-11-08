@@ -33,6 +33,14 @@
 -- already running. The first clk_in edge after release takes cnt "11" ->
 -- "00" and raises clk_out at BUS_PHASE "00"; q only changes on clk_in
 -- edges, so no runt pulses.
+--
+-- hold (Stage 3) stalls the counter for one clk_in period: on a rising edge
+-- with rst = '0', hold = '1' and cnt = "11", cnt stays "11" and q stays '0',
+-- so the low phase is one clk_in period longer and the next clk_out rising
+-- edge moves one clk_in later. clock.vhd uses it to slide the bus phase until
+-- CLK_BUS rises with CLK_GS. Because "11" is a low phase, a hold only ever
+-- lengthens a low phase: the high phase stays exactly 2 clk_in periods, and
+-- the ena_cnt tick on the falling edge (clock.vhd) never moves inside one.
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
@@ -41,6 +49,7 @@ entity clkdiv4 is
 port (
 	clk_in  : in  std_logic;
 	rst     : in  std_logic;
+	hold    : in  std_logic := '0';
 	clk_out : out std_logic;
 	phase   : out std_logic_vector(1 downto 0)
 );
@@ -60,7 +69,7 @@ begin
 		if rst = '1' then
 			cnt <= "11";
 			q   <= '0';
-		else
+		elsif hold = '0' or cnt /= "11" then
 			nxt := cnt + 1;
 			cnt <= nxt;
 			q   <= not nxt(1);

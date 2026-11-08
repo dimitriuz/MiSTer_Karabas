@@ -24,6 +24,14 @@
 --                 112.5 MHz periods (+/- 0.1 ns), and the frequency over 1000
 --                 periods is within 0.01 % of 28.125 MHz
 --   phase_24      the same for DS80 = '1' (2 x 10.370370 ns, 24.107142 MHz)
+--   bus_aligned_to_gs  DS80 = '0' from reset: from 1 us after RESET_MEM falls,
+--                 over 1000 CLK_BUS rising edges every CLK_GS rising edge is on
+--                 the clk_mem edge of a CLK_BUS rising edge (within one clk_mem
+--                 period, the grid the divider can place it on)
+--   realign_after_ds80  DS80 = '1' for 3 us and back: the same check from 1 us
+--                 after it returns to '0'
+--   low_phase_bounds  through both cases every CLK_BUS high phase is 2 clk_mem
+--                 periods and every low phase 2 or 3 (counted in clk_mem edges)
 --   switch_x10    DS80 toggled ten times at pseudo-random CLK_BUS edges: no
 --                 CLK_BUS or CLK_SDR pulse shorter than the 112.5 MHz half
 --                 period minus 0.1 ns, and the phase relation of phase_28 holds
@@ -107,15 +115,19 @@ constant PH_N      : natural := 2000;  -- the CLK_BUS periods of the phase windo
 constant FREQ_N    : natural := 1000;  -- the CLK_BUS periods of the frequency windows
 
 -- the monitor below measures while these are asserted
-signal mon_run   : boolean := false;  -- switch_storm: CLK_BUS phases
-signal mon_phase : boolean := false;  -- bus edge == clk_mem edge with BUS_PHASE "00"
-signal mon_high  : boolean := false;  -- CLK_BUS high time = 2 clk_mem periods
-signal mon_min   : boolean := false;  -- shortest allowed pulse while switching
+signal mon_run    : boolean := false;  -- switch_storm: CLK_BUS phases
+signal mon_phase  : boolean := false;  -- bus edge == clk_mem edge with BUS_PHASE "00"
+signal mon_high   : boolean := false;  -- CLK_BUS high time = 2 clk_mem periods
+signal mon_min    : boolean := false;  -- shortest allowed pulse while switching
+signal mon_gs     : boolean := false;  -- bus_aligned_to_gs / realign_after_ds80
+signal mon_bounds : boolean := false;  -- low_phase_bounds
 
 shared variable mon_viol     : boolean := false;  -- a CLK_BUS phase below MIN_PHASE
 shared variable viol_phase   : boolean := false;  -- a bus edge outside the relation
 shared variable viol_high    : boolean := false;  -- a bus high phase outside 2 periods
 shared variable viol_min     : boolean := false;  -- a bus or clk_mem pulse below MIN_PULSE
+shared variable viol_gs      : boolean := false;  -- a CLK_GS edge not on a CLK_BUS edge
+shared variable viol_bounds  : boolean := false;  -- a CLK_BUS phase not 2 / 2 or 3 clk_mem
 shared variable t_bus_rise   : time := 0 ns;      -- the time of the last CLK_BUS rise
 shared variable t_mem_rise   : time := 0 ns;      -- the time of the last CLK_SDR rise
 
@@ -194,6 +206,69 @@ begin
 	if rising_edge(clk_bus) then
 		t_bus_rise := now;
 	end if;
+end process;
+
+-- bus_aligned_to_gs/realign_after_ds80: the CLK_BUS rising edge must be the clk_mem edge
+-- under the CLK_GS rising edge, i.e. `now - t_bus_rise` in [0, one clk_mem period). The
+-- model rounds outclk_0 independently (35555556 fs against 4 x 8888888), so the two
+-- edges are a few hundred femtoseconds apart over a 1000-period window and a 0 fs
+-- compare is impossible; the divider can only ever place the bus edge on a clk_mem
+-- edge, so one clk_mem period is the resolution of the alignment, and any misalignment
+-- is a whole clk_mem or more (which the window rejects). The wait for 0 ns lets the
+-- CLK_BUS stamp of a coincident edge run first.
+proc_gs: process
+begin
+	loop
+		wait until rising_edge(clk_gs);
+		wait for 0 ns;
+		if mon_gs and (now - t_bus_rise) >= T_112 then
+			viol_gs := true;
+		end if;
+	end loop;
+end process;
+
+-- low_phase_bounds: count clk_mem (CLK_SDR) rising edges between consecutive CLK_BUS
+-- edges. The divider advances its counter on every clk_mem rising edge and CLK_BUS
+-- changes on no other, so a high phase is exactly 2 clk_mem periods and a low phase 2
+-- or 3 (one alignment hold), even while a DS80 switch stalls clk_mem: a stalled clock
+-- has no edges to count. The first phase after the window opens only stamps.
+proc_bounds: process
+	variable ev_bus : boolean;
+	variable v_bus  : std_logic;
+	variable ev_mem : boolean;
+	variable n_mem  : natural := 0;    -- clk_mem rising edges seen
+	variable n0     : natural := 0;    -- n_mem at the previous CLK_BUS edge
+	variable have   : boolean := false;
+	variable n      : natural;
+begin
+	loop
+		wait on clk_bus, clk_sdr;
+		ev_bus := clk_bus'event;
+		v_bus  := clk_bus;
+		ev_mem := clk_sdr'event and clk_sdr = '1';
+		wait for 0 ns;
+		if ev_mem then
+			n_mem := n_mem + 1;
+		end if;
+		if mon_bounds and ev_bus then
+			if have then
+				n := n_mem - n0;
+				if v_bus = '1' then      -- the low phase just ended
+					if n /= 2 and n /= 3 then
+						viol_bounds := true;
+					end if;
+				else                     -- the high phase just ended
+					if n /= 2 then
+						viol_bounds := true;
+					end if;
+				end if;
+			end if;
+			n0 := n_mem;
+			have := true;
+		elsif not mon_bounds then
+			have := false;
+		end if;
+	end loop;
 end process;
 
 -- the phase relation: stamp every clk_mem (CLK_SDR) rising edge with its time.
@@ -322,6 +397,18 @@ main: process
 		end loop;
 	end procedure;
 
+	-- bus_aligned_to_gs/realign_after_ds80: `cycles` consecutive CLK_BUS rising edges,
+	-- every CLK_GS rising edge inside the window on the clk_mem edge of a CLK_BUS
+	-- rising edge (within one clk_mem period; proc_gs latches the comparison)
+	procedure check_aligned(cycles : in natural; good : out boolean) is
+	begin
+		viol_gs := false;
+		mon_gs <= true;
+		rise(cycles);
+		mon_gs <= false;
+		good := not viol_gs;
+	end procedure;
+
 	-- cycles consecutive periods of the clock `id`, each within TOL of `period`. The
 	-- first period of a run is measured from the first edge found, so switching the
 	-- clock under test never shows up here.
@@ -422,6 +509,35 @@ begin
 	wait until reset_mem = '0';
 	ok := ok and (now - t_lock >= 16 * T_112) and (now - t_mem_rise <= CO_TOL);
 	if ok then pass("reset_mem"); else fail("reset_mem"); end if;
+
+	-- bus_aligned_to_gs: DS80 = '0' from reset. From 1 us after RESET_MEM falls, for
+	-- FREQ_N CLK_BUS rising edges every CLK_GS rising edge sits on the clk_mem edge of
+	-- a CLK_BUS rising edge (within one clk_mem period; see proc_gs) ------------------
+	mon_bounds <= true;            -- through this case and realign_after_ds80
+	wait for 1 us;
+	ok := true;
+	check_aligned(FREQ_N, ok);
+	if ok then pass("bus_aligned_to_gs"); else fail("bus_aligned_to_gs"); end if;
+
+	-- realign_after_ds80: DS80 = '1' for 3 us and back to '0'; from 1 us after it
+	-- returns, the same FREQ_N-edge check: the holds must have re-aligned the bus clock.
+	-- The switch starts mid-period: from a bus edge this particular 3 us excursion
+	-- happens to land back on the aligned phase by itself, so it would not exercise the
+	-- alignment (the offset leaves a phase that only the holds can fix) ---------------
+	wait for 50 ns;
+	ds80 <= '1';
+	wait for 3 us;
+	ds80 <= '0';
+	wait for 1 us;
+	ok := true;
+	check_aligned(FREQ_N, ok);
+	mon_bounds <= false;
+	if ok then pass("realign_after_ds80"); else fail("realign_after_ds80"); end if;
+
+	-- low_phase_bounds: through both cases, CLK_BUS high phases are exactly 2 clk_mem
+	-- periods and low phases 2 or 3 (viol_bounds latched by proc_bounds) ---------------
+	ok := not viol_bounds;
+	if ok then pass("low_phase_bounds"); else fail("low_phase_bounds"); end if;
 
 	-- freq_28: DS80 = '0' -> CLK_BUS and CLK_VGA 28.125 MHz, CLK_GS 28.125 MHz,
 	-- CLK_SDR and CLK_VID 112.5 MHz ---------------------------------------------------

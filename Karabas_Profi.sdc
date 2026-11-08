@@ -95,12 +95,19 @@ set_clock_groups -logically_exclusive -group {clk_mem112 clk_bus28} \
 # video chain and the machine goes through the video cdc_fifo. This cut does
 # not touch the clock network itself: clk_mem112 and clk_bus28 keep their
 # derivation from general[2], and clk_bus stays related to clk_mem.
-# (general[0] would belong here too, but with ENABLE_GS = 0 nothing loads
-# CLK_GS, the fitter prunes the output counter, and referencing the pruned
-# clock in an sdc line fails the build - restore it together with the GS.)
+# general[0] (CLK_GS) is not in this cut: Stage 3's t28 register loads it, the
+# bus clock re-aligns itself to it, and clk_gs must stay related to the
+# 28.125 MHz pair (clk_mem112/clk_bus28) - that relation is the point.
 set_clock_groups -asynchronous \
 	-group {emu|u_profi|U1|U2|pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk} \
 	-group {clk_mem112 clk_mem96 clk_bus28 clk_bus24}
+
+# clk_gs against the DS80 pair: with DS80 = 1 the host bus cannot reach the GS
+# (gs_sel has ~DS80), so the 24.107142 MHz pair and CLK_GS are never used
+# together; t28_m is only evaluated while DS80 = 0 (al_s2 = '0').
+set_clock_groups -asynchronous \
+	-group {emu|u_profi|U1|U2|pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk} \
+	-group {clk_mem96 clk_bus24}
 
 # The mirror of sys_top.sdc's decoupling line (which our PLL's instance
 # names escape); the sys groups beyond are exactly its list. mcu_sck stands
@@ -132,6 +139,21 @@ set_clock_groups -exclusive \
 # interlock is the protection for the branch enables (never on together),
 # and falling-edge sampling keeps its wrong-sample cost at one lost cycle.
 set_false_path -to [get_registers {emu:emu|profi:u_profi|clock:U1|clkmux2:U9|d0 emu:emu|profi:u_profi|clock:U1|clkmux2:U9|q0 emu:emu|profi:u_profi|clock:U1|clkmux2:U9|en0 emu:emu|profi:u_profi|clock:U1|clkmux2:U9|en1}]
+
+# The DS80 sync of the CLK_GS alignment (clock.vhd: al_s1 -> al_s2) has the
+# same asynchronous input: DS80 is a video-domain register, and only the second
+# stage (al_s2) decides al_en, so the first stage may go metastable.
+set_false_path -to [get_registers {*clock:U1|al_s1}]
+
+# The CLK_GS phase detector: t28 (clk_gs) is sampled by t28_m (clk_mem) at the
+# clk_mem edge the detector compares against. At the aligned phase the clk_28
+# launch edge and that sampling edge coincide, and the design relies on the
+# pre-edge value (t28's clock-to-Q lands after the edge's hold window): a setup
+# check against the just-launched value describes the phase the loop exists to
+# correct, not a data requirement. A late sample costs at most one hold
+# decision, and the next CLK_GS edge re-checks (build 31: -0.293 on this path).
+set_false_path -from [get_registers {*clock:U1|t28}] \
+	-to [get_registers {*clock:U1|t28_m}]
 
 # The no-wait controller samples the clk_bus-domain CPU signals (addr, din,
 # wr_en, TS, MC, the strobes, cpu_reset_n, ena) only at the clk_mem clock
