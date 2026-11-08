@@ -254,8 +254,8 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
     ("src/rtl/profi.vhd",
      "\tMEM_READY \t\t=> MEM_READY,",
      "\tMEM_READY \t\t=> MEM_READY,\n"
-     "\tGSM_A \t\t\t=> gs_mem_a,\n"
-     "\tGSM_DI \t\t\t=> gs_mem_di,\n"
+     "\tGSM_A \t\t\t=> GSM_A,\n"
+     "\tGSM_DI \t\t\t=> GSM_DI,\n"
      "\tGSM_RD \t\t\t=> GSM_RD,\n"
      "\tGSM_WR \t\t\t=> GSM_WR,\n"
      "\tGSM_DO \t\t\t=> GSM_DO,\n"

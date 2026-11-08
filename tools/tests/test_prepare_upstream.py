@@ -489,17 +489,19 @@ class TestPrepareUpstream(unittest.TestCase):
                       "\tGSL_A : out std_logic_vector(20 downto 0);\n"
                       "\tGSL_D : out std_logic_vector(7 downto 0);\n"
                       "\tGSL_TGL : out std_logic;"), 1)
-        self.assertEqual(
-            out.count("\tMEM_READY \t\t=> MEM_READY,\n"
-                      "\tGSM_A \t\t\t=> gs_mem_a,\n"
-                      "\tGSM_DI \t\t\t=> gs_mem_di,\n"
-                      "\tGSM_RD \t\t\t=> GSM_RD,\n"
-                      "\tGSM_WR \t\t\t=> GSM_WR,\n"
-                      "\tGSM_DO \t\t\t=> GSM_DO,\n"
-                      "\tGSM_WAIT_N \t\t=> GSM_WAIT_N,\n"
-                      "\tGSL_A \t\t\t=> GSL_A,\n"
-                      "\tGSL_D \t\t\t=> GSL_D,\n"
-                      "\tGSL_TGL \t\t=> GSL_TGL,"), 1)
+        # Each GS port maps onto profi's own port of the same name. gs_mem_a
+        # and gs_mem_di are gs_top's internal signals; mapping them here
+        # would drive them twice and leave GSM_A/GSM_DI unassigned (Quartus
+        # pruned gs_mem, build 36).
+        u3 = out[out.index("U3: entity work.memory"):]
+        u3 = u3[:u3.index("\n);")]
+        for name in ("GSM_A", "GSM_DI", "GSM_RD", "GSM_WR", "GSM_DO",
+                     "GSM_WAIT_N", "GSL_A", "GSL_D", "GSL_TGL"):
+            self.assertEqual(
+                len(re.findall(r"^\t%s\s+=>\s+%s,?$" % (name, name),
+                               u3, re.M)),
+                1, "%s does not map onto itself in the U3 port map:\n%s"
+                % (name, u3))
         self.assertEqual(out.count("MIDI_RESET_N <= not reset;\n"
                                    "CLK_GS_O <= clk_gs;"), 1)
 
