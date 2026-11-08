@@ -32,7 +32,9 @@ out = Path("build/sim")
 
 
 def raw(name, length, seed, first):
-    data = bytes((i * seed + first) & 0xFF for i in range(length))
+    # the sector term keeps the same offset in different sectors different
+    data = bytes((i * seed + (i // 512) * 101 + first) & 0xFF
+                 for i in range(length))
     (out / name).with_suffix(".bin").write_bytes(data)
     (out / name).with_suffix(".hex").write_text(
         "".join("%02x\n" % b for b in data))

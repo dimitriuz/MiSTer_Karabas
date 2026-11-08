@@ -31,7 +31,10 @@
 // tag and a valid bit in the clk domain. A fetch is requested by a toggle
 // carrying {gen, slot, lba} from clk to clk_sys and acknowledged by a toggle
 // back with the same payload; gen is a 2-bit mount generation counter, so a
-// fetch that was in flight when a mount arrived is ignored by clk. clk_sys
+// fetch that was in flight when a mount arrived is ignored by clk. The slot
+// being fetched is invalid from the request until the ack, so a read of its
+// old tag misses and waits for the fetch instead of taking a mix of the old
+// and new sector. clk_sys
 // serialises the hps_io accesses: it raises sd_rd (with sd_lba) and holds it
 // until sd_ack rises, writes each byte into the slot while sd_ack is high,
 // and drops sd_rd as soon as it sees sd_ack; the ack toggle goes out when
@@ -309,12 +312,16 @@ module tape_src (
                     req_payload    <= {gen, ~hit_slot, sec_next[15:0]};
                     req_tgl        <= ~req_tgl;
                     fetch_inflight <= 1'b1;
+                    if (hit_slot) valid0 <= 1'b0;
+                    else          valid1 <= 1'b0;
                 end
             end
         end else if (!fetch_inflight) begin
             req_payload    <= {gen, ~cur_slot, sec};
             req_tgl        <= ~req_tgl;
             fetch_inflight <= 1'b1;
+            if (cur_slot) valid0 <= 1'b0;
+            else          valid1 <= 1'b0;
         end
     end
 

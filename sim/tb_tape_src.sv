@@ -21,6 +21,11 @@
 //                          printed);
 //   random_jump            reads at 2900, 10 and 1500 (backwards across
 //                          sectors) return the right bytes;
+//   jump_into_slot_being_fetched
+//                          sector 0, then sector 1 (which prefetches sector
+//                          2 into sector 0's slot); while that fetch is
+//                          writing the slot, a read of sector 0 must miss,
+//                          wait for the fetch and return sector 0's byte;
 //   short_file             a 100-byte file: tape_size = 100, bytes 0..99
 //                          right, and no sector past the end is fetched;
 //   remount                read 600 bytes of file A, mount file B:
@@ -313,6 +318,35 @@ module tb_tape_src;
         fail_byte("random_jump", 1500, d, ref_mem[1500]);
         if (errors == case_errors) $display("random_jump: ok");
         else $display("random_jump: FAIL");
+
+        // ---- jump_into_slot_being_fetched: the old tag must miss ----
+        case_errors = errors;
+        shown = 0;
+        sd_model.lat = 20000;
+        mount_file(32'd3000, "build/sim/raw3000.hex");
+        wait_cycle(low_cycles);
+        $readmemh("build/sim/raw3000.hex", ref_mem, 0, 2999);
+        start_at(25'd0);
+        get_next(d, worst);              // sector 0 hit: prefetches sector 1
+        fail_byte("jump_into_slot_being_fetched", 0, d, ref_mem[0]);
+        start_at(25'd512);
+        get_next(d, worst);              // sector 1 hit: prefetches sector 2 into slot 0
+        fail_byte("jump_into_slot_being_fetched", 512, d, ref_mem[512]);
+        // the sector-2 fetch has written past offset 400 into slot 0 now
+        i = 0;
+        @(posedge clk_sys); #1;
+        while (!(sd_model.state == sd_model.M_DATA && sd_model.idx > 10'd420)
+               && i < 100000) begin
+            @(posedge clk_sys); #1;
+            i = i + 1;
+        end
+        if (i >= 100000)
+            fail_int("jump_into_slot_being_fetched", "write phase", i, 0);
+        start_at(25'd400);
+        get_next(d, worst);              // sector 0's byte, never sector 2's
+        fail_byte("jump_into_slot_being_fetched", 400, d, ref_mem[400]);
+        if (errors == case_errors) $display("jump_into_slot_being_fetched: ok");
+        else $display("jump_into_slot_being_fetched: FAIL");
 
         // ---- short_file: 100 bytes, no prefetch past the end ----
         case_errors = errors;
