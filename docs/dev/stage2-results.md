@@ -27,6 +27,7 @@ joysticks with an Xbox 360 pad. Status bits: ROM bank [2:1], VSync [7] (128), Tu
 | Mouse wheel | PASS after fix 02caf64 (build 29) | before (build 28): wheel up 3 lowered the #FADF wheel nibble by 3 (finding 1); after: up 3 raises it 7 → 10 (`wheel-up3-build29.png`, 175), down 5 lowers it to 5 (`wheel-down5-build29.png`, 95) |
 | Joystick, Kempston | PASS | owner, Xbox pad: A → `IN 31` = 32 (upstream maps A to bit 5, B to bit 4 fire) |
 | Joystick, Sinclair | PASS | owner, Joystick L = Sinclair2: d-pad and B (fire) on keys 6-0 (`IN 61438`); upstream's "Sinclair1" is keys 1-5 and "Sinclair2" keys 6-0, and only B fires |
+| Sound (build 30) | PASS | owner listening, 128 BASIC loop: `BEEP 1,0` heard; `PLAY "cdefgab"` (AY channel A) heard on the left (PSG Mix ACB: A left, C centre, B right); `PLAY "","","cdefgab"` (channel C) heard in both speakers. Mono is not mono, see finding 5 |
 | CP/M paging | deferred to stage 4 | needs a CP/M disk |
 
 ## Findings
@@ -50,4 +51,9 @@ joysticks with an Xbox 360 pad. Status bits: ROM bank [2:1], VSync [7] (128), Tu
    carried only bit 0 of profi's 16-bit samples. Fixed in 0d732a7: the declarations are
    restored, `default_nettype none` makes any other undeclared net a compile error, and
    `tools/check_timing.py` now fails a build whose map report has a 10236 warning in
-   `Karabas_Profi.sv` or `rtl/`. Board: pending (owner listens on build 30).
+   `Karabas_Profi.sv` or `rtl/`. Board recheck on build 30 (2026-11-08, owner
+   listening): PASS, see the Sound row.
+5. **PSG Mix "Mono" is not mono (upstream).** Upstream `audio_mixer.v` handles mode
+   `2'b10` (Mono) in the same branch as ABC, so AY channel A goes to the left only in
+   every mix mode. On build 30, `PLAY "cdefgab"` (channel A) was left-only under both
+   ACB and Mono, as the code says. The core matches upstream here.
