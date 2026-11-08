@@ -383,3 +383,13 @@ The controller runs this on the board after Task 7, with the owner's go-ahead, a
 | CP/M paging | deferred to stage 4: it needs a CP/M disk |
 
 Findings become fix tasks in this plan, numbered from 9.
+
+### Task 9: Mouse wheel direction (board finding 1)
+
+**Files:** `rtl/host/mcu_emu.sv`, `sim/tb_mcu_input.sv`, `docs/dev/stage2-results.md`
+
+**Why:** MiSTer's `ps2_mouse_ext[7:0]` wheel comes from mousedev's ImPS/2 packet, where wheel up is negative. The board's MCU sends the USB HID wheel, where up is positive, and profi's `kg_cursor` (Z_NEG 0) adds it unchanged. On the board, wheel up moved the #FADF wheel nibble down.
+
+- [ ] **Step 1: tb.** In `tb_mcu_input`, the mouse case drives `ps2_mouse_ext[7:0] = 8'hFF` (MiSTer: wheel up 1) and expects `02 02 01`; add a case `ps2_mouse_ext[7:0] = 8'h03` (wheel down 3) expecting `02 02 FD`. RED first.
+- [ ] **Step 2: Implement.** `ms_dz` is the negated sign-extended wheel byte (11-bit signed, like `ms_dy`), still clamped to ±127 by `clamp7`. Update the comments (header, `ms_dz`) to say why.
+- [ ] **Step 3:** `run_all` 10 passed, unit tests, check_upstream, full build `check_timing: OK`. Commit `host: mcu_emu mouse wheel up is positive, as the MCU's HID wheel`. In `docs/dev/stage2-results.md` finding 1, add "Fixed in <commit>; board recheck: <pending>".

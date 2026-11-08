@@ -206,10 +206,10 @@ endfunction
 
 // mouse: a report's deltas accumulate while it waits for the link, and the
 // burst reads the latched values, so a new report never blends into one
-// already going out. Y is negated because MiSTer's PS/2 mouse has up
-// negative. The wheel is negated for the same reason: mousedev's ImPS/2
-// wheel is negative for up while the board MCU's USB HID wheel is positive
-// for up, and profi adds the delta as it is.
+// already going out. Y is negated because PS/2 has up positive and the
+// board MCU's USB HID has down positive. The wheel is negated too:
+// mousedev's ImPS/2 wheel is negative for up while the board MCU's USB HID
+// wheel is positive for up, and profi adds the delta as it is.
 wire signed [10:0] ms_dx = {{3{ps2_mouse[4]}}, ps2_mouse[15:8]};
 wire signed [10:0] ms_dy = -{{3{ps2_mouse[5]}}, ps2_mouse[23:16]};
 wire signed [10:0] ms_dz = -{{3{ps2_mouse_ext[7]}}, ps2_mouse_ext[7:0]};
