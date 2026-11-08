@@ -400,13 +400,15 @@ assign CLK_VIDEO = clk_vid;
 // drives VSYNC at chr_row 27 while the blank covers rows 28-29), so
 // rtl/video/vframe_gen.sv rebuilds both from the run of fully blank lines
 // in the popped pixel stream, on the clk_vid side with the pop strobe as
-// the clock enable.
+// the clock enable. While it is not locked yet it passes the machine VSYNC
+// through as a fallback, so the scaler never sees a frame without sync.
 wire vf_vblank, vf_vs;
 vframe_gen vframe_gen (
 	.clk(clk_vid),
 	.ce(vid_ce),
 	.hs_n(vid_r[2]),
 	.blank(vid_r[0]),
+	.vs_n(vid_r[1]),
 	.vblank(vf_vblank),
 	.vs(vf_vs)
 );

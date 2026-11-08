@@ -7,9 +7,12 @@
 // blank covers ver_cnt(5 downto 1) = 14, rows 28-29 (lines 209-210) - the
 // VSYNC falls inside the visible picture. MiSTer's video_mixer and the HDMI
 // scaler need VSync inside the vertical blank (at 50 Hz the VSYNC at row 31
-// is inside the rows 30-31 blank, which is why 50 Hz works). So the machine
-// VSYNC is not used at all: this module finds the run of fully blank lines in
-// the stream and generates both signals from it, for every mode.
+// is inside the rows 30-31 blank, which is why 50 Hz works). So the locked
+// output does not use the machine VSYNC at all: this module finds the run of
+// fully blank lines in the stream and generates both signals from it, for
+// every mode. While it is still unlocked (core start, and after every mode,
+// VSync or DS80 switch until two matching frames lock it again) it passes
+// the machine VSYNC through instead, so the scaler always has a sync.
 //
 // Algorithm (all state changes on posedge clk with ce = 1; the inputs change
 // only with ce):
@@ -31,16 +34,25 @@
 //    frame line number of the first line of the blank run that ended at this
 //    anchor. The first anchor after reset only starts the counting.
 //  - Lock: at a measuring anchor with m_total == total, m_vis == vis and the
-//    anchor line at frame number 0 under the stored count, locked becomes 1
+//    anchor line at frame number 0 under the stored count, the module locks
 //    (two identical frames lock it). Any other anchor unlocks, stores the new
 //    measurement and re-anchors ln. A visible pixel seen while vblank = 1 is
 //    a stale geometry seen live: it unlocks as well, until the next anchor
 //    measures and two matching frames lock again.
-//  - Outputs are registered and change only at boundaries (constant over a
-//    line): vblank covers the frame lines vis..total-1 (the whole blank run:
-//    by construction the run ends the frame, frame line 0 is its first
-//    visible line), vs covers VS_OFF..VS_OFF+VS_LEN-1 lines inside it. While
-//    unlocked both are 0.
+//  - Locked outputs are registered at boundaries and constant over a line:
+//    vblank covers the frame lines vis..total-1 (the whole blank run: by
+//    construction the run ends the frame, frame line 0 is its first visible
+//    line), vs covers VS_OFF..VS_OFF+VS_LEN-1 lines inside it.
+//  - Unlocked outputs fall back to the machine sync: vblank = 0 and vs is the
+//    machine VSYNC (vs_n inverted, registered on every ce clock), so the
+//    scaler still sees a sync while the module waits for two matching frames.
+//  - The outputs for the line starting at a boundary are driven by the lock
+//    decision made on that boundary, not by the old locked value: an unlock
+//    raised there (a non-matching anchor, or a visible pixel on the boundary
+//    clock) already gives that line the unlocked outputs. An unlock raised
+//    mid-line (a visible pixel inside an asserted vblank) takes effect on
+//    that ce clock's next ce clock: vblank drops and vs switches to the
+//    machine VS at once, without waiting for the next boundary.
 `default_nettype none
 
 module vframe_gen #(
@@ -52,6 +64,7 @@ module vframe_gen #(
     input  wire ce,              // pixel strobe (vid_ce); inputs change only with ce
     input  wire hs_n,            // machine HSYNC as popped from the FIFO, active low (vid_r[2])
     input  wire blank,           // 1 = blanking, normalised (vid_r[0])
+    input  wire vs_n,            // machine VSYNC as popped from the FIFO, active low (vid_r[1])
     output reg  vblank = 1'b0,
     output reg  vs     = 1'b0    // active high
 );
@@ -80,27 +93,25 @@ wire [9:0] ln_next = (total != 10'd0 && ln + 10'd1 == total) ? 10'd0
                  : (total == 10'd0 && ln == 10'd1023)       ? 10'd1023
                  : ln + 10'd1;
 // next-boundary values of the output factors
-wire        locked_n = anchor ? match : locked;
-wire [9:0]  ln_o     = anchor ? 10'd1 : ln_next;
-wire [9:0]  vis_o    = (anchor && !match && c != 1023) ? m_vis[9:0] : vis;
+// A visible pixel inside an asserted vblank is a stale geometry seen live: it
+// unlocks, and no lock decision taken on this same boundary may hide it.
+wire        unlock_live = vblank && !blank;
+wire        anchor_lock = anchor && have_anchor && match;
+wire        locked_n    = unlock_live ? 1'b0 : (anchor ? anchor_lock : locked);
+wire [9:0]  ln_o        = anchor ? 10'd1 : ln_next;
+wire [9:0]  vis_o       = (anchor && !match && c != 1023) ? m_vis[9:0] : vis;
 
 always @(posedge clk) begin
     if (ce) begin
         hs_n_d <= hs_n;
-        // a visible pixel inside an asserted vblank is a geometry change
-        if (vblank && !blank)
-            locked <= 1'b0;
         if (boundary) begin
             seen <= 1'b0;
             run  <= line_visible ? 10'd0
                  : (run == 10'd1023) ? run : run + 10'd1;
             if (anchor) begin
-                if (have_anchor) begin
-                    locked <= match;
-                    if (!match && c != 1023) begin
-                        total <= m_total[9:0];
-                        vis   <= m_vis[9:0];
-                    end
+                if (have_anchor && !match && c != 10'd1023) begin
+                    total <= m_total[9:0];
+                    vis   <= m_vis[9:0];
                 end
                 have_anchor <= 1'b1;
                 ln <= 10'd1;               // the line in progress was line 0
@@ -109,12 +120,26 @@ always @(posedge clk) begin
                 ln <= ln_next;
                 c  <= (c == 10'd1023) ? c : c + 10'd1;
             end
-            vblank <= locked_n && (ln_o >= vis_o);
-            vs     <= locked_n
-                      && ({1'b0, ln_o} >= {1'b0, vis_o} + VS_OFF)
-                      && ({1'b0, ln_o} <  {1'b0, vis_o} + (VS_OFF + VS_LEN));
-        end else if (!blank)
-            seen <= 1'b1;
+            // the line starting at this boundary is driven by this boundary's
+            // decision, so an unlock here takes effect on that line at once
+            locked <= locked_n;
+            if (locked_n) begin
+                vblank <= (ln_o >= vis_o);
+                vs     <= ({1'b0, ln_o} >= {1'b0, vis_o} + VS_OFF)
+                          && ({1'b0, ln_o} <  {1'b0, vis_o} + (VS_OFF + VS_LEN));
+            end else begin                 // unlocked: the machine sync
+                vblank <= 1'b0;
+                vs     <= ~vs_n;
+            end
+        end else begin
+            if (!blank)
+                seen <= 1'b1;
+            if (unlock_live || !locked) begin
+                locked <= 1'b0;            // an unlock drops the outputs on the
+                vblank <= 1'b0;            // next ce clock, mid-line or not
+                vs     <= ~vs_n;
+            end
+        end
     end
 end
 

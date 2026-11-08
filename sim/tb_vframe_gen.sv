@@ -14,16 +14,34 @@
 //   3. P=272 B=0   L=32, 6 periods (blank run at the period start)
 //   4. P=320 B=304 L=16, 40 periods (the 50 Hz shape again; 40 so that even
 //      a lock lost 30 periods back is re-acquired before the run ends)
+//   5. P=300, 301, ... 309 (one period each, 10 periods), B=280 L=16: the
+//      line count changes every frame, so two measured frames never match
+//      and the module never locks again after segment 4.
+//
+// The machine VSYNC input vs_n is driven in every segment: low on lines
+// B+1 .. B+3 of each period, i.e. on exactly the lines the locked output
+// puts the generated VSYNC on. Segments 1-4 therefore also show that the
+// locked outputs ignore the machine VSYNC.
 //
 // Checks on every line of every segment from its fourth period on (the first
 // three periods of a segment are lock time; during them only the "vs never on
 // a visible pixel" rule is checked, and that one on every period):
-//  - vblank and vs are constant over a line (sampled on every ce clock and
-//    compared with the value at the line's first pixel after the boundary);
+//  - vblank and vs are constant over a line while locked (sampled on every
+//    ce clock and compared with the value at the line's first pixel after
+//    the boundary);
 //  - vblank = 1 exactly on the L blank-run lines,
 //  - vs = 1 exactly on blank-run lines B+1 .. B+3,
 //  - no ce clock with blank = 0 while vblank = 1,
-//  - no ce clock with vs = 1 and blank = 0 (the VS sits inside the blank).
+//  - no ce clock with vs = 1 and blank = 0 (the VS sits inside the blank),
+//  - an unlock seen mid-line (a visible pixel inside an asserted vblank)
+//    makes vblank 0 on the next ce clock (checked on every ce clock of every
+//    segment: this is the one-line lag fix).
+//
+// Segment 5 checks, from its second period on: the module never locks,
+// vblank is never 1, and on every ce clock vs is the inverse of the machine
+// vs_n that was sampled at that clock (the registered fallback: the output
+// is one ce behind the input's change). At the 4 -> 5 transition, the first
+// line after the unlocking anchor already has vblank = 0.
 //
 // The DUT aligns its lines to the falling hs_n and may change its outputs
 // there, so a DUT line is the pixel run from pixel 392 of one period line to
@@ -54,11 +72,12 @@ always #5 clk = ~clk;            // 10 ns period, ce every 4th clock
 reg ce    = 1'b0;
 reg hs_n  = 1'b1;
 reg blank = 1'b1;
+reg vs_n  = 1'b1;
 wire vblank;
 wire vs;
 
 vframe_gen dut (
-    .clk(clk), .ce(ce), .hs_n(hs_n), .blank(blank),
+    .clk(clk), .ce(ce), .hs_n(hs_n), .blank(blank), .vs_n(vs_n),
     .vblank(vblank), .vs(vs)
 );
 
@@ -74,7 +93,7 @@ task automatic err(input [8*40:1] what);
 endtask
 
 // ---------------------------------------------------------------- generator
-integer segno  = 0;              // current segment (1..4)
+integer segno  = 0;              // current segment (1..5)
 integer g_pno  = 0;              // current period within the segment
 integer g_line = 0;              // period line being drawn
 integer gp     = 0;              // pixel of that line being driven
@@ -88,6 +107,13 @@ task automatic draw_line(input is_blank_line);
             ce     = 1'b1;
             hs_n   = (gp >= HS0 && gp < HS1 + 1) ? 1'b0 : 1'b1;
             blank  = (gp >= HV0 || is_blank_line) ? 1'b1 : 1'b0;
+            vs_n   = (g_line > gB && g_line <= gB + 3) ? 1'b0 : 1'b1;
+            // the ce clock about to be sampled is a line boundary: arm the
+            // 4 -> 5 check when it is the boundary that unlocks the module
+            if (gp == HS0 && segno == 5 && g_pno == 0 &&
+                dut.locked === 1'b1 && dut.anchor === 1'b1 &&
+                dut.match === 1'b0)
+                t45 = 1'b1;
             @(negedge clk);
             ce     = 1'b0;
         end
@@ -105,6 +131,26 @@ task automatic run_seg(input integer seg, P, B, L, nper);
                 draw_line(B <= g_line && g_line < B + L);
             g_pno = g_pno + 1;
         end
+        $display("tb_vframe_gen: seg %0d done (%0d periods, %0d errors so far)",
+                 seg, nper, errors);
+    end
+endtask
+
+// a segment whose period grows by one line every period (segment 5)
+task automatic run_vseg(input integer seg, P0, B, L, nper);
+    integer per;
+    begin
+        segno = seg;
+        gB = B; gL = L;
+        g_pno = 0;
+        for (per = 0; per < nper; per = per + 1) begin
+            gP = P0 + per;
+            for (g_line = 0; g_line < gP; g_line = g_line + 1)
+                draw_line(B <= g_line && g_line < B + L);
+            g_pno = g_pno + 1;
+        end
+        $display("tb_vframe_gen: seg %0d done (%0d periods, P %0d..%0d, %0d errors so far)",
+                 seg, nper, P0, P0 + nper - 1, errors);
     end
 endtask
 
@@ -113,12 +159,13 @@ initial begin : genproc
     run_seg(2, 264, 248, 16, 6);
     run_seg(3, 272,   0, 32, 6);
     run_seg(4, 320, 304, 16, 40);
+    run_vseg(5, 300, 280, 16, 10);
     done = 1'b1;
 end
 
-initial begin : watchdog               // 17936 lines of stimulus + slack
-    repeat (36000 * CPL) @(negedge clk);
-    $display("tb_vframe_gen: error watchdog after 36000 lines (%0d errors so far)", errors);
+initial begin : watchdog               // 20981 lines of stimulus + slack
+    repeat (45000 * CPL) @(negedge clk);
+    $display("tb_vframe_gen: error watchdog after 45000 lines (%0d errors so far)", errors);
     $display("tb_vframe_gen: FAIL watchdog");
     $fatal(1);
 end
@@ -128,20 +175,45 @@ reg  x_vb, x_vs;                       // outputs at the previous ce clock
 reg  have_x = 1'b0;
 reg  p4ok   = 1'b0;                    // the line in progress is checked
 reg  exp_vb, exp_vs;
+reg  vb_pre = 1'b0;                    // vblank just before the ce clock's edge
+reg  t45    = 1'b0;                    // the 4 -> 5 unlocking anchor was seen
+
+always @(negedge clk) vb_pre = vblank; // the value the DUT samples this pixel with
 
 initial forever begin
     @(posedge clk); #1;                 // just after the posedge that
     if (ce === 1'b1) begin              // sampled this pixel's ce = 1
         if (vs === 1'b1 && blank === 1'b0)          // every period
             err("vs on a non-blank pixel");
+        // the lag rule: a visible pixel inside an asserted vblank unlocks
+        // the module, and the ce clock's next ce clock must have vblank = 0
+        if (vb_pre === 1'b1 && blank === 1'b0 && vblank !== 1'b0)
+            err("vblank stays after a visible pixel");
+        // the first line after the anchor that unlocked the module at the
+        // 4 -> 5 transition already has vblank = 0
+        if (t45 && vblank !== 1'b0)
+            err("vblank after the unlocking anchor");
+        t45 = 1'b0;
+        if (segno == 5 && g_pno >= 1) begin         // the varying-period stream
+            if (dut.locked !== 1'b0)
+                err("locked in the varying-period stream");
+            if (vblank !== 1'b0)
+                err("vblank while unlocked");
+            if (vs !== ~vs_n)
+                err("vs not the machine VS while unlocked");
+        end
         if (gp == 0 || gp == HS0)                   // the pixel run owned by
-            p4ok = (g_pno >= 3);                    // a period line is checked
+            p4ok = (segno <= 4) && (g_pno >= 3);    // a period line is checked
         if (gp == HS0) begin                        // first pixel of a DUT
             x_vb = vblank;                          // outputs describe the
             x_vs = vs;                              // next period line
             have_x = 1'b1;
         end else begin
-            if (have_x && (vblank !== x_vb || vs !== x_vs))
+            // constant over the line while locked; while unlocked vs is the
+            // machine VS (it may step inside a DUT line) and an unlock drops
+            // vblank at once
+            if (have_x && dut.locked === 1'b1 &&
+                (vblank !== x_vb || vs !== x_vs))
                 err("vblank/vs not constant over the line");
             // pixel 200 is on the period line that owns the DUT line, the
             // boundary pixel 392 on the next one already: check there, where
