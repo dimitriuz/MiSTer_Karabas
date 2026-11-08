@@ -1,0 +1,5 @@
+10 PRINT "GS status ";IN 187
+20 LET e=0: FOR k=1 TO 300: OUT 187,35
+30 IF IN 187<128 THEN GO TO 30
+40 LET p=IN 179: IF p<>62 THEN LET e=e+1
+50 NEXT k: PRINT "pages ";p;" err ";e

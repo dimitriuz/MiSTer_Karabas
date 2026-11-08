@@ -1,0 +1,2 @@
+10 PRINT "tape ok"
+20 PRINT PEEK 23672
