@@ -31,19 +31,11 @@
 -- clkmux2 then switches both clocks together on DS80: the phase cannot move across a
 -- switch. The 50 % duty matters: the ena_cnt below ticks on the falling edge.
 --
--- While DS80 = 0 the bus clock also re-aligns itself to CLK_GS (Stage 3): gs.v samples
--- the host bus on CLK_GS and needs the bus edge there, and the divider's phase against
--- clk_28 used to be whatever reset release or the last DS80 switch left. The
--- t28/hold_req loop below adds one clk_mem of low phase at a time until a CLK_BUS
--- rising edge is a CLK_GS rising edge; it is idle while DS80 = 1, where the bus is
--- 24.107 MHz against the fixed 28.125 MHz CLK_GS and there is nothing to align.
---
--- The sdc keeps clk_bus and clk_mem related (a divide-by-4), and clk_gs (general[0])
--- related to the 28.125 MHz pair clk_mem112/clk_bus28 - the phase relation above is the
--- point of the alignment. The DS80 pair clk_mem96/clk_bus24 and the fixed video output
--- general[2] are cut asynchronous against it: with DS80 = 1 the GS cannot reach the
--- host bus (gs_sel has ~DS80), and the video CDC has its own synchronisers. What the
--- Xilinx PLL gave and this one does not:
+-- The sdc keeps clk_bus and clk_mem related (a divide-by-4) and cuts the fixed PLL
+-- outputs general[0] (CLK_GS) and general[2] (CLK_VID) asynchronous against the two
+-- {clk_mem, clk_bus} groups, so what crosses those cuts is synchronised by design:
+-- the cdc_fifo handshake of the video CDC. What the Xilinx PLL
+-- gave and this one does not:
 --
 --   clk_gs  = clk_28, not a second 28.125 MHz PLL output of the same frequency and
 --             phase; it stays out of the memory mux, the General Sound part of the
@@ -127,15 +119,6 @@ signal rm_cnt : std_logic_vector(3 downto 0) := "0000";  -- the >= 16 clk_mem st
 signal r1, r2 : std_logic := '0';        -- two more clk_mem edges after rm_cnt is full
 signal reset_mem_i : std_logic;
 signal acc8 : std_logic_vector(16 downto 0) := (others => '0');
--- CLK_GS alignment (Stage 3): t28 toggles on every clk_28 rising edge, so one edge per
--- CLK_GS period; sampled into the clk_mem domain (t28_m, t28_d), chg is high for the
--- clk_mem cycle after the edge that follows a CLK_GS rise. al_s1/al_s2 bring DS80 into
--- that domain (al_en = not al_s2); hold_req asks clkdiv4 for one clk_mem of low phase.
-signal t28, t28_m, t28_d : std_logic := '0';
-signal al_s1, al_s2      : std_logic := '0';
-signal hold_req          : std_logic := '0';
-signal chg               : std_logic;
-signal bus_phase_i : std_logic_vector(1 downto 0);  -- clkdiv4 counter, to the BUS_PHASE port
 
 -- The Cyclone V units, declared as components rather than instantiated as
 -- `entity work.`: Quartus 17 cannot bind a VHDL direct entity instantiation to a Verilog
@@ -157,7 +140,6 @@ component clkdiv4 is
 port (
 	clk_in  : in  std_logic;
 	rst     : in  std_logic;
-	hold    : in  std_logic;
 	clk_out : out std_logic;
 	phase   : out std_logic_vector(1 downto 0)
 );
@@ -202,9 +184,7 @@ CLK_SDR <= clk_mem_i;
 CLK_VID <= clk_112;
 
 U9 : clkmux2 port map (clk0 => clk_112, clk1 => clk_96, clk_out => clk_mem_i, sel => ds80);
-U11: clkdiv4 port map (clk_in => clk_mem_i, rst => reset_mem_i, hold => hold_req,
-	clk_out => clk_bus_i, phase => bus_phase_i);
-BUS_PHASE <= bus_phase_i;
+U11: clkdiv4 port map (clk_in => clk_mem_i, rst => reset_mem_i, clk_out => clk_bus_i, phase => BUS_PHASE);
 U10: clkgate port map(clk => clk_bus_i, gclk => clk_rgb_i, en => ena_rgb);
 clk_bus <= clk_bus_i;
 clk_rgb <= clk_rgb_i;
@@ -244,51 +224,6 @@ begin
 end process;
 reset_mem_i <= s2 or not (r1 and r2);
 RESET_MEM <= reset_mem_i;
-
--- CLK_GS alignment while DS80 = 0. Upstream's gs.v reads the host CPU bus (#B3/#BB)
--- directly on CLK_GS, so the bus edge must be the CLK_GS edge: the machine is built
--- around that (STA treats clk_bus28 and clk_gs as related). t28 toggles on every clk_28
--- rising edge; sampled into the clk_mem domain, chg is high in the clk_mem cycle after
--- the edge that follows a CLK_GS rise. The bus rising edge is the clk_mem edge where
--- the counter becomes "00", and in the aligned phase that is the edge the CLK_GS rise
--- is sampled at: chg is seen one edge later, with the counter at "01". Any other
--- counter value means the bus edge is not under the CLK_GS edge, and hold_req stalls
--- clkdiv4 at "11" (one extra clk_mem of low phase), moving the next bus edge one
--- clk_mem later. At most three requests put the edge on the CLK_GS edge; each request
--- is applied and cleared on the same edge, so one request is exactly one clk_mem, and a
--- hold only ever lengthens a low phase (the high phase stays 2 clk_mem, which the bus
--- timing and the falling-edge ena_cnt rely on). While DS80 = 1 CLK_BUS is 24.107 MHz
--- against the fixed 28.125 MHz CLK_GS and nothing can be aligned, so the loop stops
--- (al_s2 follows DS80 into this domain, al_en = not al_s2); hold_req is held clear in
--- reset, so the loop starts clean and the first bus edges after release take only the
--- holds their phase needs.
-t28_ff: process (clk_28)
-begin
-	if rising_edge(clk_28) then
-		t28 <= not t28;
-	end if;
-end process;
-
-chg <= t28_m xor t28_d;
-
-align: process (clk_mem_i)
-begin
-	if rising_edge(clk_mem_i) then
-		t28_m <= t28;
-		t28_d <= t28_m;
-		al_s1 <= ds80;
-		al_s2 <= al_s1;
-		if reset_mem_i = '1' then
-			hold_req <= '0';
-		elsif hold_req = '1' then
-			if bus_phase_i = "11" then
-				hold_req <= '0';    -- clkdiv4 applies the hold on this same edge
-			end if;
-		elsif al_s2 = '0' and chg = '1' and bus_phase_i /= "01" then
-			hold_req <= '1';
-		end if;
-	end if;
-end process;
 
 -- 8 MHz clock enable on clk_bus for the SAA1099 (8 MHz is its clock in the SAM Coupe): a phase accumulator,
 -- 8 / 28.125 * 2^16 = 18641, 8 / 24.107 * 2^16 = 21748 (7.99997 / 7.99993 MHz on average, one clk_bus of jitter).
