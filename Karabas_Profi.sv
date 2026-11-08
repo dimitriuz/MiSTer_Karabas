@@ -63,6 +63,7 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 // indices and fields mcu_emu sends over the MCU link); the aspect/scandoubler
 // fields are MiSTer-side only.
 `include "build_id.v"
+`default_nettype none
 localparam CONF_STR = {
 	"Karabas_Profi;;",
 	"-;",
@@ -208,6 +209,7 @@ mcu_emu u_mcu (
 
 wire clk_bus, clk_sdr, clk_vid; // from profi's clock generator (clock.vhd)
 wire profi_reset, profi_areset, profi_kb_reset;   // buffer ports, read-only
+wire [15:0] profi_audio_l, profi_audio_r;         // AU samples, AUDIO_L/R below
 
 wire [8:0]  rgb;
 wire        rgb_hs, rgb_vs, rgb_blank, rgb_clk, vga_clk;
@@ -466,3 +468,5 @@ assign AUDIO_S = 1;               // signed samples
 assign AUDIO_MIX = 0;
 
 endmodule
+
+`default_nettype wire
