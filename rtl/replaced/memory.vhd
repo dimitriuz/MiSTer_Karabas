@@ -327,6 +327,18 @@ begin
 					b_req_r <= '0';
 				end if;
 				if loader_act = '1' and loader_ram_wr = '1' and loader_ram_a(31) = '0' then
+					-- pragma translate_off
+					-- A byte arriving while the previous request is still
+					-- pending (b_req_r high and no done toggle to clear it
+					-- this clock) would overwrite b_addr_r/b_din_r without
+					-- a new rising edge on b_req: the controller would serve
+					-- the later byte and the earlier one would vanish. The
+					-- SPI frame rate keeps this from happening today; this
+					-- assertion is the report if it ever does.
+					assert not (b_req_r = '1' and b_done_s1 = b_done_s2)
+						report "memory: loader write while the previous one is pending"
+						severity failure;
+					-- pragma translate_on
 					b_addr_r <= loader_ram_a(20 downto 0);
 					b_din_r  <= loader_ram_do;
 					b_we_r   <= '1';
