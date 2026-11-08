@@ -3,13 +3,14 @@
 
 usage: check_timing.py [OUTPUT_DIR]     (default: output_files)
 
-Reads OUTPUT_DIR/Karabas_Profi.sta.summary and OUTPUT_DIR/Karabas_Profi.sta.rpt
-and prints one line per problem, then `check_timing: OK` (exit 0) or
-`check_timing: FAIL <n> problems` (exit 1). Quartus exits 0 with negative
-slack and only warns when an sdc line matches no clock, so the qbuild exit
-code alone cannot prove timing closure (final review I1). Problems:
+Reads OUTPUT_DIR/Karabas_Profi.sta.summary, OUTPUT_DIR/Karabas_Profi.sta.rpt
+and OUTPUT_DIR/Karabas_Profi.map.rpt and prints one line per problem, then
+`check_timing: OK` (exit 0) or `check_timing: FAIL <n> problems` (exit 1).
+Quartus exits 0 with negative slack and only warns when an sdc line matches no
+clock, so the qbuild exit code alone cannot prove timing closure (final review
+I1). Problems:
 
-  1. either report file is missing;
+  1. one of the three report files is missing;
   2. a `Slack :` line of the summary whose value is negative (the `Type :`
      line that precedes it is printed with the slack);
   3. the summary has no `Slack :` line at all (an empty or truncated report);
@@ -22,6 +23,12 @@ code alone cannot prove timing closure (final review I1). Problems:
   5. an rpt line carrying Warning (332174), (332049) or (332060) that
      mentions Karabas_Profi.sdc - an ignored or ineffective line of our own
      sdc. The stock sys_top.sdc(14) 332174 of every build does not count.
+  6. a map.rpt line carrying Warning (10236), Quartus's Verilog implicit-net
+     warning, whose `File:` path is Karabas_Profi.sv or under rtl/: an
+     undeclared identifier became a 1-bit net (a83303d deleted the 16-bit
+     profi_audio_l/r declarations, so the AUDIO pins carried only bit 0 of
+     profi's samples). The build tree's `/work/` prefix is stripped; sys/
+     and upstream warnings are not ours to declare.
 """
 import argparse
 import re
@@ -30,12 +37,16 @@ from pathlib import Path
 
 SUMMARY_NAME = "Karabas_Profi.sta.summary"
 RPT_NAME = "Karabas_Profi.sta.rpt"
+MAP_RPT_NAME = "Karabas_Profi.map.rpt"
 REQUIRED_CLOCKS = ("clk_bus28", "clk_bus24", "clk_mem112", "clk_mem96")
 SDC_WARNING_CODES = ("Warning (332174)", "Warning (332049)", "Warning (332060)")
 OUR_SDC = "Karabas_Profi.sdc"
+IMPLICIT_NET_CODE = "Warning (10236)"
+TOP_NAME = "Karabas_Profi.sv"
 
 TYPE_RE = re.compile(r"^Type\s+:")
 SLACK_RE = re.compile(r"^Slack\s+:\s*(\S+)")
+FILE_RE = re.compile(r"File:\s*(\S+)")
 
 
 def check_summary(path):
@@ -88,18 +99,42 @@ def check_rpt(path):
     return problems
 
 
+def check_map(path):
+    """Problem lines for the map.rpt: implicit nets in our sources.
+
+    The source is the `File: ` path with the build tree's `/work/` prefix
+    stripped: Karabas_Profi.sv and rtl/ are ours, sys/ and upstream are not.
+    """
+    problems = []
+    for line in path.read_text(errors="replace").splitlines():
+        if IMPLICIT_NET_CODE not in line:
+            continue
+        line = line.strip()
+        m = FILE_RE.search(line)
+        source = m.group(1) if m else ""
+        if source.startswith("/work/"):
+            source = source[len("/work/"):]
+        if source != TOP_NAME and not source.startswith("rtl/"):
+            continue
+        problems.append("%s: implicit net: %s" % (MAP_RPT_NAME, line))
+    return problems
+
+
 def check(output_dir):
     """List of problem lines for the report dir; empty means all good."""
     out = Path(output_dir)
     summary, rpt = out / SUMMARY_NAME, out / RPT_NAME
+    map_rpt = out / MAP_RPT_NAME
     problems = []
-    for p in (summary, rpt):
+    for p in (summary, rpt, map_rpt):
         if not p.is_file():
             problems.append("missing report file: %s" % p)
     if summary.is_file():
         problems += check_summary(summary)
     if rpt.is_file():
         problems += check_rpt(rpt)
+    if map_rpt.is_file():
+        problems += check_map(map_rpt)
     return problems
 
 

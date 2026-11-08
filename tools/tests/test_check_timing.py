@@ -12,6 +12,10 @@ emitted on every build and must not fail the gate) plus its plain
 `Karabas_Profi.sdc` mentions (SDC File List, Info 332104), so the OK case
 also pins that a mention of our sdc outside the three warning codes is
 harmless.
+
+The good map.rpt carries a `Warning (10236)` line from sys/ (Quartus's
+implicit-net warning on a file we do not own), so the OK case also pins that
+only Karabas_Profi.sv and rtl/ count.
 """
 import contextlib
 import io
@@ -28,6 +32,7 @@ import check_timing  # noqa: E402
 
 SUMMARY_NAME = "Karabas_Profi.sta.summary"
 RPT_NAME = "Karabas_Profi.sta.rpt"
+MAP_NAME = "Karabas_Profi.map.rpt"
 
 SUMMARY_GOOD = """\
 ------------------------------------------------------------
@@ -121,6 +126,26 @@ RPT_OUR_SDC_332060 = RPT_GOOD + (
     " File: /work/Karabas_Profi.sdc Line: 49\n"
 )
 
+# Quartus created an implicit net in a file of the stock sys/ tree; we do not
+# own that source and only warnings in Karabas_Profi.sv or rtl/ fail the gate.
+MAP_GOOD = """\
+Warning (10236): Verilog HDL Implicit Net warning at sys/sys_top.sv(9): created implicit net for "foo" File: /work/sys/sys_top.sv Line: 9
+Info (12023): Found entity 1: emu File: /work/Karabas_Profi.sv Line: 27
+"""
+
+# shape verbatim from build 29: a83303d deleted the two 16-bit declarations.
+MAP_TOP_10236 = MAP_GOOD + (
+    "Warning (10236): Verilog HDL Implicit Net warning at"
+    " Karabas_Profi.sv(286): created implicit net for \"profi_audio_l\""
+    " File: /work/Karabas_Profi.sv Line: 286\n"
+)
+
+MAP_RTL_10236 = MAP_GOOD + (
+    "Warning (10236): Verilog HDL Implicit Net warning at"
+    " rtl/video/video_cdc.sv(42): created implicit net for \"dout\""
+    " File: /work/rtl/video/video_cdc.sv Line: 42\n"
+)
+
 
 def run_main(argv):
     """check_timing.main(argv) with stdout captured; (code, output)."""
@@ -136,12 +161,14 @@ class CheckTimingTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.out = Path(tmp.name)
 
-    def check(self, summary=SUMMARY_GOOD, rpt=RPT_GOOD):
-        """Write the two fixtures into the report dir and run main() on it."""
+    def check(self, summary=SUMMARY_GOOD, rpt=RPT_GOOD, map_rpt=MAP_GOOD):
+        """Write the three fixtures into the report dir and run main() on it."""
         if summary is not None:
             (self.out / SUMMARY_NAME).write_text(summary)
         if rpt is not None:
             (self.out / RPT_NAME).write_text(rpt)
+        if map_rpt is not None:
+            (self.out / MAP_NAME).write_text(map_rpt)
         return run_main([str(self.out)])
 
     # ---- OK cases ---------------------------------------------------------
@@ -162,6 +189,7 @@ class CheckTimingTest(unittest.TestCase):
         sub.mkdir()
         (sub / SUMMARY_NAME).write_text(SUMMARY_GOOD)
         (sub / RPT_NAME).write_text(RPT_GOOD)
+        (sub / MAP_NAME).write_text(MAP_GOOD)
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(self.out)
         code, out = run_main([])
@@ -225,6 +253,34 @@ class CheckTimingTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Karabas_Profi.sdc", out)
 
+    # ---- implicit nets (map.rpt) ------------------------------------------
+    def test_map_10236_in_top_fails_naming_file_and_line(self):
+        code, out = self.check(map_rpt=MAP_TOP_10236)
+        self.assertEqual(code, 1)
+        self.assertIn("Karabas_Profi.sv(286)", out)
+        self.assertEqual(out.strip().splitlines()[-1],
+                         "check_timing: FAIL 1 problems")
+
+    def test_map_10236_under_rtl_fails(self):
+        code, out = self.check(map_rpt=MAP_RTL_10236)
+        self.assertEqual(code, 1)
+        self.assertIn("rtl/video/video_cdc.sv(42)", out)
+
+    def test_map_10236_in_sys_is_ok(self):
+        # the fixture carries an implicit net in the stock sys/ tree, which
+        # is not ours to declare.
+        self.assertIn("Warning (10236)", MAP_GOOD)
+        self.assertIn("/work/sys/", MAP_GOOD)
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+
+    def test_missing_map_fails(self):
+        code, out = self.check(map_rpt=None)
+        self.assertEqual(code, 1)
+        self.assertIn(MAP_NAME, out)
+        self.assertEqual(out.strip().splitlines()[-1],
+                         "check_timing: FAIL 1 problems")
+
     # ---- missing files ----------------------------------------------------
     def test_missing_summary_fails(self):
         code, out = self.check(summary=None)
@@ -238,11 +294,12 @@ class CheckTimingTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(RPT_NAME, out)
 
-    def test_both_missing_counts_two_problems(self):
-        code, out = self.check(summary=None, rpt=None)
+    def test_all_missing_counts_three_problems(self):
+        code, out = self.check(summary=None, rpt=None, map_rpt=None)
         self.assertEqual(code, 1)
+        self.assertIn(MAP_NAME, out)
         self.assertEqual(out.strip().splitlines()[-1],
-                         "check_timing: FAIL 2 problems")
+                         "check_timing: FAIL 3 problems")
 
 
 if __name__ == "__main__":
