@@ -15,10 +15,11 @@
 //               ticks in the FPGA, so the next burst is one second later
 //               (SEC_CLKS = RTC_CLKS here, and the bench reloads the clock
 //               through RTC[64] right before each checked burst);
-//   mouse       X=+5, Y=+3 (up), wheel +1, left button is 02 00 05,
-//               02 01 FD, 02 02 01, 02 03 01; X=-200 clamps to 81; two
-//               reports of X=+5 arriving while a keyboard burst holds the
-//               link add to one report 02 00 0A;
+//   mouse       X=+5, Y=+3 (up), wheel up (8'hFF), left button is
+//               02 00 05, 02 01 FD, 02 02 01, 02 03 01; wheel down 3 is
+//               02 02 FD and 8'h80 (-128) clamps to 02 02 7F; X=-200
+//               clamps to 81; two reports of X=+5 arriving while a keyboard
+//               burst holds the link add to one report 02 00 0A;
 //   joystick    joystick_0 = up+A is 03 00 43, 03 01 00, and the R frames
 //               carry joystick_1 (the idle word: 03 02 01, 03 03 00);
 //   rtc_binary  after a reply FA 0B 06 the time frames are binary: FA 00 3A,
@@ -320,13 +321,13 @@ module tb_mcu_input;
       chkfrm(j + 5, 24'hFA0812);
       chkfrm(j + 6, 24'hFA0925);
 
-      // mouse: X=+5, Y=+3 (up), wheel +1, left button
+      // mouse: X=+5, Y=+3 (up), wheel -1 (MiSTer's wheel up), left button
       @(negedge clk);
       ps2_mouse[7:0]     = 8'h01;
       ps2_mouse[15:8]    = 8'h05;
       ps2_mouse[23:16]   = 8'h03;
       ps2_mouse[24]      = 1'b1;
-      ps2_mouse_ext[7:0] = 8'h01;
+      ps2_mouse_ext[7:0] = 8'hFF;
       find_frame(base, 24'h020005, 2000);
       j = find_i;
       `WAIT_GT(nfrm < j + 4, 5000, "the mouse report did not finish")
@@ -349,6 +350,31 @@ module tb_mcu_input;
       chkfrm(j + 2, 24'h020200);
       chkfrm(j + 3, 24'h020300);
 
+      // wheel down 3 from the user (mousedev: +3) is -3 to the MCU
+      @(negedge clk);
+      ps2_mouse[4]       = 1'b0;
+      ps2_mouse[15:8]    = 8'h00;
+      ps2_mouse[23:16]   = 8'h00;
+      ps2_mouse[24]      = 1'b1;
+      ps2_mouse_ext[7:0] = 8'h03;
+      find_frame(j + 4, 24'h020000, 2000);
+      j = find_i;
+      `WAIT_GT(nfrm < j + 4, 5000, "the wheel-down report did not finish")
+      chkfrm(j + 1, 24'h020100);
+      chkfrm(j + 2, 24'h0202FD);     // wheel -3
+      chkfrm(j + 3, 24'h020300);
+
+      // 8'h80 (-128) negates to +128, which clamps to +127
+      @(negedge clk);
+      ps2_mouse[24]      = 1'b0;
+      ps2_mouse_ext[7:0] = 8'h80;
+      find_frame(j + 4, 24'h020000, 2000);
+      j = find_i;
+      `WAIT_GT(nfrm < j + 4, 5000, "the clamped wheel report did not finish")
+      chkfrm(j + 1, 24'h020100);
+      chkfrm(j + 2, 24'h02027F);     // wheel +127
+      chkfrm(j + 3, 24'h020300);
+
       // two +5 reports while a keyboard burst holds the link: the deltas
       // add to one report of 0x0A
       @(negedge clk);
@@ -356,6 +382,7 @@ module tb_mcu_input;
       ps2_mouse[15:8]  = 8'h05;
       ps2_mouse[23:16] = 8'h00;
       ps2_mouse[7:0]   = 8'h00;
+      ps2_mouse_ext    = 16'd0;
       kb_report  = {8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h04, 8'h02};
       kb_changed = 1'b1;
       @(negedge clk);

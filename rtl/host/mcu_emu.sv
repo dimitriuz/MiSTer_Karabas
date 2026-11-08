@@ -32,7 +32,9 @@
 // mid-burst is answered with one fresh complete report of the latest one),
 // the mouse report on a toggle of ps2_mouse[24] (four CMD_MOUSE frames; X, Y
 // and Z are deltas, so a report arriving while one still waits adds to it,
-// saturating at +-127), the joysticks (four CMD_JOY frames when either
+// saturating at +-127; the wheel is negated to the board MCU's HID sense,
+// up positive, where mousedev's ImPS/2 wheel is negative for up), the
+// joysticks (four CMD_JOY frames when either
 // 13-bit word changes), the RTC time registers (seven CMD_RTC frames every
 // RTC_CLKS and right after the first toggle of RTC[64], in BCD or binary as
 // register B's DM bit last said; the bytes are bcd_clock's, which loads
@@ -204,10 +206,13 @@ endfunction
 
 // mouse: a report's deltas accumulate while it waits for the link, and the
 // burst reads the latched values, so a new report never blends into one
-// already going out
+// already going out. Y is negated because MiSTer's PS/2 mouse has up
+// negative. The wheel is negated for the same reason: mousedev's ImPS/2
+// wheel is negative for up while the board MCU's USB HID wheel is positive
+// for up, and profi adds the delta as it is.
 wire signed [10:0] ms_dx = {{3{ps2_mouse[4]}}, ps2_mouse[15:8]};
 wire signed [10:0] ms_dy = -{{3{ps2_mouse[5]}}, ps2_mouse[23:16]};
-wire signed [10:0] ms_dz = {{3{ps2_mouse_ext[7]}}, ps2_mouse_ext[7:0]};
+wire signed [10:0] ms_dz = -{{3{ps2_mouse_ext[7]}}, ps2_mouse_ext[7:0]};
 reg signed [10:0]  acc_dx, acc_dy, acc_dz;
 reg [2:0]  acc_btn;              // newest buttons of the pending report
 reg        acc_any;              // a report waits for the link
