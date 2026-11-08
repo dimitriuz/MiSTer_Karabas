@@ -146,6 +146,25 @@ MAP_RTL_10236 = MAP_GOOD + (
     " File: /work/rtl/video/video_cdc.sv Line: 42\n"
 )
 
+# Quartus's 10541: a signal was never assigned and got its implicit default.
+# SDR_CLK is upstream's unused board SDRAM clock port (always present);
+# anything else means a port we drive was left unassigned - build 36 had
+# GSM_A/GSM_DI here and the fitter pruned gs_mem.
+MAP_10541_SDR_CLK = MAP_GOOD + (
+    "Warning (10541): VHDL Signal Declaration warning at profi.vhd(89):"
+    " used implicit default value for signal \"SDR_CLK\" because signal was"
+    " never assigned a value or an explicit default value. Use of implicit"
+    " default value may introduce unintended design optimizations."
+    " File: /work/build/upstream/src/rtl/profi.vhd Line: 89\n"
+)
+MAP_10541_GSM_A = MAP_GOOD + (
+    "Warning (10541): VHDL Signal Declaration warning at profi.vhd(60):"
+    " used implicit default value for signal \"GSM_A\" because signal was"
+    " never assigned a value or an explicit default value. Use of implicit"
+    " default value may introduce unintended design optimizations."
+    " File: /work/build/upstream/src/rtl/profi.vhd Line: 60\n"
+)
+
 
 def run_main(argv):
     """check_timing.main(argv) with stdout captured; (code, output)."""
@@ -278,6 +297,23 @@ class CheckTimingTest(unittest.TestCase):
         code, out = self.check(map_rpt=None)
         self.assertEqual(code, 1)
         self.assertIn(MAP_NAME, out)
+        self.assertEqual(out.strip().splitlines()[-1],
+                         "check_timing: FAIL 1 problems")
+
+    # ---- implicit default signals (map.rpt) ------------------------------
+    def test_map_10541_sdr_clk_allowed(self):
+        # upstream's unconnected SDR_CLK port, on every build
+        code, out = self.check(map_rpt=MAP_10541_SDR_CLK)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.strip().splitlines()[-1], "check_timing: OK")
+
+    def test_map_10541_unassigned_signal_fails(self):
+        # shape verbatim from build 36 (GSM_A was mapped to gs_mem_a and
+        # never driven; the fitter pruned gs_mem)
+        code, out = self.check(map_rpt=MAP_10541_GSM_A)
+        self.assertEqual(code, 1)
+        self.assertIn("GSM_A", out)
+        self.assertIn("profi.vhd(60)", out)
         self.assertEqual(out.strip().splitlines()[-1],
                          "check_timing: FAIL 1 problems")
 

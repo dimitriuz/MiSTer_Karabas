@@ -29,6 +29,12 @@ I1). Problems:
      profi_audio_l/r declarations, so the AUDIO pins carried only bit 0 of
      profi's samples). The build tree's `/work/` prefix is stripped; sys/
      and upstream warnings are not ours to declare.
+  7. a map.rpt line carrying Warning (10541), Quartus's implicit-default
+     warning: a port or signal was never assigned, so the fitter may prune
+     the logic behind it (build 36: profi's GSM_A/GSM_DI were mapped to the
+     gs_top-driven gs_mem_a/gs_mem_di instead of the profi ports and gs_mem
+     lost its BRAM). SDR_CLK is upstream's unused board SDRAM clock port and
+     is allowed.
 """
 import argparse
 import re
@@ -47,6 +53,13 @@ TOP_NAME = "Karabas_Profi.sv"
 TYPE_RE = re.compile(r"^Type\s+:")
 SLACK_RE = re.compile(r"^Slack\s+:\s*(\S+)")
 FILE_RE = re.compile(r"File:\s*(\S+)")
+
+# 10541: "used implicit default value for signal "NAME" because signal was
+# never assigned a value". SDR_CLK is upstream's unconnected board SDRAM
+# clock port, present on every build since stage 1.
+IMPLICIT_DEFAULT_CODE = "Warning (10541)"
+IMPLICIT_DEFAULT_ALLOWED = {"SDR_CLK"}
+SIGNAL_NAME_RE = re.compile(r'signal "(\w+)"')
 
 
 def check_summary(path):
@@ -100,23 +113,33 @@ def check_rpt(path):
 
 
 def check_map(path):
-    """Problem lines for the map.rpt: implicit nets in our sources.
+    """Problem lines for the map.rpt: implicit nets and implicit defaults.
 
-    The source is the `File: ` path with the build tree's `/work/` prefix
-    stripped: Karabas_Profi.sv and rtl/ are ours, sys/ and upstream are not.
+    The 10236 source is the `File: ` path with the build tree's `/work/`
+    prefix stripped: Karabas_Profi.sv and rtl/ are ours, sys/ and upstream
+    are not. A 10541 is a signal that was never assigned; only SDR_CLK
+    (upstream's unused board SDRAM clock port) is allowed, any other one is
+    a port or signal we left undriven.
     """
     problems = []
     for line in path.read_text(errors="replace").splitlines():
-        if IMPLICIT_NET_CODE not in line:
-            continue
-        line = line.strip()
-        m = FILE_RE.search(line)
-        source = m.group(1) if m else ""
-        if source.startswith("/work/"):
-            source = source[len("/work/"):]
-        if source != TOP_NAME and not source.startswith("rtl/"):
-            continue
-        problems.append("%s: implicit net: %s" % (MAP_RPT_NAME, line))
+        if IMPLICIT_NET_CODE in line:
+            line = line.strip()
+            m = FILE_RE.search(line)
+            source = m.group(1) if m else ""
+            if source.startswith("/work/"):
+                source = source[len("/work/"):]
+            if source != TOP_NAME and not source.startswith("rtl/"):
+                continue
+            problems.append("%s: implicit net: %s" % (MAP_RPT_NAME, line))
+        elif IMPLICIT_DEFAULT_CODE in line:
+            line = line.strip()
+            m = SIGNAL_NAME_RE.search(line)
+            signal = m.group(1) if m else "?"
+            if signal in IMPLICIT_DEFAULT_ALLOWED:
+                continue
+            problems.append("%s: implicit default for %s: %s"
+                            % (MAP_RPT_NAME, signal, line))
     return problems
 
 
