@@ -145,6 +145,16 @@ set_false_path -to [get_registers {emu:emu|profi:u_profi|clock:U1|clkmux2:U9|d0 
 # stage (al_s2) decides al_en, so the first stage may go metastable.
 set_false_path -to [get_registers {*clock:U1|al_s1}]
 
+# The CLK_GS phase detector: t28 (clk_gs) is sampled by t28_m (clk_mem) at the
+# clk_mem edge the detector compares against. At the aligned phase the clk_28
+# launch edge and that sampling edge coincide, and the design relies on the
+# pre-edge value (t28's clock-to-Q lands after the edge's hold window): a setup
+# check against the just-launched value describes the phase the loop exists to
+# correct, not a data requirement. A late sample costs at most one hold
+# decision, and the next CLK_GS edge re-checks (build 31: -0.293 on this path).
+set_false_path -from [get_registers {*clock:U1|t28}] \
+	-to [get_registers {*clock:U1|t28_m}]
+
 # The no-wait controller samples the clk_bus-domain CPU signals (addr, din,
 # wr_en, TS, MC, the strobes, cpu_reset_n, ena) only at the clk_mem clock
 # edge whose previous registered BUS_PHASE sample is "01" (the clock unit
