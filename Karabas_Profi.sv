@@ -32,8 +32,7 @@ module emu
 ///////// Default values for ports not used in this core /////////
 
 assign ADC_BUS  = 'Z;
-assign USER_OUT = '1;
-assign {UART_RTS, UART_TXD, UART_DTR} = 0;
+assign {UART_RTS, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
 assign VGA_F1 = 0;
@@ -63,12 +62,16 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 `include "build_id.v"
 `default_nettype none
 localparam CONF_STR = {
-	"Karabas_Profi;;",
+	"Karabas_Profi;UART31250,MIDI;",
 	"-;",
 	"P1,Video;",
 	"P1O[22:21],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"P1O[25:23],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"P1O[7],VSync,50 Hz,60 Hz;",
+	"P2,MT32-pi;",
+	"P2O[27],Use MT32-pi,Yes,No;",
+	"P2O[28],Synth,Munt,FluidSynth;",
+	"P2O[30:29],Munt ROM,MT-32 v1,MT-32 v2,CM-32L;",
 	"-;",
 	"O[2:1],ROM Bank,ROMain,PQ-DOS,FDImage,FATALL;",
 	"O[9:8],Turbo,Off,2x,4x,8x;",
@@ -106,6 +109,7 @@ wire [127:0] status;
 wire [10:0] ps2_key;
 wire forced_scandoubler;
 wire [21:0] gamma_bus;
+wire [7:0] uart_mode;             // OSD "UART mode" select: 3 = MIDI
 
 wire osd_reset = status[0] | buttons[1] | RESET;
 
@@ -128,6 +132,8 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.buttons(buttons),
 	.status(status),
 	.status_menumask(16'd0),
+
+	.uart_mode(uart_mode),
 
 	.ps2_key(ps2_key),
 
@@ -208,6 +214,7 @@ mcu_emu u_mcu (
 wire clk_bus, clk_sdr, clk_vid; // from profi's clock generator (clock.vhd)
 wire profi_reset, profi_areset, profi_kb_reset;   // buffer ports, read-only
 wire [15:0] profi_audio_l, profi_audio_r;         // AU samples, AUDIO_L/R below
+wire        midi_tx;           // profi MIDI_TX (TurboSound AY port A bit 2)
 
 wire [8:0]  rgb;
 wire        rgb_hs, rgb_vs, rgb_blank, rgb_clk, vga_clk;
@@ -315,7 +322,7 @@ profi #(
 	.MCU_BURST_CS_N(1'b1),        // no burst master on MiSTer (stage 2)
 	.MCU_BURST_READY(),
 
-	.MIDI_TX(),
+	.MIDI_TX(midi_tx),
 	.MIDI_RESET_N(),
 
 	.FDC_INDEX(1'b0),             // no drives yet (stage 2)
@@ -508,10 +515,77 @@ video_mixer #(.LINE_LENGTH(1024), .GAMMA(1)) video_mixer
 );
 
 
+///////////////////////   MIDI: MIDILINK AND MT32-PI   ////////////////////
+
+// The machine's MIDI out is the TurboSound's (AY port A bit 2), as on the
+// ZX 128. It takes two routes: the HPS UART for MidiLink (OSD UART mode =
+// MIDI, then a PC-side MidiLink can reach a remote mt32-pi, MUNT,
+// FluidSynth or a USB MIDI adapter) and an mt32-pi on the MiSTer USER port
+// through sys/mt32pi.sv, whose I2S audio rtl/sound/mt32_mix.sv mixes into
+// AUDIO_L/R. The MT32-pi OSD page picks the Pi's synth and ROM; "Use
+// MT32-pi: No" silences the USER-port Pi only, never MidiLink.
+wire [6:0]  mt32_user_out;
+wire [15:0] mt32_i2s_l, mt32_i2s_r;
+wire        mt32_available;
+wire        midi_tx_to_pi;
+wire        uart_txd;
+wire [15:0] mix_l, mix_r;
+wire [7:0]  mt32_mode, mt32_rom, mt32_sf;
+wire        mt32_newmode, mt32_lcd_en, mt32_lcd_pix, mt32_lcd_update;
+
+mt32pi u_mt32pi (
+	.CLK_AUDIO(CLK_AUDIO),
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_VS(VGA_VS),
+	.VGA_DE(VGA_DE),
+	.USER_IN(USER_IN),
+	.USER_OUT(mt32_user_out),
+
+	.reset(RESET | status[0]),
+	.midi_tx(midi_tx_to_pi),
+	.midi_rx(),
+
+	.mt32_i2s_l(mt32_i2s_l),
+	.mt32_i2s_r(mt32_i2s_r),
+	.mt32_available(mt32_available),
+
+	.mt32_mode_req(status[28]),
+	.mt32_rom_req(status[30:29]),
+	.mt32_sf_req(8'd0),
+
+	.mt32_mode(mt32_mode),
+	.mt32_rom(mt32_rom),
+	.mt32_sf(mt32_sf),
+	.mt32_newmode(mt32_newmode),
+	.mt32_lcd_en(mt32_lcd_en),
+	.mt32_lcd_pix(mt32_lcd_pix),
+	.mt32_lcd_update(mt32_lcd_update)
+);
+
+mt32_mix u_mt32_mix (
+	.clk(CLK_AUDIO),
+	.emu_l(profi_audio_l),
+	.emu_r(profi_audio_r),
+	.pi_l(mt32_i2s_l),
+	.pi_r(mt32_i2s_r),
+	.pi_available(mt32_available),
+	.pi_disable(status[27]),
+	.midi_tx(midi_tx),
+	.uart_mode(uart_mode),
+	.audio_l(mix_l),
+	.audio_r(mix_r),
+	.midi_tx_to_pi(midi_tx_to_pi),
+	.uart_txd(uart_txd)
+);
+
+assign USER_OUT = mt32_user_out;  // [1] MIDI TX, [0] SDA/RX, [6:2] held high
+assign UART_TXD = uart_txd;       // MidiLink; idle high outside UART mode 3
+
 ///////////////////////   AUDIO   //////////////////////////////////////////
 
-assign AUDIO_L = profi_audio_l;
-assign AUDIO_R = profi_audio_r;
+assign AUDIO_L = mix_l;
+assign AUDIO_R = mix_r;
 assign AUDIO_S = 1;               // signed samples
 assign AUDIO_MIX = 0;
 

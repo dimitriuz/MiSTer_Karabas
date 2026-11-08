@@ -67,7 +67,8 @@ Keyboard, Pause, Mode, VSync 50/60 Hz, GS Reset, NMI, Reset) travel over the
 emulated MCU SPI link - the table of indices and status bits is
 `rtl/host/osd_items.svh`.
 MiSTer-side: Aspect ratio and Scandoubler Fx (None, HQ2x, CRT filters) on the
-Video page; `boot.rom` is loaded automatically at core start.
+Video page; the MT32-pi page for a Pi on the USER port; `boot.rom` is loaded
+automatically at core start.
 
 `Mode` is the screen timing: Pentagon (the upstream default, 320 lines) or 48k
 (the classic 312-line frame with memory contention). It is soft-switch register
@@ -108,6 +109,20 @@ Z80 side, and the General Sound (GS) card. The GS is enabled: its 2 MB of
 sample memory is `rtl/mem/gs_mem.sv`, the low 64 KB in BRAM and the rest in
 MiSTer's DDR3 (the `DDRAM_*` port), and it runs on its own fixed 28.125 MHz
 clock from the machine PLL. `GS Reset` in the OSD restarts the GS CPU.
+
+### MIDI
+
+The MIDI out is the TurboSound's (AY port A bit 2), as on the ZX 128. It has
+two routes:
+
+- **MidiLink (HPS UART)**: set the OSD `UART mode` to `MIDI` (31250 baud),
+  then pick the target in MiSTer's MidiLink menu - a remote mt32-pi, MUNT,
+  FluidSynth or a USB MIDI adapter. In every other UART mode the core leaves
+  the line idle high and Linux owns the UART.
+- **mt32-pi on the USER port**: connect the Pi there and use the MT32-pi OSD
+  page (`Use MT32-pi`, `Synth`, `Munt ROM`); its I2S audio is mixed into
+  AUDIO_L/R. `Use MT32-pi: No` silences only that Pi - the MidiLink route
+  keeps carrying the unmuted line.
 
 ## Known limitations (stage 1)
 
