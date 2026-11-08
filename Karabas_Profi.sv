@@ -31,7 +31,6 @@ module emu
 
 ///////// Default values for ports not used in this core /////////
 
-assign ADC_BUS  = 'Z;
 assign {UART_RTS, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
@@ -42,7 +41,6 @@ assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
-assign LED_USER  = 0;
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 assign BUTTONS   = 0;
@@ -77,6 +75,10 @@ localparam CONF_STR = {
 	"O[9:8],Turbo,Off,2x,4x,8x;",
 	"O[6:4],PSG Mix,AY ACB,AY Mono,YM ABC,YM ACB,YM Mono,AY ABC;",
 	"O[3],Covox,On,Off;",
+	"S0,TAPTZXCSW,Tape;",
+	"T[31],Tape play/pause;",
+	"T[32],Tape previous block;",
+	"T[33],Tape next block;",
 	"O[12:10],Joystick L,Kempston,Sinclair1,Sinclair2,Cursor,QAOPM,QAOPS;",
 	"O[15:13],Joystick R,Sinclair1,Sinclair2,Cursor,QAOPM,QAOPS,Kempston;",
 	"O[16],DivMMC,Off,On;",
@@ -120,7 +122,26 @@ wire [26:0] ioctl_addr;
 wire [7:0]  ioctl_dout;
 wire        ioctl_wait;
 
-hps_io #(.CONF_STR(CONF_STR)) hps_io
+// MiSTer disk slot 0 (the tape file, see the TAPE section): the mount
+// handshake and the SD block interface hps_io shares with the core. VDNUM=1
+// (one slot), BLKSZ=2 (512-byte sectors), so sd_buff_addr is [13:0]; the
+// tape reader uses the low 9 bits of the 512-byte sector.
+wire  [0:0]  img_mounted;
+wire         img_readonly;
+wire  [63:0] img_size;
+wire  [31:0] sd_lba [1];
+wire   [5:0] sd_blk_cnt [1];
+wire   [0:0] sd_rd, sd_wr, sd_ack;
+wire  [13:0] sd_buff_addr;
+wire   [7:0] sd_buff_dout;
+wire   [7:0] sd_buff_din [1];
+wire         sd_buff_wr;
+
+assign sd_blk_cnt[0] = 6'd0;
+assign sd_wr        = 1'b0;
+assign sd_buff_din[0] = 8'd0;
+
+hps_io #(.CONF_STR(CONF_STR), .VDNUM(1), .BLKSZ(2)) hps_io
 (
 	.clk_sys(clk_sys),
 	.HPS_BUS(HPS_BUS),
@@ -148,7 +169,21 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_wr(ioctl_wr),
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_dout),
-	.ioctl_wait(ioctl_wait)
+	.ioctl_wait(ioctl_wait),
+
+	.img_mounted(img_mounted),
+	.img_readonly(img_readonly),
+	.img_size(img_size),
+
+	.sd_lba(sd_lba),
+	.sd_blk_cnt(sd_blk_cnt),
+	.sd_rd(sd_rd),
+	.sd_wr(sd_wr),
+	.sd_ack(sd_ack),
+	.sd_buff_addr(sd_buff_addr),
+	.sd_buff_dout(sd_buff_dout),
+	.sd_buff_din(sd_buff_din),
+	.sd_buff_wr(sd_buff_wr)
 );
 
 ///////////////////////   KEYBOARD AND MCU LINK   //////////////////////////
@@ -212,6 +247,7 @@ mcu_emu u_mcu (
 ///////////////////////   THE MACHINE   ////////////////////////////////////
 
 wire clk_bus, clk_sdr, clk_vid; // from profi's clock generator (clock.vhd)
+wire ena_cpu_o;                // profi ENA_CPU: one pulse per CPU T-state
 wire profi_reset, profi_areset, profi_kb_reset;   // buffer ports, read-only
 wire [15:0] profi_audio_l, profi_audio_r;         // AU samples, AUDIO_L/R below
 wire        midi_tx;           // profi MIDI_TX (TurboSound AY port A bit 2)
@@ -277,6 +313,7 @@ profi #(
 	.GSL_A(gsl_a),
 	.GSL_D(gsl_d),
 	.GSL_TGL(gsl_tgl),
+	.ENA_CPU_O(ena_cpu_o),
 
 	.SD_CS_N(),
 	.SD_DO(1'b1),
@@ -302,7 +339,7 @@ profi #(
 	.WRESET_N(),
 	.WD(),
 
-	.TAPE_IN(1'b0),
+	.TAPE_IN(tape_in),
 	.TAPE_OUT(),
 	.BEEPER(),
 	.AUDIO_L(profi_audio_l),
@@ -405,6 +442,120 @@ sdramclk_ddr
 	.sclr(1'b0),
 	.sset(1'b0)
 );
+
+///////////////////////   TAPE   //////////////////////////////////////////
+
+// The tape file comes from MiSTer disk slot 0 (OSD "Tape: mount"): the bytes
+// are never loaded into memory, rtl/tape/tape_src.sv reads them from the
+// SD image in two cached 512-byte sectors (clk_sys side) and serves the ZX
+// core's player, rtl/tape/tape.sv (clk_bus side), through its rd_en/addr/din
+// memory port. tape.sv and its TZX engine rtl/tape/tzxplayer.vhd are verbatim
+// copies of ZX-Spectrum_MISTer c2c4e6f; the player's TAP/CSW decoder and the
+// TZX engine both count their pulses in `ce` ticks, so `ce` is the CPU's own
+// enable: one pulse per T-state at whatever Turbo is set to.
+//
+// The three OSD triggers (T[33:31]) are two-flop synchronised into clk_bus
+// and turned into one-clock pulses. `tape_active` selects the tape audio for
+// the machine's EAR input; with no tape playing, the LTC2308 line-in on the
+// MiSTer ADC header is the source when it sees a signal, as on the ZX core.
+// A freshly mounted tape is paused: the player's play_pause is 1 until the
+// play/pause trigger.
+wire        tape_ready;
+wire  [1:0] tape_mode;        // 0 TAP, 1 CSW, 2 TZX (sniffed by tape_src)
+wire [24:0] tape_size;
+wire        tape_rd;
+wire [24:0] tape_addr;
+wire  [7:0] tape_din;
+wire        tape_rd_en;
+wire        tape_active, tape_audio;
+wire        tape_adc, tape_adc_act;
+wire        tape_in;
+
+tape_src u_tape_src (
+	.clk_sys(clk_sys),
+	.img_mounted(img_mounted[0]),
+	.img_size(img_size),
+	.sd_lba(sd_lba[0]),
+	.sd_rd(sd_rd[0]),
+	.sd_ack(sd_ack[0]),
+	.sd_buff_addr(sd_buff_addr[8:0]),
+	.sd_buff_dout(sd_buff_dout),
+	.sd_buff_wr(sd_buff_wr),
+
+	.clk(clk_bus),
+	.tape_ready(tape_ready),
+	.tape_mode(tape_mode),
+	.tape_size(tape_size),
+	.rd(tape_rd),
+	.addr(tape_addr),
+	.din(tape_din),
+	.rd_en(tape_rd_en)
+);
+
+// {pause, prev, next}: first sync stage, second sync stage, the second stage
+// one clk_bus earlier; a rising edge of the second stage is the pulse.
+reg [2:0] tape_trig_s [0:2];
+always @(posedge clk_bus) begin
+	tape_trig_s[0] <= {tape_trig_s[0][1:0], status[31]};
+	tape_trig_s[1] <= {tape_trig_s[1][1:0], status[32]};
+	tape_trig_s[2] <= {tape_trig_s[2][1:0], status[33]};
+end
+
+wire tape_pause = tape_trig_s[0][1] & ~tape_trig_s[0][2];
+wire tape_prev  = tape_trig_s[1][1] & ~tape_trig_s[1][2];
+wire tape_next  = tape_trig_s[2][1] & ~tape_trig_s[2][2];
+
+tape u_tape (
+	.clk_sys(clk_bus),
+	.ce(ena_cpu_o),
+
+	.mode48k(1'b0),
+	.turbo(1'b0),
+	.byte_wait(1'b0),
+	.byte_ready(),
+	.dout(),
+
+	.pause(tape_pause),
+	.prev(tape_prev),
+	.next(tape_next),
+	.active(tape_active),
+	.available(),
+
+	.tape_ready(tape_ready),
+	.tape_mode(tape_mode),
+	.tape_size(tape_size),
+	.stdload(1'b0),
+	.req_hdr(1'b0),
+
+	.audio_out(tape_audio),
+
+	.rd_en(tape_rd_en),
+	.rd(tape_rd),
+	.addr(tape_addr),
+	.din(tape_din)
+);
+
+// Line-in: the MiSTer's LTC2308 ADC (header pins) as the ZX core wires it.
+// Its parallel/serial bus is the top's ADC_BUS; dout/active cross into
+// clk_bus with two flops and are sampled only at the second stage.
+ltc2308_tape u_tape_adc (
+	.reset(por_reset),
+	.clk(clk_sys),
+	.ADC_BUS(ADC_BUS),
+	.dout(tape_adc),
+	.active(tape_adc_act)
+);
+
+reg [1:0] tape_adc_s, tape_adc_act_s;
+always @(posedge clk_bus) begin
+	tape_adc_s     <= {tape_adc_s[0], tape_adc};
+	tape_adc_act_s <= {tape_adc_act_s[0], tape_adc_act};
+end
+
+// profi reads not(TAPE_IN) as the EAR bit, exactly like the ZX core's
+// ula_tape_in = ~tape_vin, so the player output goes in unchanged.
+assign tape_in  = tape_active ? tape_audio : (tape_adc_act_s[1] ? tape_adc_s[1] : 1'b0);
+assign LED_USER = tape_active;
 
 ///////////////////////   VIDEO   //////////////////////////////////////////
 

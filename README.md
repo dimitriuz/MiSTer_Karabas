@@ -124,10 +124,26 @@ two routes:
   AUDIO_L/R. `Use MT32-pi: No` silences only that Pi - the MidiLink route
   keeps carrying the unmuted line.
 
+## Tape
+
+The tape file is MiSTer disk slot 0: pick it with the OSD `Tape` item (the
+main page, right after Covox). TAP, TZX and CSW are accepted; the format is
+sniffed from the file signature. The file is never loaded into memory: the
+core reads it from the SD card through a two-sector cache as the tape
+plays, so large TZXs mount instantly. `Tape play/pause`, `Tape previous
+block` and `Tape next block` are OSD trigger items; a freshly mounted tape
+starts paused. `Turbo` (the CPU turbo) is also the tape's fast-load rate -
+the player's clock enable is the CPU's own enable, one pulse per T-state.
+The player is the ZX core's (`rtl/tape/tape.sv` and `rtl/tape/tzxplayer.vhd`
+are verbatim copies of ZX-Spectrum_MISTer at commit c2c4e6f); the SD file
+reader is `rtl/tape/tape_src.sv`. With no tape playing, a signal on the LTC2308
+line-in header drives the EAR input; the USER LED lights while the tape is
+playing.
+
 ## Known limitations (stage 1)
 
 - CPU turbo runs without memory wait states (no-wait SDRAM controller).
-- No disks or tape yet.
+- No disks yet.
 - 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
   112.5 MHz video clock, so the analog scandoubler may duplicate pixels;
   HDMI is unaffected.
