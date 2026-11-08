@@ -24,7 +24,7 @@ joysticks with an Xbox 360 pad. Status bits: ROM bank [2:1], VSync [7] (128), Tu
 | RTC | PASS | BASIC reads of the RTC ports (DFFD bit 5 = 1, address #BF, data #9F): 20:17:08 Sat 07.11.26, B = 02, D = 80; read again 22 s later 22 s on (`rtc-basic-2.png`, `rtc-basic-3.png`), so the FPGA clock ticks between MiSTer's updates. The ROMain status bar shows `08.11.26 08 16` at 08:16:31 board time (`romain-turbo-8x.png`). The PQ-DOS BIOS reports "RTC: Ok" |
 | Mouse X/Y | PASS | Kempston ports #FBDF/#FFDF follow the uinput mouse: X +20 → +20, up 10 → Y +10 (`mouse-move.png`); build 28: X +10, up 5 → Y +5 (`mouse-build28.png`) |
 | Mouse buttons | PASS | owner, K400 touchpad: left clears bit 1, right clears bit 0 of #FADF (127 → 125 / 126) |
-| Mouse wheel | FAIL: inverted, finding 1 | wheel up 3 lowers the #FADF wheel nibble by 3 |
+| Mouse wheel | PASS after fix 02caf64 (build 29) | before (build 28): wheel up 3 lowered the #FADF wheel nibble by 3 (finding 1); after: up 3 raises it 7 → 10 (`wheel-up3-build29.png`, 175), down 5 lowers it to 5 (`wheel-down5-build29.png`, 95) |
 | Joystick, Kempston | PASS | owner, Xbox pad: A → `IN 31` = 32 (upstream maps A to bit 5, B to bit 4 fire) |
 | Joystick, Sinclair | PASS | owner, Joystick L = Sinclair2: d-pad and B (fire) on keys 6-0 (`IN 61438`); upstream's "Sinclair1" is keys 1-5 and "Sinclair2" keys 6-0, and only B fires |
 | CP/M paging | deferred to stage 4 | needs a CP/M disk |
@@ -35,7 +35,7 @@ joysticks with an Xbox 360 pad. Status bits: ROM bank [2:1], VSync [7] (128), Tu
    (mousedev ImPS/2), which reports wheel up as a negative step, and hps_io passes that
    in `ps2_mouse_ext[7:0]`. The real board's MCU sends the USB HID wheel, where up is
    positive, and profi's `kg_cursor` (Z_NEG 0) adds it as is. Fix: `mcu_emu` negates the
-   wheel delta (Task 9). Fixed in 02caf64; board recheck: pending.
+   wheel delta (Task 9). Fixed in 02caf64; board recheck on build 29 (2026-11-08): PASS.
 2. **The Kempston mouse starts at X = Y = 0, not 127.** On every fresh core load, with no
    mouse activity, #FBDF/#FFDF read 0 0 while the wheel nibble reads its start value 7.
    `kg_cursor` declares `x`/`y` as `output reg ... = 8'h7F`; the likely cause is that
