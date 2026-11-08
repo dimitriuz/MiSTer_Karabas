@@ -7,7 +7,7 @@
 **Architecture:**
 - **Already in the build, only checked on the board:** TurboSound FM (`turbosound`, two jt03), SAA1099, OPL2 (`opl2_top`), Covox, beeper, `audio_mixer`. Stage 2 heard the beeper and the AY.
 - **General Sound** is off today (`ENABLE_GS(0)`): `memory.vhd` stubs its RAM (`GS_DO <= x"FF"`) and drops the GS ROM bytes of the loader. Upstream gives the GS a whole SDRAM chip of its own; here it would have to share the one SDRAM with the no-wait CPU controller, whose spare slots shrink to one per instruction at turbo 8x. So the GS memory moves to the DE10-Nano's **DDR3** (sys `DDRAM_*`), the way Sorgelig's ZX-Spectrum core does it: the low 64 KB of the GS address space (32 KB ROM + RAM pages 2/3, where the GS code runs) in BRAM with no wait, the rest in DDR3 behind a one-line read cache, with `GS_WAIT_N` holding the GS Z80 while DDR3 answers. The CPU's SDRAM path is untouched.
-- **The GS clock relation.** Upstream's `gs.v` reads the host CPU bus (`#B3/#BB` ports) directly on `clk_gs`. On the Karabas Go, `clk_bus` in the 28 MHz mode is the same PLL clock as `clk_gs` through a BUFGMUX, so that is synchronous logic. Here `clk_bus` = `clk_mem / 4` from a fabric divider whose phase against `clk_gs` is whatever the reset release (or the last DS80 switch) left: 1 of 4. Task 1 makes the divider re-align itself to `clk_gs` while DS80 = 0, by stretching one low phase of the bus clock at a time, so STA's assumption (the generated `clk_bus28` starts on the edge where `clk_gs` rises) is what the hardware does. With DS80 = 1 the host cannot reach the GS (`gs.v` gates `gs_sel` with DS80) and `clk_gs` is cut asynchronous against the 96/24 MHz pair.
+- **The GS clock relation (revised after Task 1, 2026-11-08).** Upstream's `gs.v` reads the host CPU bus (`#B3/#BB`) on `clk_gs`; on the Karabas Go that is the same PLL clock as `clk_bus` in the 28 MHz mode. Task 1 first tried to re-align our fabric-divided `clk_bus` to `clk_gs`, but the detector path cannot close timing: `clk_mem` goes through the fabric clock mux, so its insertion delay spreads from 9.7 ns (setup) to 13.8 ns (hold) against ~7-8.4 ns for `clk_gs`. Hold then forces at least ~6.8 ns of routing while setup allows at most ~10 ns (builds 31-35, seeds 1-3: -0.14 to -0.77 ns). Ruling: `clk_gs` is asynchronous to all four bus/mem clocks. `gs.v`'s host side is safe asynchronously: every host-driven register update is level-based on `WR_n`/`RD_n` with `A`/`DI` stable since T1. A host I/O strobe stays low for at least three bus clocks (T2, the automatic I/O wait and upstream's `cpu_wait_gs_io`), so `clk_gs` sees at least two clean samples and a metastable first sample is rewritten on the next edge. Host reads of the GS flags are single bits, and the GS output samples already cross with upstream's two-equal-samples rule. Task 1 is reverted; the sdc cut moves to Task 3, where `CLK_GS` gets loads.
 - **MIDI (owner, 2026-11-08: "Mt32-pi should go to usual mister mt32 path, so I can use remote mt32-pi for example via uart/network"):** upstream's `MIDI_TX` (TurboSound AY port A bit 2, a 31250-baud line the software drives) goes two ways, as in the owner's pico-speccy Plan 4 (`~/repo/MiSTer_pico-speccy/fpga/rtl/ps_mt32_mix.sv`, rulings R-P4-11/R-P4-13):
   - **MidiLink:** to `UART_TXD` when the MiSTer menu's UART mode is MIDI (`uart_mode == 3`; CONF_STR header `UART31250,MIDI`). Main_MiSTer's MidiLink then routes it to a remote mt32-pi over the network, a software synth (MUNT/FluidSynth) or USB MIDI.
   - **USER port:** to `sys/mt32pi.sv` for an mt32-pi plugged into the USER port, its I2S audio mixed into `AUDIO_L/R` in the `CLK_AUDIO` domain.
@@ -31,7 +31,7 @@
 
 ## Review Focus
 
-1. **A DS80 round trip, then the host talks to the GS.** After 28 → 24 → 28 MHz the divider phase against `clk_gs` is random again. Expected: re-aligned within 1 µs, and from then on every `CLK_BUS` rising edge falls on a `CLK_GS` rising edge. Test: Task 1 case `realign_after_ds80`.
+1. **The host talks to the GS at turbo 8x and after a DS80 round trip**, with `clk_gs` asynchronous to the bus. Expected: commands and data reach the GS and its answers reach the host without corruption. Test: Task 5 board checks (a GS player at turbo off and 8x, before and after a DS80 switch).
 2. **The GS writes a sample buffer and plays it back from the same 8-byte line.** Expected: a read after a write to a cached line returns the new byte, never the stale cached one. Test: Task 2 case `write_hits_cached_line`.
 3. **DDR3 busy for a long stretch** (Linux or the scaler loading it). Expected: the GS Z80 waits, no write is lost, no read returns garbage. Test: Task 2 case `long_busy` (BUSY held 300 clocks in the middle of a write and of a read).
 4. **The GS ROM arrives from the loader on another clock while the GS is in reset**, and the GS then fetches from address 0. Expected: the ROM bytes, with no wait. Test: Task 2 case `loader_rom` (loader on an unrelated 24.107 MHz clock).
@@ -43,10 +43,7 @@
 
 | File | Task | Responsibility |
 |---|---|---|
-| `rtl/clk/clkdiv4.vhd` | 1 | new `hold` input: stretch one low phase |
-| `rtl/replaced/clock.vhd` | 1 | the `clk_gs` phase detector and re-align request |
-| `sim/tb_clock.vhd` | 1 | alignment cases |
-| `Karabas_Profi.sdc` | 1 | `clk_gs` async to the 96/24 pair; false path into the DS80 sync |
+| `Karabas_Profi.sdc` | 3 | `clk_gs` asynchronous to the bus/mem clocks |
 | `rtl/mem/gs_mem.sv` (new) | 2 | GS memory: 64 KB BRAM + DDR3 with a one-line cache, wait, loader port |
 | `sim/models/ddram_model.sv` (new), `sim/tb_gs_mem.sv` (new), `sim/run_tb_gs_mem.sh` (new) | 2 | DDR3 Avalon model, testbench |
 | `rtl/replaced/memory.vhd` | 3 | GS bus out to new ports, GS loader bytes as a toggle handshake |
@@ -58,34 +55,9 @@
 
 ---
 
-### Task 1: Bus clock aligned to CLK_GS
+### Task 1: (superseded) Bus clock aligned to CLK_GS
 
-**Files:**
-- Modify: `rtl/clk/clkdiv4.vhd`, `rtl/replaced/clock.vhd`, `sim/tb_clock.vhd`, `Karabas_Profi.sdc`
-
-**Interfaces:**
-- Produces: `clkdiv4` port `hold : in std_logic := '0'`. On a `clk_in` rising edge with `rst = '0'`, `hold = '1'` and `cnt = "11"`, the counter stays `"11"` and `q` stays `'0'` (one extra clk_in period of low phase). Otherwise unchanged. The high phase is always exactly 2 clk_in periods.
-- Produces (behaviour, no new clock.vhd port): while DS80 = 0, every `CLK_BUS` rising edge coincides with a `CLK_GS` rising edge, within 1 µs after reset release or after DS80 returns to 0.
-
-- [ ] **Step 1: Write the failing tb cases** in `sim/tb_clock.vhd` (keep every existing case and its checks):
-  - `bus_aligned_to_gs`: DS80 = 0 from reset. From 1 µs after RESET_MEM falls, for 1000 `CLK_BUS` rising edges, `CLK_GS` rose at the same simulation time (record `now` at each `CLK_GS` rising edge; the difference must be 0 fs, the pll model's clocks are exact).
-  - `realign_after_ds80`: DS80 → 1 for 3 µs, → 0; from 1 µs after DS80 = 0, the same 1000-edge check.
-  - Existing cases whose measurement window could start before the alignment settles (the 1000-period 0.01 % frequency check) start their window 1 µs after reset release instead; their tolerances do not change.
-  - `low_phase_bounds`: through both cases, every `CLK_BUS` high phase is 2 clk_mem periods (existing rule) and every low phase is 2 or 3 clk_mem periods except across a DS80 switch (the existing switch-storm exemption).
-- [ ] **Step 2: Run** `tools/sim.sh sim/run_tb_clock.sh`. Expected: `realign_after_ds80` FAILs (`bus_aligned_to_gs` may pass by chance of the reset phase; say which in the report).
-- [ ] **Step 3: Implement.** In `clkdiv4.vhd`: the `hold` input as above; header comment. In `clock.vhd`:
-  - `t28`: a register on `clk_28` toggling every rising edge.
-  - In the `clk_mem_i` domain: `t28_m <= t28; t28_d <= t28_m;` (`chg = t28_m xor t28_d`, true in the clk_mem cycle after the edge that follows a `clk_28` rising edge); `al_s1 <= ds80; al_s2 <= al_s1;` (the DS80 sync, `al_en = not al_s2`).
-  - `hold_req` (clk_mem register, cleared by `reset_mem_i`): set on an edge where `hold_req = '0'`, `al_en = '1'`, `chg = '1'` and `BUS_PHASE /= "01"`; cleared on the edge where it is applied (`BUS_PHASE = "11"`). `U11`'s `hold => hold_req`.
-  - Why `"01"`: the edge where `clk_28` rises must be the edge where the counter becomes `"00"`; one edge later `chg` is visible and the counter is `"01"` if aligned. Each applied hold moves the phase by one clk_mem; at most 3 holds align it. Header comment: the reason (gs.v's synchronous host interface, STA's `clk_bus28` edge assumption), the rule, and that holds only ever lengthen a bus period.
-- [ ] **Step 4: Run** `tools/sim.sh sim/run_tb_clock.sh` → `tb_clock: PASS`, then `tools/sim.sh sim/run_all.sh` → `run_all: 11 passed, 0 failed`.
-- [ ] **Step 5: sdc.** In `Karabas_Profi.sdc`:
-  - `set_clock_groups -asynchronous -group {emu|u_profi|U1|U2|pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk} -group {clk_mem96 clk_bus24}` with a comment: with DS80 = 1 the host cannot reach the GS (`gs_sel` has `~DS80`), and `t28_m` is only used while DS80 = 0.
-  - `set_false_path -to [get_registers {*clock:U1|al_s1}]` (the DS80 sync's first stage).
-  - Replace the comment saying general[0] is pruned: `t28` now loads `CLK_GS`, so general[0] exists in every build.
-  - `clk_gs` stays related to `clk_mem112`/`clk_bus28` (same exclusive group as today): that relation is the point of this task.
-- [ ] **Step 6: Commit** `clock: bus clock re-aligns to CLK_GS while DS80 = 0` (clkdiv4, clock.vhd, tb, sdc).
-- [ ] **Step 7: Build** `build31.log` → `build: exit 0`. Report the slack of `clk_bus28`, `clk_mem112`, `clk_mem96`, `clk_bus24` and of any `general[0]` path from the sta summary, and whether any warning names `t28`, `al_s1` or `hold_req`.
+Implemented (c00ad9d) and reverted (56a4869..0a3bfc3): its phase-detector path cannot meet timing across the fabric clock mux. See the Architecture note "The GS clock relation" for the reasons and the ruling. Nothing from it remains; Task 3 carries the sdc cut.
 
 ### Task 2: `gs_mem`, the GS memory on BRAM and DDR3
 
@@ -151,7 +123,7 @@ Behaviour (the header comment states all of it):
 - Modify: `rtl/replaced/memory.vhd`, `tools/prepare_upstream.py`, `tools/tests/test_prepare_upstream.py`, `Karabas_Profi.sv`, `files.qip`, `README.md`
 
 **Interfaces:**
-- Consumes: Task 2 `gs_mem`. Task 1's alignment (the GS host interface is synchronous when DS80 = 0).
+- Consumes: Task 2 `gs_mem`. The ruling that `clk_gs` is asynchronous to the bus clocks (Architecture, "The GS clock relation").
 - Produces, on `memory.vhd`:
   - `GSM_A : out (20 downto 0)` = `GS_A`; `GSM_DI : out (7 downto 0)` = `GS_D`; `GSM_RD : out` = `not GS_N_RD`; `GSM_WR : out` = `not GS_N_WR`.
   - `GSM_DO : in (7 downto 0) := x"FF"` → `GS_DO`; `GSM_WAIT_N : in := '1'` → `GS_WAIT_N`.
@@ -171,9 +143,10 @@ Behaviour (the header comment states all of it):
   - wires for the new profi ports;
   - `gs_mem u_gs_mem` with `clk(gs_clk)`, `reset(RESET)` and the `ddr_*` ports on `DDRAM_*`;
   - `files.qip`: `rtl/mem/gs_mem.sv`.
-- [ ] **Step 5: Gates**: unit tests OK, `tools/check_upstream.sh` OK, `tools/sim.sh sim/run_all.sh` → `run_all: 12 passed, 0 failed`.
-- [ ] **Step 6: Commits** `tools: profi GS memory ports`, `mem: GS bus and GS ROM bytes leave memory.vhd`, `top: General Sound on DDR3`. README: General Sound (2 MB; GS memory in DDR3) and its `GS Reset` item.
-- [ ] **Step 7: Build** into the next number → `build: exit 0`. Report per-clock slacks incl. `general[0]` and the fitter's RAM block count.
+- [ ] **Step 5: sdc.** In `Karabas_Profi.sdc`, cut `{emu|u_profi|U1|U2|pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk}` (CLK_GS) asynchronous against `{clk_mem112 clk_mem96 clk_bus28 clk_bus24}`. Replace the comment that says general[0] is pruned: the GS now loads it. The comment gives the reason in short: `gs.v`'s host side is level-based on strobes at least three bus clocks long, the GS output samples cross with the two-equal-samples rule, the GS ROM loader crosses as `gs_mem`'s toggle handshake, and Task 1's alignment attempt was dropped (builds 31-35).
+- [ ] **Step 6: Gates**: unit tests OK, `tools/check_upstream.sh` OK, `tools/sim.sh sim/run_all.sh` → `run_all: 12 passed, 0 failed`.
+- [ ] **Step 7: Commits** `tools: profi GS memory ports`, `mem: GS bus and GS ROM bytes leave memory.vhd`, `top: General Sound on DDR3`. README: General Sound (2 MB; GS memory in DDR3) and its `GS Reset` item. The sdc change goes into the `top:` commit.
+- [ ] **Step 8: Build** into the next number → `build: exit 0`. Report per-clock slacks incl. `general[0]` and the fitter's RAM block count.
 
 ### Task 4: MIDI: MidiLink on the UART and MT32-pi on the USER port
 
@@ -229,7 +202,7 @@ No model work. The controller loads the last build and checks, with the owner li
 
 | Check | Pass |
 |---|---|
-| Regression after Task 1 (its own build) | ROMain boots; DS80 ↔ Spectrum switch; 128 BASIC `FOR` loop at turbo 8x |
+| Regression | ROMain boots; DS80 ↔ Spectrum switch; 128 BASIC `FOR` loop at turbo 8x |
 | GS present | GS detected by software (status port `#BB`, a GS test or player); RAM size reported 2 MB if the software reports it |
 | GS sound | a GS module plays; again after a DS80 round trip; at turbo off and 8x |
 | GS Reset item | the GS restarts |
