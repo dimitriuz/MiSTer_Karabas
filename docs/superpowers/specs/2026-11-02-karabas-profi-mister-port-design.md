@@ -257,7 +257,11 @@ slot waits for the Main_MiSTer patch (future plan, §2).
 ### 5.8 MIDI
 
 Upstream's `MIDI_TX` (TurboSound MIDI) → 31250-baud line → `sys/mt32pi.sv` on USER_OUT[1],
-I2S return mixed into audio. No `UART`/`MIDI` OSD entry for MIDI (§5.7 owns the UART).
+I2S return mixed into audio. Revised 2026-11-08 (owner: "Mt32-pi should go to usual mister mt32
+path, so I can use remote mt32-pi for example via uart/network"): the same line also goes to
+`UART_TXD` when the MiSTer UART mode is MIDI (CONF_STR `UART31250,MIDI`), so Main_MiSTer's
+MidiLink reaches a remote mt32-pi, MUNT/FluidSynth or USB MIDI. §5.7's serial channels take the
+other UART modes in stage 5.
 
 ### 5.9 OSD
 
