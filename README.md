@@ -34,6 +34,9 @@ tools/check_upstream.sh           # upstream-change tripwire for the files we re
 tools/qbuild.sh . Karabas_Profi   # just the Quartus compile of the MiSTer core in raetro/quartus:17.0
 ```
 
+Agent workflow and hard rules (gates, build numbering, board driving, commits) are in
+`AGENTS.md`; the per-stage evidence is under `docs/dev/`.
+
 `build.sh` runs `tools/check_timing.py` on the TimeQuest reports after the compile and
 fails the build on a negative slack or a missing `clk_bus28`/`clk_bus24` bus clock
 (Quartus itself exits 0 with timing unclosed; only warnings mark an sdc clock that

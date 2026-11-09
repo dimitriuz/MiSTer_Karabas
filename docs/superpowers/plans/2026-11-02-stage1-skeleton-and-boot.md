@@ -12,6 +12,9 @@
 
 ## Global Constraints
 
+- Agent process rules — toolchain, gate commands, build numbering, the board
+  driving recipe and commit format — are in `AGENTS.md` at the repository root;
+  read it before the first task.
 - Upstream pins: `upstream/karabas-go-core-profi` at `01dcd6c08a4b9e536103396ab2f2f29b44e8d035` (URL `https://github.com/andykarpov/karabas-go-core-profi.git`), with its submodule `modules/` at `2b9776e (the gitlink recorded by core-profi@01dcd6c; full hash from `git -C upstream/karabas-go-core-profi ls-tree HEAD modules`)` (karabas-go-modules). Clone recursively. Nothing under `upstream/` is ever edited.
 - MiSTer framework: `sys/` copied unmodified from `https://github.com/MiSTer-devel/Template_MiSTer` at `76dd8f5c509a2237b8e707773032a31df5905048`; record the commit in `sys/TEMPLATE_COMMIT`. Never edit `sys/`.
 - Reference repos, read-only: `~/repo/ZX-Spectrum_MISTer` (branch `master` @ `756fd4b`), `~/repo/MiSTer_pico-speccy`. Copies from them keep their licence header and name the source commit in a comment.

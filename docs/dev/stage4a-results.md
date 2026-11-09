@@ -77,7 +77,7 @@ also confirms the four generated clocks were created and no 332174/332049/
 `csw_decode`, byte for byte against the TAP), checks the turbo-off ratio
 (`ce_1in8_pilot`), and fires `prev`/`next` mid-tape and counts lead-in
 pulses afterwards (`nav_start`, `nav_next`, `nav_prev`). The run is slow
-by nature: the CSW player advances one 44.1 kHz sample per 635 clocks, so
+by nature: the CSW player advances one 44.1 kHz sample per ≈638 clocks, so
 playing the three test tapes in simulation time takes about 35 minutes;
 `run_all` budgets for it.
 

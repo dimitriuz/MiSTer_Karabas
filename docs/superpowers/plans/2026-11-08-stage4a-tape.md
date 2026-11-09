@@ -20,12 +20,18 @@
 
 ## Global Constraints
 
+- Agent process rules — toolchain, gate commands, build numbering, the board
+  driving recipe and commit format — are in `AGENTS.md` at the repository root;
+  read it before the first task.
 - Never edit `upstream/` or `sys/`. Changes to upstream text are rewrites in `tools/prepare_upstream.py`, each matched exactly once, each with a unit test asserting the exact new text.
 - `rtl/tape/tape.sv` and `rtl/tape/tzxplayer.vhd` are verbatim copies of `~/repo/ZX-Spectrum_MISTer/rtl/` at commit c2c4e6f (check with `git -C ~/repo/ZX-Spectrum_MISTer show c2c4e6f:rtl/tape.sv | diff - rtl/tape/tape.sv`). Their origin goes in a comment in `files.qip` and in the README; they are not edited.
 - `Karabas_Profi.sv` has `` `default_nettype none ``: declare every new wire.
 - Every task leaves `tools/sim.sh sim/run_all.sh` → `run_all: N passed, 0 failed` and `python3 -m unittest discover -s tools/tests` OK (59 tests today).
 - Tasks that change RTL end with a full build: `setsid nohup tools/build.sh </dev/null >build/logs/buildN.log 2>&1 &`, polled in the foreground until `build: exit` → must be `build: exit 0` (includes `check_timing: OK`, the 10236 and 10541 gates), then `git checkout Karabas_Profi.qsf`. Numbering continues from build 38: the first build of this plan is `build39.log`. Seed fallback (`SEED 2`/`3`) only for failures with both ends in `sys/`. Never weaken a constraint or a test.
-- No ssh or scp to any MiSTer. The controller runs every board check.
+- Board checks are driven by the agent once the owner grants the board: the
+  `mister-karabas-board` skill for input, `AGENTS.md` for the capture path and the OSD/
+  tape traps, `docs/dev/stage4a-results.md` for what the previous runs already proved.
+  Anything that needs the owner's ears (sound.tap) waits for the owner.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Commit areas: `tools`, `sim`, `tape`, `top`, `docs`.
 
 ## Review Focus

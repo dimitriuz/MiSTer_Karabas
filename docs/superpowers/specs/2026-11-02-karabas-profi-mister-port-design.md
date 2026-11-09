@@ -324,3 +324,6 @@ Future: read/write FDI via the Main_MiSTer patch, the ESP-AT network daemon (§2
 - The emulated drive's internals (track buffer in BRAM or built on the fly, write decode),
   within §5.5's behaviour and tests.
 - Test approach per stage (simulation where cheap; the board is the final check).
+- The process around the design — gate commands and their runtimes, build numbering,
+  the board-driving recipe, results documents and commit format — is `AGENTS.md` at the
+  repository root, not this spec.
