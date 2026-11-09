@@ -135,10 +135,14 @@ block` and `Tape next block` are OSD trigger items; a freshly mounted tape
 starts paused. `Turbo` (the CPU turbo) is also the tape's fast-load rate -
 the player's clock enable is the CPU's own enable, one pulse per T-state.
 The player is the ZX core's (`rtl/tape/tape.sv` and `rtl/tape/tzxplayer.vhd`
-are verbatim copies of ZX-Spectrum_MISTer at commit c2c4e6f); the SD file
-reader is `rtl/tape/tape_src.sv`. With no tape playing, a signal on the LTC2308
-line-in header drives the EAR input; the USER LED lights while the tape is
-playing.
+are copies of ZX-Spectrum_MISTer at commit c2c4e6f, with the data-block pilot
+raised to 8064 pulses: the Profi ROM consumes the standard lead-in while
+loading, so standard 3223/4031-pilot blocks fail and 8064 loads; `zxtap.py`
+writes 8064 for CSW too). The SD file reader is `rtl/tape/tape_src.sv`.
+`Tape previous block` and `Tape next block` act on TAP and TZX; the CSW path
+in the upstream player has no block navigation. With no tape playing, a
+signal on the LTC2308 line-in header drives the EAR input; the USER LED
+lights while the tape is playing.
 
 ## Known limitations (stage 1)
 

@@ -284,7 +284,12 @@ always @(posedge clk_sys) begin
 										pilot <= pilot - 1'b1;
 									end else begin
 										blk_type <= din_r[7];
-										if(~din_r[7] & ~turbo) pilot <= 4844;
+										// The Profi's ROM consumes the data block's
+										// lead-in while its LD_WAIT/LD_LEADER run;
+										// the ZX core's 3220-pulse data pilot is
+										// too short there (board: 3223 fails,
+										// 8064 loads). Both block types get 8064.
+										if(~turbo) pilot <= 4844;
 										state <= state + 1'b1;
 										if(req_hdr & (din_r != 0)) begin
 											state <= 4;

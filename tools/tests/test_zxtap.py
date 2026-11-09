@@ -93,7 +93,7 @@ def decode_csw_block(pulses: list[int], pos: int, block: bytes, rate: int) -> in
         assert abs(actual - tstates) <= tolerance, (pos, actual, tstates)
         return pos + 1
 
-    pilot_count = 8063 if block[0] < 128 else 3223
+    pilot_count = 8063 if block[0] < 128 else 8064
     for _ in range(pilot_count):
         pos = check(pos, 2168)
     pos = check(pos, 667)

@@ -20,7 +20,10 @@ generic (
 	NORMAL_SYNC2_LEN    : integer := 735;
 	NORMAL_ZERO_LEN     : integer := 855;
 	NORMAL_ONE_LEN      : integer := 1710;
-	NORMAL_PILOT_PULSES : integer := 4031
+	-- Karabas/Profi: the ROM consumes the data block's lead-in while its
+	-- LD_WAIT/LD_LEADER run; 4031 (the ZX default) fails on the board,
+	-- 8064 loads. Used for every standard-speed block.
+	NORMAL_PILOT_PULSES : integer := 8064
 
 	-- Amstrad CPC
 	--NORMAL_PILOT_LEN    : integer := 2000;

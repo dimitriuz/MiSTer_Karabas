@@ -321,7 +321,11 @@ def _rle(samples: int) -> bytes:
 
 
 def tap_to_csw(tap: bytes, rate: int = 44100) -> bytes:
-    """A TAP as CSW: standard ROM pilot/sync/bits, RLE pulse lengths.
+    """A TAP as CSW: ROM pilot/sync/bits, RLE pulse lengths.
+
+    The data pilot is 8064 pulses, not the standard 3223: the Profi ROM
+    consumes the data lead-in while its LD_WAIT/LD_LEADER run, and 3223
+    fails on the board while 8064 loads (the header stays 8063).
 
     The header is 32 bytes (the three zero bytes after compression and flags
     are what the MiSTer tape player consumes before the RLE data).
@@ -336,7 +340,7 @@ def tap_to_csw(tap: bytes, rate: int = 44100) -> bytes:
         + bytes(3)
     )
     for block in _tap_blocks(tap):
-        pilot = 8063 if block[0] < 128 else 3223
+        pilot = 8063 if block[0] < 128 else 8064
         pulses = [2168] * pilot + [667, 735]
         for byte in block:
             for bit in range(7, -1, -1):
