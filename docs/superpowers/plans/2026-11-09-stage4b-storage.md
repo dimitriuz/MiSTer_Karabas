@@ -205,10 +205,10 @@ module hps_disk_model #(parameter integer LAT_CLKS = 10) (
 - [x] **Step 1: The rewrite tests first** in `tools/tests/test_prepare_upstream.py`: `test_profi_sdc_ports` (the exact port block appears once and the old signal declarations and `u_img_sdc` are gone), `test_profi_status_cf` (the `hdd_active or hdf_led` line, no `sdc_active`). The 14 declarations are the contiguous block at `profi.vhd:293-306` (with `sdc_active` as its last line): one rewrite deletes the block. The `u_img_sdc` instantiation is one contiguous block too. Copy both old strings from the file verbatim, tabs included — `prepare_upstream.py` matches bytes.
 - [x] **Step 2: Run** those two → FAIL; add the rewrites; run → PASS; `tools/check_upstream.sh` → OK; `tools/elab_upstream.sh` → OK (the elab profile keeps upstream's `profi.vhd`, so its output must not change).
 - [x] **Step 3: The top.** Widen the disk arrays and add the two instantiations and the profi connections above; update the comment over the disk declarations (VDNUM = 4, which slot is which).
-- [ ] **Step 4: Gates.** `python3 -m unittest discover -s tools/tests`; `tools/sim.sh sim/run_all.sh` → `run_all: 18 passed, 0 failed`.
-- [ ] **Step 5: Build 48.** `setsid nohup tools/build.sh </dev/null >build/logs/build48.log 2>&1 &`, poll `build: exit 0`, then `git checkout -- Karabas_Profi.qsf`. Record the fitter summary and per-clock slack in the commit body (as the previous builds did).
+- [x] **Step 4: Gates.** `python3 -m unittest discover -s tools/tests`; `tools/sim.sh sim/run_all.sh` → `run_all: 18 passed, 0 failed`.
+- [x] **Step 5: Build 48.** `setsid nohup tools/build.sh </dev/null >build/logs/build48.log 2>&1 &`, poll `build: exit 0`, then `git checkout -- Karabas_Profi.qsf`. Record the fitter summary and per-clock slack in the commit body (as the previous builds did).
 - [x] **Step 6: README.** The `Files`/`Features` sections gain the three slots and their formats; `Known limitations` loses "No disks yet".
-- [ ] **Step 7: Commit** `top: SD card and IDE HDF image slots` with the build number and gate results in the body.
+- [x] **Step 7: Commit** `top: SD card and IDE HDF image slots` with the build number and gate results in the body.
 
 ### Task 5: Board run
 
