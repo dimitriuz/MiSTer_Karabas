@@ -50,6 +50,8 @@ module tape
 	input         stdload,
 	input         req_hdr,
 
+	input         blk_seek,      // the converter jumped to another block
+
 	output reg    audio_out,
 
 	input         rd_en,
@@ -414,6 +416,18 @@ always @(posedge clk_sys) begin
 
 			if(old_stdload & ~stdload) play_pause <= 1;
 
+			// the converter moved to another block of a TAP/TZX source;
+			// the stream restarts at a block header, drop the RLE state
+			if(blk_seek) begin
+				hdrsz        <= 0;
+				bitcnt       <= 1;
+				reload32     <= 0;
+				clk_play_cnt <= 0;
+				read_done    <= 0;
+				rd_req       <= 0;
+				play_pause   <= 0;
+			end
+
 			if(hdrsz && read_done) begin
 				if(hdrsz == 7) freq[ 7:0] <= din_r;
 				if(hdrsz == 6) freq[15:8] <= din_r;
@@ -516,6 +530,7 @@ reg  tape_ready;
 tape tape
 (
 	.*,
+	.blk_seek(1'b0),
 	.tape_mode(tape_mode_reg),
 	.req_hdr(stdhdr),
 

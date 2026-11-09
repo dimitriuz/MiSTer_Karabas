@@ -468,6 +468,8 @@ wire [24:0] tape_addr;
 wire  [7:0] tape_din;
 wire        tape_rd_en;
 wire        tape_active, tape_audio;
+wire        tape_blk_seek;    // converter jumped to another block
+wire        tape_pause, tape_prev, tape_next;   // OSD trigger levels
 wire        tape_adc, tape_adc_act;
 wire        tape_in;
 
@@ -489,7 +491,10 @@ tape_src u_tape_src (
 	.rd(tape_rd),
 	.addr(tape_addr),
 	.din(tape_din),
-	.rd_en(tape_rd_en)
+	.rd_en(tape_rd_en),
+	.seek_prev(tape_prev),
+	.seek_next(tape_next),
+	.blk_seek(tape_blk_seek)
 );
 
 // {pause, prev, next}: first sync stage, second sync stage, the second stage
@@ -513,9 +518,9 @@ always @(posedge clk_bus) begin
 	else if (tape_trig_hold[2]) tape_trig_hold[2] <= tape_trig_hold[2] - 4'd1;
 end
 
-wire tape_pause = |tape_trig_hold[0];
-wire tape_prev  = |tape_trig_hold[1];
-wire tape_next  = |tape_trig_hold[2];
+assign tape_pause = |tape_trig_hold[0];
+assign tape_prev  = |tape_trig_hold[1];
+assign tape_next  = |tape_trig_hold[2];
 
 tape u_tape (
 	.clk_sys(clk_bus),
@@ -538,6 +543,7 @@ tape u_tape (
 	.tape_size(tape_size),
 	.stdload(1'b0),
 	.req_hdr(1'b0),
+	.blk_seek(tape_blk_seek),
 
 	.audio_out(tape_audio),
 

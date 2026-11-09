@@ -130,19 +130,29 @@ The tape file is MiSTer disk slot 0: pick it with the OSD `Tape` item (the
 main page, right after Covox). TAP, TZX and CSW are accepted; the format is
 sniffed from the file signature. The file is never loaded into memory: the
 core reads it from the SD card through a two-sector cache as the tape
-plays, so large TZXs mount instantly. `Tape play/pause`, `Tape previous
+plays, so a large TZX mounts instantly. `Tape play/pause`, `Tape previous
 block` and `Tape next block` are OSD trigger items; a freshly mounted tape
 starts paused. `Turbo` (the CPU turbo) is also the tape's fast-load rate -
 the player's clock enable is the CPU's own enable, one pulse per T-state.
-The player is the ZX core's (`rtl/tape/tape.sv` and `rtl/tape/tzxplayer.vhd`
-are copies of ZX-Spectrum_MISTer at commit c2c4e6f, with the data-block pilot
-raised to 8064 pulses: the Profi ROM consumes the standard lead-in while
-loading, so standard 3223/4031-pilot blocks fail and 8064 loads; `zxtap.py`
-writes 8064 for CSW too). The SD file reader is `rtl/tape/tape_src.sv`.
-`Tape previous block` and `Tape next block` act on TAP and TZX; the CSW path
-in the upstream player has no block navigation. With no tape playing, a
-signal on the LTC2308 line-in header drives the EAR input; the USER LED
-lights while the tape is playing.
+
+Playback goes through one player, the ZX core's CSW player
+(`rtl/tape/tape.sv`, a copy of ZX-Spectrum_MISTer at commit c2c4e6f, with
+the data-block pilot raised to 8064 pulses: the Profi ROM consumes the
+standard lead-in while loading, and standard-pilot blocks fail on it). A
+TAP or TZX file is converted on the fly into the CSW byte stream that
+player eats (`rtl/tape/tape_conv.sv`): the same 32-byte CSW v1 header that
+`zxtap.py` writes, then the RLE pulse list of every block. The import's own
+TAP and TZX decoders (`tape.sv` mode 0 and `rtl/tape/tzxplayer.vhd`) failed
+the data block on this machine even with a byte-perfect waveform - see
+`docs/dev/stage4a-results.md` - so they are compiled only for reference.
+
+Consequences worth knowing: TZX conversion covers standard-speed (0x10)
+blocks, and any other block type ends the tape where it starts; a converted
+tape reports itself as unmounted once it has played to the end, so mount it
+again to replay it; `Tape previous block` and `Tape next block` move
+between the blocks of the converted stream, while a plain CSW file has no
+block list for them. With no tape playing, a signal on the LTC2308 line-in
+header drives the EAR input; the USER LED lights while the tape is playing.
 
 ## Known limitations (stage 1)
 
