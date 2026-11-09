@@ -324,6 +324,41 @@ module tb_sd_spi;
         card_select(1'b0);
         case_end("write_block");
 
+        // ---- read_multiple ----
+        // CMD18 streams: the card takes sd_rd per sector, sends the 512 bytes,
+        // then the wait_m gap (all 1s) before the next sector's token. The
+        // sectors are 4 and 5: 2 holds the write_block data by now.
+        case_begin;
+        sd_frame(1'b1, 6'd18, 32'd4, 8'h55, r1, ok);
+        fail_int("read_multiple", "CMD18 r1", r1, 8'h00);
+        read_token(ok);
+        fail_int("read_multiple", "token 0", ok, 1);
+        read_data(ok);
+        for (i = 0; i < 512; i = i + 1)
+            fail_int("read_multiple", "sector 4", cap[i], img_byte(4, i));
+        ok = 0; tmp = 8'hFF;
+        for (n = 0; n < 300 && ok != 1; n = n + 1) begin
+            spi_byte(8'hFF, tmp);
+            if (tmp == 8'hFE) ok = 1;
+        end
+        fail_int("read_multiple", "token 1", ok, 1);
+        read_data(ok);
+        for (i = 0; i < 512; i = i + 1)
+            fail_int("read_multiple", "sector 5", cap[i], img_byte(5, i));
+        sd_frame(1'b1, 6'd12, 32'd0, 8'h61, r1, ok);
+        fail_int("read_multiple", "CMD12 r1", r1, 8'h00);
+        card_select(1'b0);
+        repeat (50) @(posedge clk_sys);
+        sd_frame(1'b1, 6'd17, 32'd6, 8'h55, r1, ok);
+        fail_int("read_multiple", "CMD17 after stop", r1, 8'h00);
+        read_token(ok);
+        fail_int("read_multiple", "token after stop", ok, 1);
+        read_data(ok);
+        for (i = 0; i < 512; i = i + 1)
+            fail_int("read_multiple", "sector 6", cap[i], img_byte(6, i));
+        card_select(1'b0);
+        case_end("read_multiple");
+
         // ---- eject_mid_command ----
         case_begin;
         hps_hold = 1'b1;                    // the HPS has gone quiet
