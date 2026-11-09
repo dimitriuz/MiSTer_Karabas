@@ -13,8 +13,8 @@
 //          apart, so two clocks is its timing with room to spare).
 //
 // One request at a time, as hps_io has it: one engine serves both slots and
-// the core serialises its requests. The memory is mem[slot][0:262143]
-// (256 KB, 512 sectors, per slot) and the tb reads and writes it through the
+// the core serialises its requests. The memory is mem[slot][0:524287]
+// (512 KB, 1024 sectors, per slot) and the tb reads and writes it through the
 // instance (hps.mem[slot][off]), the way tb_tape_src fills sd_img_model's
 // mem. img_size is one size for both slots, as the main module has one
 // img_size input. Bytes at or past the end read as 0 (hps_io pads a short
@@ -47,7 +47,7 @@ module hps_disk_model #(
     localparam [2:0] M_WDATA = 3'd5;  // write: sample buff_din
     localparam [2:0] M_END   = 3'd6;
 
-    reg [7:0] mem [0:1][0:262143];
+    reg [7:0] mem [0:1][0:524287];
 
     reg [2:0]  state = M_IDLE;
     reg        cur = 1'b0;            // the slot being served
@@ -96,7 +96,7 @@ module hps_disk_model #(
             M_DATA: begin
                 buff_wr   <= 1'b1;
                 buff_addr <= idx[8:0];
-                buff_dout <= (pos < img_size) ? mem[cur][pos[17:0]] : 8'd0;
+                buff_dout <= (pos < img_size) ? mem[cur][pos[18:0]] : 8'd0;
                 idx       <= idx + 10'd1;
                 if (idx == 10'd511)
                     state <= M_END;
@@ -107,7 +107,7 @@ module hps_disk_model #(
             end
             M_WWAIT: state <= M_WDATA;
             M_WDATA: begin
-                mem[cur][pos[17:0]] <= buff_din;
+                mem[cur][pos[18:0]] <= buff_din;
                 idx <= idx + 10'd1;
                 if (idx == 10'd511)
                     state <= M_END;
