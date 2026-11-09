@@ -22,6 +22,10 @@ set_global_assignment -name VHDL_FILE rtl/mem/sdram_nowait.vhd
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/gs_mem.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/mt32_mix.sv
 
+# Storage (stage 4b): the sector engine of the machine's disk interface
+# (img_sdc's place) over MiSTer disk slots 2/3, the two IDE images.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/img_src.sv
+
 # Tape (stage 4a): rtl/tape/tape.sv and rtl/tape/tzxplayer.vhd are copies of
 # ZX-Spectrum_MISTer at c2c4e6f (the ZX core's player), with one deviation:
 # both data-block lead-ins are 8064 pulses instead of the ZX 3220/4031,

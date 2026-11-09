@@ -76,6 +76,9 @@ localparam CONF_STR = {
 	"O[6:4],PSG Mix,AY ACB,AY Mono,YM ABC,YM ACB,YM Mono,AY ABC;",
 	"O[3],Covox,On,Off;",
 	"S0,TAPTZXCSW,Tape;",
+	"S1,VHD,SD Card;",
+	"S2,HDFIMGVHD,IDE 0;",
+	"S3,HDFIMGVHD,IDE 1;",
 	"T[31],Tape play/pause;",
 	"T[32],Tape previous block;",
 	"T[33],Tape next block;",
@@ -122,26 +125,34 @@ wire [26:0] ioctl_addr;
 wire [7:0]  ioctl_dout;
 wire        ioctl_wait;
 
-// MiSTer disk slot 0 (the tape file, see the TAPE section): the mount
-// handshake and the SD block interface hps_io shares with the core. VDNUM=1
-// (one slot), BLKSZ=2 (512-byte sectors), so sd_buff_addr is [13:0]; the
-// tape reader uses the low 9 bits of the 512-byte sector.
-wire  [0:0]  img_mounted;
+// MiSTer disk slots: the mount handshake and the SD block interface hps_io
+// shares with the core. VDNUM=4 (four slots), BLKSZ=2 (512-byte sectors), so
+// sd_buff_addr is [13:0] and the block readers use its low 9 bits:
+//   0  the tape file (S0, the TAPE section), rtl/tape/tape_src.sv
+//   1  the Z-Controller's SD card (S1), sys/sd_card.sv, one sector at a time
+//   2  the IDE hard disk, device 0 (S2, "IDE 0"), rtl/disk/img_src.sv slot a
+//   3  the IDE hard disk, device 1 (S3, "IDE 1"), rtl/disk/img_src.sv slot b
+// Only slots 1..3 can be written (the SD card and the IDE disks); the tape is
+// read-only, so sd_wr[0] stays 0.
+wire  [3:0]  img_mounted;
 wire         img_readonly;
 wire  [63:0] img_size;
-wire  [31:0] sd_lba [1];
-wire   [5:0] sd_blk_cnt [1];
-wire   [0:0] sd_rd, sd_wr, sd_ack;
+wire  [31:0] sd_lba [4];
+wire   [5:0] sd_blk_cnt [4];
+wire   [3:0] sd_rd, sd_wr, sd_ack;
 wire  [13:0] sd_buff_addr;
 wire   [7:0] sd_buff_dout;
-wire   [7:0] sd_buff_din [1];
+wire   [7:0] sd_buff_din [4];
 wire         sd_buff_wr;
 
 assign sd_blk_cnt[0] = 6'd0;
-assign sd_wr        = 1'b0;
+assign sd_blk_cnt[1] = 6'd0;
+assign sd_blk_cnt[2] = 6'd0;
+assign sd_blk_cnt[3] = 6'd0;
+assign sd_wr[0]      = 1'b0;
 assign sd_buff_din[0] = 8'd0;
 
-hps_io #(.CONF_STR(CONF_STR), .VDNUM(1), .BLKSZ(2)) hps_io
+hps_io #(.CONF_STR(CONF_STR), .VDNUM(4), .BLKSZ(2)) hps_io
 (
 	.clk_sys(clk_sys),
 	.HPS_BUS(HPS_BUS),
@@ -315,10 +326,27 @@ profi #(
 	.GSL_TGL(gsl_tgl),
 	.ENA_CPU_O(ena_cpu_o),
 
-	.SD_CS_N(),
-	.SD_DO(1'b1),
-	.SD_CLK(),
+	.SD_CS_N(sd_ss_n),            // the Z-Controller's SPI on the SD card
+	.SD_DO(sd_miso),
+	.SD_DI(sd_mosi),
+	.SD_CLK(sd_sck),
 	.SD_DET_N(1'b1),
+
+	// hdf_ata's sector requests out to the top's sector engine and the
+	// 512 strobe bytes back (rtl/disk/img_src.sv, disk slots 2/3)
+	.SDC_IMG_MOUNTED(sdc_img_mounted),
+	.SDC_IMG_SIZE(sdc_img_size),
+	.SDC_RD(sdc_rd),
+	.SDC_WR(sdc_wr),
+	.SDC_SECTOR(sdc_sector),
+	.SDC_BYTE_OUT_DATA(sdc_byte_out_data),
+	.SDC_BUSY(sdc_busy),
+	.SDC_DONE(sdc_done),
+	.SDC_ERROR(sdc_error),
+	.SDC_SLOT(sdc_slot),
+	.SDC_BYTE_IN_STROBE(sdc_byte_in_strobe),
+	.SDC_BYTE_ADDR(sdc_byte_addr),
+	.SDC_BYTE_IN_DATA(sdc_byte_in_data),
 
 	.RGB_CLK(rgb_clk),
 	.VGA_CLK(vga_clk),
@@ -574,6 +602,90 @@ end
 // ula_tape_in = ~tape_vin, so the player output goes in unchanged.
 assign tape_in  = tape_active ? tape_audio : (tape_adc_act_s[1] ? tape_adc_s[1] : 1'b0);
 assign LED_USER = tape_active;
+
+///////////////////////   STORAGE: SD CARD AND IDE IMAGES   //////////////////
+
+// The Z-Controller's SPI bus (profi's SD_* pins, driven by zc_spi from the
+// Z80 side) hosts a real SD card as MiSTer disk slot 1: sys/sd_card.sv
+// answers its CMD17/CMD24 with the mounted file's sectors through hps_io.
+// The card model is SDHC (block addressing, so CMD1/ACMD41 never pass), and
+// it is reset by the power-on reset only: a card is not reset by the
+// machine's RESET item. Its chip select is the card's active-low SS (the
+// card treats ss = 1 as deselected), exactly what profi's SD_CS_N is;
+// sim/tb_sd_spi.sv pins that polarity on the unmodified card.
+wire sd_ss_n, sd_sck, sd_mosi, sd_miso;
+
+sd_card u_sd (
+	.clk_sys(clk_sys),
+	.reset(por_reset),
+	.sdhc(1'b1),
+	.img_mounted(img_mounted[1]),
+	.img_size(img_size),
+	.sd_lba(sd_lba[1]),
+	.sd_rd(sd_rd[1]),
+	.sd_wr(sd_wr[1]),
+	.sd_ack(sd_ack[1]),
+	.sd_buff_addr(sd_buff_addr[8:0]),
+	.sd_buff_dout(sd_buff_dout),
+	.sd_buff_din(sd_buff_din[1]),
+	.sd_buff_wr(sd_buff_wr),
+	.clk_spi(clk_sys),
+	.ss(sd_ss_n),
+	.sck(sd_sck),
+	.mosi(sd_mosi),
+	.miso(sd_miso)
+);
+
+// The two IDE hard disks (MiSTer disk slots 2 and 3, OSD "IDE 0"/"IDE 1").
+// On the Karabas Go the sector engine behind the machine's disk interface
+// (img_sdc, the MCU file mounter's) lived inside profi and served both the
+// Z-Controller and hdf_ata; here it is rtl/disk/img_src.sv on MiSTer disk
+// slots 2/3, and profi's SDC_* ports are hdf_ata's side of the same
+// handshake (a request level, busy, done, error, and 512 byte strobes).
+// The engine's hps_io side runs on clk_sys, its machine side on CLK_BUS.
+wire  [7:0] sdc_img_mounted;
+wire [63:0] sdc_img_size;
+wire  [7:0] sdc_rd, sdc_wr, sdc_byte_out_data, sdc_byte_in_data;
+wire [31:0] sdc_sector;
+wire  [2:0] sdc_slot;
+wire  [8:0] sdc_byte_addr;
+wire        sdc_busy, sdc_done, sdc_error, sdc_byte_in_strobe;
+
+img_src u_img (
+	.clk_sys(clk_sys),
+	.reset_sys(por_reset),
+	.img_mounted(img_mounted[3:2]),
+	.img_size(img_size),
+	.lba_a(sd_lba[2]),
+	.rd_a(sd_rd[2]),
+	.wr_a(sd_wr[2]),
+	.ack_a(sd_ack[2]),
+	.lba_b(sd_lba[3]),
+	.rd_b(sd_rd[3]),
+	.wr_b(sd_wr[3]),
+	.ack_b(sd_ack[3]),
+	.sd_buff_addr(sd_buff_addr[8:0]),
+	.sd_buff_dout(sd_buff_dout),
+	.sd_buff_din_a(sd_buff_din[2]),
+	.sd_buff_din_b(sd_buff_din[3]),
+	.sd_buff_wr(sd_buff_wr),
+
+	.clk(clk_bus),
+	.reset(profi_areset),
+	.sdc_rd(sdc_rd),
+	.sdc_wr(sdc_wr),
+	.sdc_sector(sdc_sector),
+	.sdc_busy(sdc_busy),
+	.sdc_done(sdc_done),
+	.sdc_error(sdc_error),
+	.sdc_slot(sdc_slot),
+	.sdc_byte_in_strobe(sdc_byte_in_strobe),
+	.sdc_byte_addr(sdc_byte_addr),
+	.sdc_byte_in_data(sdc_byte_in_data),
+	.sdc_byte_out_data(sdc_byte_out_data),
+	.sdc_img_mounted(sdc_img_mounted),
+	.sdc_img_size(sdc_img_size)
+);
 
 ///////////////////////   VIDEO   //////////////////////////////////////////
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Icarus run of the img_src testbench: compiles sim/tb_img_src.sv with
-# sim/models/hps_disk_model.sv (hps_io's sector transport) and
+# sim/models/hps_disk_model.sv (hps_io's sector transport),
+# sim/models/altsyncram_model.sv (the engine's 512-byte sector buffer) and
 # rtl/disk/img_src.sv (the DUT), plus the upstream hdf_ata (the engine's
 # customer on the IDE bus, no rewrites). The last line of the output is the
 # verdict, `tb_img_src: PASS` or `tb_img_src: FAIL <reason>`, and the script
@@ -36,6 +37,7 @@ LOG=$(mktemp)
 iverilog -g2012 -o build/sim/tb_img_src.vvp \
     sim/tb_img_src.sv \
     sim/models/hps_disk_model.sv \
+    sim/models/altsyncram_model.sv \
     rtl/disk/img_src.sv \
     upstream/karabas-go-core-profi/modules/rtl/mcu/hdf_ata.v
 vvp build/sim/tb_img_src.vvp > "$LOG" 2>&1 || true

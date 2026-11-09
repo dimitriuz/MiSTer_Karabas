@@ -92,12 +92,74 @@ module img_src (
     localparam RQ_SLOT = 33, RQ_WR = 32;
 
     // ---------------- the 512-byte dual-clock buffer ----------------
-    // The HPS port (clk_sys): a read registered for sd_buff_din, and the
-    // writes of a fetched sector. The stream port (clk): a read registered
-    // for the strobes, and the writes of a sector being pushed.
-    reg [7:0] page [0:511];
-    reg [7:0] q_sys = 8'd0;
-    reg [7:0] q_bus = 8'd0;
+    // One M10K block with two independent clocked ports, the way the card's
+    // own sector buffer is built (sys/sd_card.sv): port A on clk_sys is
+    // hps_io's byte port - its address (sd_buff_addr) and its output are
+    // unregistered, so sd_buff_din follows the address, and a fetched
+    // sector is written through it; port B on clk is the stream's - the
+    // address is registered on CLOCK1 (q_b is the word of the previous
+    // clock's address, which is what the strobe states sample), and a
+    // sector being pushed is written through it. Quartus cannot infer this
+    // shape from an array (two clocks, read and write on both ports:
+    // "Cannot synthesize dual-port RAM logic"), so it is an instance.
+    wire [8:0] b_addr = b_we ? b_wa : wpos;
+    wire [7:0] q_sys, q_bus;
+
+    altsyncram u_buf (
+        .clock0    (clk_sys),
+        .clock1    (clk),
+
+        .address_a (sd_buff_addr),
+        .data_a    (sd_buff_dout),
+        .wren_a    (sd_buff_wr && h_state == H_DATA),
+        .q_a       (q_sys),
+
+        .address_b (b_addr),
+        .data_b    (b_wd),
+        .wren_b    (b_we),
+        .q_b       (q_bus),
+
+        .aclr0(1'b0),
+        .aclr1(1'b0),
+        .addressstall_a(1'b0),
+        .addressstall_b(1'b0),
+        .byteena_a(1'b1),
+        .byteena_b(1'b1),
+        .clocken0(1'b1),
+        .clocken1(1'b1),
+        .clocken2(1'b1),
+        .clocken3(1'b1),
+        .eccstatus(),
+        .rden_a(1'b1),
+        .rden_b(1'b1)
+    );
+    defparam
+        u_buf.numwords_a = 512,
+        u_buf.widthad_a  = 9,
+        u_buf.width_a    = 8,
+        u_buf.numwords_b = 512,
+        u_buf.widthad_b  = 9,
+        u_buf.width_b    = 8,
+        u_buf.address_reg_b = "CLOCK1",
+        u_buf.clock_enable_input_a = "BYPASS",
+        u_buf.clock_enable_input_b = "BYPASS",
+        u_buf.clock_enable_output_a = "BYPASS",
+        u_buf.clock_enable_output_b = "BYPASS",
+        u_buf.indata_reg_b = "CLOCK1",
+        u_buf.intended_device_family = "Cyclone V",
+        u_buf.lpm_type = "altsyncram",
+        u_buf.operation_mode = "BIDIR_DUAL_PORT",
+        u_buf.outdata_aclr_a = "NONE",
+        u_buf.outdata_aclr_b = "NONE",
+        u_buf.outdata_reg_a = "UNREGISTERED",
+        u_buf.outdata_reg_b = "UNREGISTERED",
+        u_buf.power_up_uninitialized = "FALSE",
+        u_buf.read_during_write_mode_port_a = "NEW_DATA_NO_NBE_READ",
+        u_buf.read_during_write_mode_port_b = "NEW_DATA_NO_NBE_READ",
+        u_buf.width_byteena_a = 1,
+        u_buf.width_byteena_b = 1,
+        u_buf.wrcontrol_wraddress_reg_b = "CLOCK1";
+
     reg [8:0] b_wa = 9'd0;
     reg [7:0] b_wd = 8'd0;
     reg       b_we = 1'b0;
@@ -129,10 +191,6 @@ module img_src (
                                img_mounted[0] ? (img_size != 64'd0) : mounted_sys[0] };
 
     always @(posedge clk_sys) begin
-        q_sys <= page[sd_buff_addr];
-        if (sd_buff_wr && h_state == H_DATA)
-            page[sd_buff_addr] <= sd_buff_dout;
-
         // ---- mount: one {mounted, size} payload per event ----
         old_mounted <= img_mounted;
         if (|(img_mounted & ~old_mounted)) begin
@@ -230,14 +288,6 @@ module img_src (
     assign sdc_slot = slot;
     assign sdc_img_mounted = {2'b00, mounted_bus[1], mounted_bus[0], 4'b0000};
     assign sdc_img_size = size_bus;
-
-    // the stream port: a registered read for the strobes, and the writes of
-    // a sector being pushed
-    always @(posedge clk) begin
-        q_bus <= page[wpos];
-        if (b_we)
-            page[b_wa] <= b_wd;
-    end
 
     always @(posedge clk) begin
         sdc_done <= 1'b0;

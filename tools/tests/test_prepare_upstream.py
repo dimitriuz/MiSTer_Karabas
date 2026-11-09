@@ -37,6 +37,11 @@ EXCLUDED_ALL = {
 }
 KEPT_BY_ELAB_ONLY = {"src/rtl/memory/memory.vhd", "src/rtl/memory/sdram.vhd"}
 
+# Instantiated upstream but removed by the core profile's rewrites (stage 4b:
+# the file mounter's sector engine is the MiSTer top's img_src now), so the
+# prepared profi.vhd has no instantiation and gets no generated component.
+DROPPED_BY_REWRITES = {"img_sdc"}
+
 # Init-path / qip path prefix per profile: relative to the profile's Quartus
 # project dir (core: repo root with the tree in build/upstream; elab:
 # build/elab with the tree in upstream).
@@ -158,13 +163,20 @@ class TestPrepareUpstream(unittest.TestCase):
         out = prepared(profile)
         for rel, names in inst_in.items():
             otext = (out / rel).read_text(errors="replace")
-            for name in names:
+            for name in names - DROPPED_BY_REWRITES:
                 # no `entity work.<name>` survived the rewrite
                 self.assertNotRegex(otext, rf'(?i)entity\s+work\.{name}\b',
                                     f"{rel} still instantiates entity work.{name}")
                 # and it carries exactly one declaration (own or generated)
                 n = len(re.findall(rf'(?im)^[ \t]*component[ \t]+{name}[ \t]*($|\r?\n)', otext))
                 self.assertEqual(n, 1, f"{rel} has {n} component {name} declarations")
+        # img_sdc: the rewrite removed the instantiation, so the prepared
+        # profi.vhd keeps neither `entity work.img_sdc` nor a component
+        otext = (out / "src/rtl/profi.vhd").read_text(errors="replace")
+        self.assertNotRegex(otext, r'(?i)entity\s+work\.img_sdc\b')
+        self.assertIsNone(component_block(otext, "img_sdc"))
+        self.assertNotRegex(
+            otext, r'(?im)^[ \t]*component[ \t]+img_sdc[ \t]*($|\r?\n)')
         # the brief's example: profi.vhd keeps its own opl2_top and gets no second
         ptext = (out / "src/rtl/profi.vhd").read_text(errors="replace")
         self.assertEqual(
@@ -519,6 +531,66 @@ class TestPrepareUpstream(unittest.TestCase):
                       "CLK_GS_O <= clk_gs;\n"
                       "ENA_CPU_O <= ena_cpu;"), 1)
         self.assertEqual(out.count("ENA_CPU_O"), 2)
+
+    def test_profi_sdc_ports(self):
+        # Task 4 (stage 4b): img_sdc (the MCU file mounter's sector engine)
+        # leaves profi. The engine is the MiSTer top's img_src now, so profi
+        # carries its 13 ports (SDC_*) and no longer has the lowercase
+        # sdc_* signals or the instantiation. The HDF devices keep raising
+        # sdc_rd/sdc_wr/sdc_sector on those ports; only the names change.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(
+            out.count("\tSD_DET_N : in  STD_LOGIC;\n"
+                      "\n"
+                      "\t-- MiSTer stage 4b: the file mounter's sector engine (img_sdc) is on the\n"
+                      "\t-- MiSTer side; these are its ports (img_sdc's interface, indices 4 and 5).\n"
+                      "\tSDC_IMG_MOUNTED : in  STD_LOGIC_VECTOR(7 downto 0);\n"
+                      "\tSDC_IMG_SIZE    : in  STD_LOGIC_VECTOR(63 downto 0);\n"
+                      "\tSDC_RD          : out STD_LOGIC_VECTOR(7 downto 0);\n"
+                      "\tSDC_WR          : out STD_LOGIC_VECTOR(7 downto 0);\n"
+                      "\tSDC_SECTOR      : out STD_LOGIC_VECTOR(31 downto 0);\n"
+                      "\tSDC_BYTE_OUT_DATA : out STD_LOGIC_VECTOR(7 downto 0);\n"
+                      "\tSDC_BUSY        : in  STD_LOGIC;\n"
+                      "\tSDC_DONE        : in  STD_LOGIC;\n"
+                      "\tSDC_ERROR       : in  STD_LOGIC;\n"
+                      "\tSDC_SLOT        : in  STD_LOGIC_VECTOR(2 downto 0);\n"
+                      "\tSDC_BYTE_IN_STROBE : in  STD_LOGIC;\n"
+                      "\tSDC_BYTE_ADDR   : in  STD_LOGIC_VECTOR(8 downto 0);\n"
+                      "\tSDC_BYTE_IN_DATA : in  STD_LOGIC_VECTOR(7 downto 0);"), 1)
+        # gone: the declarations, the instantiation and every lowercase use
+        self.assertEqual(out.count("signal sdc_"), 0)
+        self.assertEqual(out.count("work.img_sdc"), 0)
+        self.assertEqual(out.count("sdc_active"), 0)
+        # the HDF coupling drives the ports
+        self.assertEqual(
+            out.count('SDC_RD <= "00" & hdf_rd & "0000";\n'
+                      'SDC_WR <= "00" & hdf_wr & "0000";\n'
+                      'SDC_SECTOR <= hdf_sector;\n'
+                      'SDC_BYTE_OUT_DATA <= hdf_out_data;'), 1)
+        self.assertEqual(
+            out.count("hdf_sdc_busy <= SDC_BUSY and hdf_own;\n"
+                      "hdf_sdc_done <= SDC_DONE and hdf_own;\n"
+                      "hdf_sdc_byte_in_strobe <= SDC_BYTE_IN_STROBE and hdf_own;"), 1)
+        self.assertEqual(
+            out.count("\timg_mounted        => SDC_IMG_MOUNTED(5 downto 4),\n"
+                      "\timg_size           => SDC_IMG_SIZE,"), 1)
+        self.assertEqual(
+            out.count("\tsdc_error          => SDC_ERROR,\n"
+                      "\tsdc_byte_in_strobe => hdf_sdc_byte_in_strobe,\n"
+                      "\tsdc_byte_addr      => SDC_BYTE_ADDR,\n"
+                      "\tsdc_byte_in_data   => SDC_BYTE_IN_DATA,"), 1)
+        self.assertEqual(out.count("SDC_SLOT(2 downto 1)"), 1)
+
+    def test_profi_status_cf(self):
+        # Task 4 (stage 4b): the SD card is no file-mounter slot any more
+        # (hps_io's own disk slot 1 is behind it), so STATUS_CF lights only
+        # for the HDD.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(
+            out.count("\tSTATUS_CF \t\t=> hdd_active or hdf_led,"), 1)
+        self.assertEqual(out.count("sdc_active"), 0)
 
     def test_profi_rewrites_di_bypass(self):
         # Task 4 fix (build 20/21): the selector process drives cpu_di_mux

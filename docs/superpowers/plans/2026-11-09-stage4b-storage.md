@@ -66,7 +66,7 @@
 - ATA test program register map (NemoIDE, ports always enabled: `nemoide_en` is hard-wired 1 and the decode needs `CPM = 0`, which 128 BASIC is): 0x10 data low (a read here triggers the next 16-bit IDE read; `IN 0x11` returns the high byte of the same word, `OUT 0x11` latches the high byte before `OUT 0x10` writes the word), 0x30 error/features, 0x50 sector count, 0x70/0x90/0xB0/0xD0 LBA0-3 and DEV, 0xF0 command/status.
 - Produces (fixtures): `build/taps/hdf.tap|tzx|csw` and `hdfw.*` from `tools/make_test_taps.sh` (the glob picks the new sources up; 15 files now).
 
-- [ ] **Step 1: Tests first** in `tools/tests/test_mk_disk.py` (`sys.path` insertion like `test_zxtap.py`):
+- [x] **Step 1: Tests first** in `tools/tests/test_mk_disk.py` (`sys.path` insertion like `test_zxtap.py`):
   - `test_mbr`: bytes 510-511 are `55 AA`; partition entry 1: type 6, start 2048, length 30720; boot flag 0x80.
   - `test_bpb`: at sector 1 (LBA 2048): `b"\x55\xAA"` at 510, 512 bytes/sector, 2 FATs, 512 root entries, hidden 2048, total 30720, label `KARABAS SD ` at 43.
   - `test_fat_sizes`: the computed sectors/FAT covers `clusters + 2` entries, both FATs identical on disk.
@@ -74,14 +74,14 @@
   - `test_hdf_geometry`: file size is `sectors * 512`; bytes 0-3 `RDSK`, block size 512; `struct.unpack('>I', ...)` at 64/68/72 gives `cyl, 63, 16` with `cyl == sectors // 1008`; sector 1 starts with `KARABAS HDF` and its byte 15 is `(15 * 7 + 3) & 0xFF`.
   - `test_hdf_too_small`: `hdf(sectors=1000)` raises `ValueError` (cyl would be 0).
   - `test_cat_missing`: `fat_read('NOPE')` raises `KeyError`; the CLI exits non-zero.
-- [ ] **Step 2: Run** `python3 -m unittest tools.tests.test_mk_disk -v` → FAIL (`ModuleNotFoundError`).
-- [ ] **Step 3: Implement `tools/mk_disk.py`** (one writer for the BPB/FAT/directory, one for the RDB; the reader walks the MBR, BPB, root directory and the cluster chain).
-- [ ] **Step 4: The ATA programs.** `tests/zx/hdf.bas` must, on autostart, print `hdf ok RDSK` for a mounted `test.hdf` and `no hdf` without one:
+- [x] **Step 2: Run** `python3 -m unittest tools.tests.test_mk_disk -v` → FAIL (`ModuleNotFoundError`).
+- [x] **Step 3: Implement `tools/mk_disk.py`** (one writer for the BPB/FAT/directory, one for the RDB; the reader walks the MBR, BPB, root directory and the cluster chain).
+- [x] **Step 4: The ATA programs.** `tests/zx/hdf.bas` must, on autostart, print `hdf ok RDSK` for a mounted `test.hdf` and `no hdf` without one:
   - select LBA mode device 0 (`OUT 0xD0,0xE0`), count 1, LBA 0 (`OUT 0x50,1`, `OUT 0x70,0`, `OUT 0x90,0`, `OUT 0xB0,0`), poll `IN 0xF0` (bounded loop, ≥1000 iterations) until DRDY (`AND 64`) with no BSY (`AND 128`), print `no hdf` if DRDY never comes.
   - `OUT 0xF0,0x20` (READ SECTORS), poll until DRQ (`AND 8`), abort with the status if ERR, then `L=IN 16:H=IN 17` twice and print `hdf ok `CHR$ L;CHR$ H;CHR$ L2;CHR$ H2.
   - `tests/zx/hdfw.bas` does the same for WRITE SECTORS (0x30) at LBA 1 with 256 words of `OUT 0x11,(I*7+3) MOD 256` then `OUT 0x10,(I*7+3) MOD 256`, waits for BSY to clear, re-reads LBA 1, counts mismatches, prints `hdf rw ok` or `hdf rw bad <count>`.
-- [ ] **Step 5: Run** the unit tests → all pass (75 + new); `tools/make_test_taps.sh` → 15 files, the two new programs among them; `python3 tools/mk_disk.py sd build/disk/test.vhd` and `hdf build/disk/test.hdf` succeed and `ls`/`cat` round-trip.
-- [ ] **Step 6: Commit** `tools: FAT16 VHD and RDSK HDF images, and the ATA test programs`.
+- [x] **Step 5: Run** the unit tests → all pass (75 + new); `tools/make_test_taps.sh` → 15 files, the two new programs among them; `python3 tools/mk_disk.py sd build/disk/test.vhd` and `hdf build/disk/test.hdf` succeed and `ls`/`cat` round-trip.
+- [x] **Step 6: Commit** `tools: FAT16 VHD and RDSK HDF images, and the ATA test programs`.
 
 ### Task 2: `img_src`, the sector engine, and `tb_img_src`
 
@@ -119,7 +119,7 @@ module img_src (
   - Crossings are toggle handshakes with two-flop synchronisers, as in `rtl/tape/tape_src.sv`: mount `{b, a, size}` from `clk_sys` to `clk`, and the request `{a/b, wr, sector}` out and the completion back.
 - Consumes: nothing from Task 1 (the tb builds its own image).
 
-- [ ] **Step 1: The model first**, `sim/models/hps_disk_model.sv`, mirroring `sim/models/sd_img_model.sv` but read/write and slot-indexed:
+- [x] **Step 1: The model first**, `sim/models/hps_disk_model.sv`, mirroring `sim/models/sd_img_model.sv` but read/write and slot-indexed:
 ```systemverilog
 module hps_disk_model #(parameter integer LAT_CLKS = 10) (
     input clk, input reset,
@@ -136,7 +136,7 @@ module hps_disk_model #(parameter integer LAT_CLKS = 10) (
 // reg [7:0] mem [0:1][0:131071];  (256 KB per slot)
 ```
   Read: after `LAT_CLKS`, `ack` bit high, 512 `buff_wr` pulses with `buff_addr = 0..511` and the sector bytes; write: the same with `buff_wr` low, sampling `buff_din`; bytes past `img_size` read as 0 and set `past_end`.
-- [ ] **Step 2: The bench**, `sim/tb_img_src.sv`, DUT `img_src` + `hdf_ata` (compiled from `upstream/karabas-go-core-profi/modules/rtl/mcu/hdf_ata.v`, no rewrites), a task-level ATA host (register writes/reads and 16-bit data on `hdf_ata`'s bus at `clk`), and the model. The image: 1024 sectors built in SV, sector 0 with the RDSK geometry `cyl = 1, spt = 63, heads = 16`, sector 1 with `KARABAS HDF` + the `(i*7+3)&0xFF` pattern. Cases, each printing `PASS <case>`/`FAIL <case> <reason>` and ending `tb_img_src: PASS`:
+- [x] **Step 2: The bench**, `sim/tb_img_src.sv`, DUT `img_src` + `hdf_ata` (compiled from `upstream/karabas-go-core-profi/modules/rtl/mcu/hdf_ata.v`, no rewrites), a task-level ATA host (register writes/reads and 16-bit data on `hdf_ata`'s bus at `clk`), and the model. The image: 1024 sectors built in SV, sector 0 with the RDSK geometry `cyl = 1, spt = 63, heads = 16`, sector 1 with `KARABAS HDF` + the `(i*7+3)&0xFF` pattern. Cases, each printing `PASS <case>`/`FAIL <case> <reason>` and ending `tb_img_src: PASS`:
   - `ident`: IDENTIFY DEVICE → word 0 `0x0040`, word 1 `1`, word 3 `16`, word 6 `63`, word 47 `0x8001`, word 60 `0x0400`, word 61 `0`.
   - `read_sector`: READ SECTORS LBA 1 → all 512 bytes equal the image's.
   - `write_sector`: WRITE SECTORS LBA 1 with `0x3C` repeated → the model's memory holds it and a second READ through the engine returns it (the engine writes to the HPS, the read comes back from the HPS).
@@ -147,10 +147,10 @@ module hps_disk_model #(parameter integer LAT_CLKS = 10) (
   - `remount_mid_transfer`: raise the mount for slot a with a *different* image while a READ is streaming → the command ends with the old bytes, and the next READ returns the new image's sector.
   - `eject_mid_transfer`: a mount pulse with `img_size = 0` during a transfer → the transfer completes or errors but does not hang, and the following command sees no device.
   - `slow_hps`: `LAT_CLKS = 50000` → `read_sector` still passes.
-- [ ] **Step 3: Run** `tools/sim.sh sim/run_tb_img_src.sh` against a stub `img_src` (correct ports, `sdc_busy = 0`, no transfers) → FAIL (`tb_img_src: FAIL ident ...` with the bench's bounded poll), proving the bench reaches the DUT before the engine exists.
-- [ ] **Step 4: Implement `rtl/disk/img_src.sv`.** Keep the header comment in the style of `tape_src.sv`: the two domains, the protocol from `img_sdc.v`, the arbitration (lowest index first, one in flight), and what a mount does to an in-flight transfer.
-- [ ] **Step 5: Run** the bench until all cases PASS; then `tools/sim.sh sim/run_tb_tape_src.sh` and `sim/run_tb_gs_mem.sh` (the neighbours stay green).
-- [ ] **Step 6: Commit** `disk: img_src, the sector engine behind the IDE images`.
+- [x] **Step 3: Run** `tools/sim.sh sim/run_tb_img_src.sh` against a stub `img_src` (correct ports, `sdc_busy = 0`, no transfers) → FAIL (`tb_img_src: FAIL ident ...` with the bench's bounded poll), proving the bench reaches the DUT before the engine exists.
+- [x] **Step 4: Implement `rtl/disk/img_src.sv`.** Keep the header comment in the style of `tape_src.sv`: the two domains, the protocol from `img_sdc.v`, the arbitration (lowest index first, one in flight), and what a mount does to an in-flight transfer.
+- [x] **Step 5: Run** the bench until all cases PASS; then `tools/sim.sh sim/run_tb_tape_src.sh` and `sim/run_tb_gs_mem.sh` (the neighbours stay green).
+- [x] **Step 6: Commit** `disk: img_src, the sector engine behind the IDE images`.
 
 ### Task 3: the SD path in simulation
 
@@ -162,13 +162,13 @@ module hps_disk_model #(parameter integer LAT_CLKS = 10) (
 - Produces: the proof that `ss` is active-high (Profi `SD_CS_N` inverted), `sck` idles high with mode-0 sampling, `miso` is the card's data out, and `sdhc = 1` answers block addresses.
 - The SPI host is a bench task: `spi_byte(cmd) -> resp` (8 bits, MSB first, sample on `sck` rising for MISO, shift on falling), with `ss` driven low around a command frame; responses are read as 0xFF while busy (0x01/0x00/0x08 etc. are the R1 values `sd_card.sv` returns).
 
-- [ ] **Step 1: Write the bench** with cases `init_and_read`, `write_block`, `eject_mid_command`:
+- [x] **Step 1: Write the bench** with cases `init_and_read`, `write_block`, `eject_mid_command`:
   - `init_and_read`: CMD0 → R1 `0x01`, CMD8 (`0x1AA`) → `0x01` and the trailing `0x1AA`, CMD55+ACMD41 → `0x00`, CMD58 → OCR with bit 30 (SDHC), CMD17 (`lba = 1`) → `0x00`, token `0xFE`, then 512 bytes equal to the model's sector 1, then CRC bytes ignored.
   - `write_block`: CMD24 (`lba = 2`), token `0xFE`, 512 bytes `0xA5`, then the `0xE5` data-response and the model's memory at sector 2 equal to `0xA5`; the core's `sd_wr` must be seen before `sd_ack`.
   - `eject_mid_command`: a mount pulse with `img_size = 0` in the middle of CMD17's data phase → `miso` idles at 1 (0xFF read), the bench's bounded read loop exits, and the next CMD0 still answers.
-- [ ] **Step 2: Run** `tools/sim.sh sim/run_tb_sd_spi.sh` before the SPI host is right → FAIL on the first response byte, which is what pins the polarity: `ss` must be driven active-high (the top inverts `SD_CS_N`), `sck` idles high and data changes on its falling edge, and `miso` is the card's output. Each mismatch is a wiring decision Task 4 then has to reproduce.
-- [ ] **Step 3: Correct the host until all three cases pass**, then run it three times in a row (no flakiness in the bit-bang).
-- [ ] **Step 4: Commit** `sim: the SD card SPI path`.
+- [x] **Step 2: Run** `tools/sim.sh sim/run_tb_sd_spi.sh` before the SPI host is right → FAIL on the first response byte, which is what pins the polarity: `ss` must be driven active-high (the top inverts `SD_CS_N`), `sck` idles high and data changes on its falling edge, and `miso` is the card's output. Each mismatch is a wiring decision Task 4 then has to reproduce.
+- [x] **Step 3: Correct the host until all three cases pass**, then run it three times in a row (no flakiness in the bit-bang).
+- [x] **Step 4: Commit** `sim: the SD card SPI path`.
 
 ### Task 4: the core — `profi` ports, the slots, the OSD
 
@@ -202,12 +202,12 @@ module hps_disk_model #(parameter integer LAT_CLKS = 10) (
 - No other change is needed on the IDE side: `hdf_ata` already sees `dev0_en = sw_hdd` and `cf_sel = ~sw_hdd` from `osd_value(8) = 1` in `rtl/host/osd_items.svh` (HDD image, no CF card), so `ide_mux` routes the HDF to the IDE bus with `CF = 0`; its `WA`/`WD`/`WCS_N` outputs stay unconnected at the top. `ide_mux` is *kept*, deviating from the spec's "`ide_mux` is dropped": it is what connects `hdf_ata` to the IDE bus, and removing it would rewire `profi`'s IDE bus for no behaviour change. Record the deviation in the results document.
 - OSD: after `S0,TAPTZXCSW,Tape;` add `S1,VHD,SD Card;`, `S2,HDFIMGVHD,IDE 0;`, `S3,HDFIMGVHD,IDE 1;` (the `S` ordinal is the disk slot; the type string is the spec's `.img .hdf .vhd` as three 3-letter groups).
 
-- [ ] **Step 1: The rewrite tests first** in `tools/tests/test_prepare_upstream.py`: `test_profi_sdc_ports` (the exact port block appears once and the old signal declarations and `u_img_sdc` are gone), `test_profi_status_cf` (the `hdd_active or hdf_led` line, no `sdc_active`). The 14 declarations are the contiguous block at `profi.vhd:293-306` (with `sdc_active` as its last line): one rewrite deletes the block. The `u_img_sdc` instantiation is one contiguous block too. Copy both old strings from the file verbatim, tabs included — `prepare_upstream.py` matches bytes.
-- [ ] **Step 2: Run** those two → FAIL; add the rewrites; run → PASS; `tools/check_upstream.sh` → OK; `tools/elab_upstream.sh` → OK (the elab profile keeps upstream's `profi.vhd`, so its output must not change).
-- [ ] **Step 3: The top.** Widen the disk arrays and add the two instantiations and the profi connections above; update the comment over the disk declarations (VDNUM = 4, which slot is which).
+- [x] **Step 1: The rewrite tests first** in `tools/tests/test_prepare_upstream.py`: `test_profi_sdc_ports` (the exact port block appears once and the old signal declarations and `u_img_sdc` are gone), `test_profi_status_cf` (the `hdd_active or hdf_led` line, no `sdc_active`). The 14 declarations are the contiguous block at `profi.vhd:293-306` (with `sdc_active` as its last line): one rewrite deletes the block. The `u_img_sdc` instantiation is one contiguous block too. Copy both old strings from the file verbatim, tabs included — `prepare_upstream.py` matches bytes.
+- [x] **Step 2: Run** those two → FAIL; add the rewrites; run → PASS; `tools/check_upstream.sh` → OK; `tools/elab_upstream.sh` → OK (the elab profile keeps upstream's `profi.vhd`, so its output must not change).
+- [x] **Step 3: The top.** Widen the disk arrays and add the two instantiations and the profi connections above; update the comment over the disk declarations (VDNUM = 4, which slot is which).
 - [ ] **Step 4: Gates.** `python3 -m unittest discover -s tools/tests`; `tools/sim.sh sim/run_all.sh` → `run_all: 18 passed, 0 failed`.
 - [ ] **Step 5: Build 48.** `setsid nohup tools/build.sh </dev/null >build/logs/build48.log 2>&1 &`, poll `build: exit 0`, then `git checkout -- Karabas_Profi.qsf`. Record the fitter summary and per-clock slack in the commit body (as the previous builds did).
-- [ ] **Step 6: README.** The `Files`/`Features` sections gain the three slots and their formats; `Known limitations` loses "No disks yet".
+- [x] **Step 6: README.** The `Files`/`Features` sections gain the three slots and their formats; `Known limitations` loses "No disks yet".
 - [ ] **Step 7: Commit** `top: SD card and IDE HDF image slots` with the build number and gate results in the body.
 
 ### Task 5: Board run

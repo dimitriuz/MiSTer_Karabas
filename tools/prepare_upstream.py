@@ -136,6 +136,69 @@ _DI_SELECTOR_OLD = (
 # BUS_PHASE/RESET_MEM (Task 1's clock signals), CPU_TS/CPU_MC/CPU_RESET_N/
 # MEM_READY. The elab profile keeps upstream's memory.vhd and T80s, so its
 # profi.vhd stays untouched.
+# Task 4 (stage 4b): the block the rewrites below remove, copied from
+# upstream profi.vhd verbatim (tabs included) so prepare_upstream's
+# byte-exact matching finds it.
+_SDC_SIGNALS_OLD = (
+    "-- SDC sector interface\n"
+    "signal sdc_img_mounted    : std_logic_vector(7 downto 0);\n"
+    "signal sdc_img_size       : std_logic_vector(63 downto 0);\n"
+    "signal sdc_rd             : std_logic_vector(7 downto 0);\n"
+    "signal sdc_wr             : std_logic_vector(7 downto 0);\n"
+    "signal sdc_sector         : std_logic_vector(31 downto 0);\n"
+    "signal sdc_busy           : std_logic;\n"
+    "signal sdc_done           : std_logic;\n"
+    "signal sdc_error          : std_logic;\n"
+    "signal sdc_slot           : std_logic_vector(2 downto 0);\n"
+    "signal sdc_byte_in_strobe : std_logic;\n"
+    "signal sdc_byte_addr      : std_logic_vector(8 downto 0);\n"
+    "signal sdc_byte_in_data   : std_logic_vector(7 downto 0);\n"
+    "signal sdc_byte_out_data  : std_logic_vector(7 downto 0);\n"
+    "signal sdc_active         : std_logic;\n"
+)
+
+_IMG_SDC_OLD = (
+    "-- File mounter sector interface (karabas-go-modules img_sdc)\n"
+    "u_img_sdc: entity work.img_sdc\n"
+    "generic map(\n"
+    "\tOUT_LATENCY => 3,\n"
+    "\tTIMEOUT     => 5600000,\n"
+    "\tRETRIES     => 3\n"
+    ")\n"
+    "port map (\n"
+    "\tclk                => clk_bus,\n"
+    "\treset              => areset,\n"
+    "\n"
+    "\timg_mounted        => mcu_img_mounted,\n"
+    "\timg_size           => mcu_img_size,\n"
+    "\timg_data_wr        => mcu_img_data_wr,\n"
+    "\timg_data_addr      => mcu_img_data_addr,\n"
+    "\timg_data           => mcu_img_data,\n"
+    "\timg_result_wr      => mcu_img_result_wr,\n"
+    "\timg_result         => mcu_img_result,\n"
+    "\timg_sum            => mcu_img_sum,\n"
+    "\timg_q_wr           => mcu_img_q_wr,\n"
+    "\timg_q_di           => mcu_img_q_di,\n"
+    "\timg_q_ack          => mcu_img_q_ack,\n"
+    "\n"
+    "\tsdc_img_mounted    => sdc_img_mounted,\n"
+    "\tsdc_img_size       => sdc_img_size,\n"
+    "\tsdc_rd             => sdc_rd,\n"
+    "\tsdc_wr             => sdc_wr,\n"
+    "\tsdc_sector         => sdc_sector,\n"
+    "\tsdc_busy           => sdc_busy,\n"
+    "\tsdc_done           => sdc_done,\n"
+    "\tsdc_error          => sdc_error,\n"
+    "\tsdc_slot           => sdc_slot,\n"
+    "\tsdc_byte_in_strobe => sdc_byte_in_strobe,\n"
+    "\tsdc_byte_addr      => sdc_byte_addr,\n"
+    "\tsdc_byte_in_data   => sdc_byte_in_data,\n"
+    "\tsdc_byte_out_data  => sdc_byte_out_data,\n"
+    "\n"
+    "\tactive             => sdc_active\n"
+    ");\n"
+)
+
 PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
     # Task 1 (stage 2): clock.vhd grows CLK_VID (fixed 112.5 MHz), BUS_PHASE
     # and RESET_MEM; profi carries the video clock as a buffer port and the
@@ -277,6 +340,97 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "MIDI_RESET_N <= not reset;\nCLK_GS_O <= clk_gs;",
      "MIDI_RESET_N <= not reset;\nCLK_GS_O <= clk_gs;\n"
      "ENA_CPU_O <= ena_cpu;"),
+    # Task 4 (stage 4b): the file mounter's sector engine (img_sdc) leaves
+    # profi. On the Karabas Go the MCU's file mounter served the SD card's
+    # block requests and hdf_ata from inside the FPGA; on MiSTer hps_io is
+    # the mounter, and the sector engine is the top's rtl/disk/img_src.sv
+    # (slots 2/3 of hps_io = the two IDE images). profi keeps only what the
+    # machine drives: it raises sdc_rd/sdc_wr/sdc_sector on SDC_* ports (the
+    # Z-Controller talks to the real SD card on sd_card, not through this),
+    # and the completion (busy/done/error) and the 512 strobe bytes come
+    # back in. The SD card's own block interface (slot 1) is the top's
+    # sys/sd_card.sv entirely.
+    ("src/rtl/profi.vhd",
+     "\tSD_DET_N : in  STD_LOGIC;",
+     "\tSD_DET_N : in  STD_LOGIC;\n"
+     "\n"
+     "\t-- MiSTer stage 4b: the file mounter's sector engine (img_sdc) is on the\n"
+     "\t-- MiSTer side; these are its ports (img_sdc's interface, indices 4 and 5).\n"
+     "\tSDC_IMG_MOUNTED : in  STD_LOGIC_VECTOR(7 downto 0);\n"
+     "\tSDC_IMG_SIZE    : in  STD_LOGIC_VECTOR(63 downto 0);\n"
+     "\tSDC_RD          : out STD_LOGIC_VECTOR(7 downto 0);\n"
+     "\tSDC_WR          : out STD_LOGIC_VECTOR(7 downto 0);\n"
+     "\tSDC_SECTOR      : out STD_LOGIC_VECTOR(31 downto 0);\n"
+     "\tSDC_BYTE_OUT_DATA : out STD_LOGIC_VECTOR(7 downto 0);\n"
+     "\tSDC_BUSY        : in  STD_LOGIC;\n"
+     "\tSDC_DONE        : in  STD_LOGIC;\n"
+     "\tSDC_ERROR       : in  STD_LOGIC;\n"
+     "\tSDC_SLOT        : in  STD_LOGIC_VECTOR(2 downto 0);\n"
+     "\tSDC_BYTE_IN_STROBE : in  STD_LOGIC;\n"
+     "\tSDC_BYTE_ADDR   : in  STD_LOGIC_VECTOR(8 downto 0);\n"
+     "\tSDC_BYTE_IN_DATA : in  STD_LOGIC_VECTOR(7 downto 0);"),
+    ("src/rtl/profi.vhd", _SDC_SIGNALS_OLD,
+     "-- MiSTer stage 4b: sdc_* are profi's SDC_* ports now (img_sdc is the\n"
+     "-- top's img_src).\n"),
+    ("src/rtl/profi.vhd", _IMG_SDC_OLD,
+     "\n-- MiSTer stage 4b: the sector engine is the top's img_src (the SDC_*\n"
+     "-- ports); the MCU file mounter's img_* channel is unused on MiSTer.\n"),
+    ("src/rtl/profi.vhd",
+     "hdf_own <= '1' when sdc_slot(2 downto 1) = \"10\" else '0';\n"
+     'sdc_rd <= "00" & hdf_rd & "0000";\n'
+     'sdc_wr <= "00" & hdf_wr & "0000";\n'
+     "sdc_sector <= hdf_sector;\n"
+     "sdc_byte_out_data <= hdf_out_data;",
+     "hdf_own <= '1' when SDC_SLOT(2 downto 1) = \"10\" else '0';\n"
+     'SDC_RD <= "00" & hdf_rd & "0000";\n'
+     'SDC_WR <= "00" & hdf_wr & "0000";\n'
+     "SDC_SECTOR <= hdf_sector;\n"
+     "SDC_BYTE_OUT_DATA <= hdf_out_data;"),
+    ("src/rtl/profi.vhd",
+     "hdf_sdc_busy <= sdc_busy and hdf_own;\n"
+     "hdf_sdc_done <= sdc_done and hdf_own;\n"
+     "hdf_sdc_byte_in_strobe <= sdc_byte_in_strobe and hdf_own;",
+     "hdf_sdc_busy <= SDC_BUSY and hdf_own;\n"
+     "hdf_sdc_done <= SDC_DONE and hdf_own;\n"
+     "hdf_sdc_byte_in_strobe <= SDC_BYTE_IN_STROBE and hdf_own;"),
+    ("src/rtl/profi.vhd",
+     "\timg_mounted        => sdc_img_mounted(5 downto 4),\n"
+     "\timg_size           => sdc_img_size,",
+     "\timg_mounted        => SDC_IMG_MOUNTED(5 downto 4),\n"
+     "\timg_size           => SDC_IMG_SIZE,"),
+    ("src/rtl/profi.vhd",
+     "\tsdc_error          => sdc_error,\n"
+     "\tsdc_byte_in_strobe => hdf_sdc_byte_in_strobe,\n"
+     "\tsdc_byte_addr      => sdc_byte_addr,\n"
+     "\tsdc_byte_in_data   => sdc_byte_in_data,",
+     "\tsdc_error          => SDC_ERROR,\n"
+     "\tsdc_byte_in_strobe => hdf_sdc_byte_in_strobe,\n"
+     "\tsdc_byte_addr      => SDC_BYTE_ADDR,\n"
+     "\tsdc_byte_in_data   => SDC_BYTE_IN_DATA,"),
+    # img_sdc drove kg_mcu's queue inputs IMG_Q_WR/IMG_Q_DI and its ack
+    # output had no other consumer; with the engine gone they were the only
+    # never-assigned signals left in profi.vhd (Quartus Warning (10541), which
+    # tools/check_timing.py fails the build on: an undriven signal may let
+    # the fitter prune the logic behind it). The three signals go, and the
+    # port map ties the queue inputs to zero and leaves the ack open.
+    ("src/rtl/profi.vhd",
+     "signal mcu_img_q_wr       : std_logic;\n"
+     "signal mcu_img_q_di       : std_logic_vector(23 downto 0);\n"
+     "signal mcu_img_q_ack      : std_logic;\n",
+     "-- MiSTer stage 4b: the mounter's queue channel (img_sdc) has no engine\n"
+     "-- on the MiSTer side; kg_mcu's IMG_Q_* ports are tied below.\n"),
+    ("src/rtl/profi.vhd",
+     "\tIMG_Q_WR \t\t=> mcu_img_q_wr,\n"
+     "\tIMG_Q_DI \t\t=> mcu_img_q_di,\n"
+     "\tIMG_Q_ACK \t\t=> mcu_img_q_ack,\n",
+     "\tIMG_Q_WR \t\t=> '0',\n"
+     "\tIMG_Q_DI \t\t=> (others => '0'),\n"
+     "\tIMG_Q_ACK \t\t=> open,\n"),
+    # The SD card is hps_io's disk slot 1 (sys/sd_card.sv), not a file
+    # mounter slot, so the CF LED no longer lights for it.
+    ("src/rtl/profi.vhd",
+     "STATUS_CF \t\t=> hdd_active or sdc_active or hdf_led,",
+     "STATUS_CF \t\t=> hdd_active or hdf_led,"),
 ]
 
 # T80s.vhd rewrites (core profile only). The exception to "never patch T80":

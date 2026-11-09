@@ -157,10 +157,39 @@ between the blocks of the converted stream, while a plain CSW file has no
 block list for them. With no tape playing, a signal on the LTC2308 line-in
 header drives the EAR input; the USER LED lights while the tape is playing.
 
+## Disks
+
+Three more MiSTer disk slots sit behind the machine's own disk interfaces;
+each is mounted with its OSD item (`S1` `SD Card`, `S2` `IDE 0`, `S3`
+`IDE 1`), right below the tape. All three are read-write: a sector the
+machine writes goes back through hps_io into the mounted file.
+
+- **SD card (slot 1, `SD Card`)**: the Z-Controller's SPI bus at the Profi
+  boundary (`SD_CS_N`/`SD_CLK`/`SD_DI`/`SD_DO`, `zc_spi` on the Z80 side)
+  drives `sys/sd_card.sv`, the MiSTer card model, as an SDHC card whose
+  sectors come from hps_io slot 1. This is the path the Profi's DivMMC and
+  its esxDOS use (`DivMMC: On`): the image is a raw sector dump (the OSD
+  item filters `.vhd`), typically a FAT16 volume.
+- **IDE hard disks (slots 2 and 3, `IDE 0`/`IDE 1`)**: the Profi IDE's two
+  ATA devices, upstream's `hdf_ata` (CHS and LBA28, one sector per DRQ).
+  Its sector engine (`img_sdc` on the Karabas Go, the MCU's file mounter)
+  is `rtl/disk/img_src.sv` on the MiSTer side: the engine fetches and stores
+  sectors through hps_io slots 2/3, and `profi.vhd` carries its interface
+  as the `SDC_*` ports. The HDF's sector 0 holds the geometry as an Amiga
+  RDSK block (`mk_disk.py hdf` writes one); without it `hdf_ata` uses 16
+  heads and 63 sectors per track. The OSD `HDD` item is fixed to `Image` -
+  there is no CF card on the MiSTer, so the HDF is device 0 when mounted
+  and device 1 is the second slot.
+
+`tools/mk_disk.py` makes the test images (a FAT16 VHD for the SD slot,
+RDSK HDFs for the IDE slots) and reads them back (`ls`, `cat`) to verify
+what the machine wrote.
+
 ## Known limitations (stage 1)
 
 - CPU turbo runs without memory wait states (no-wait SDRAM controller).
-- No disks yet.
+- Floppy images (the VG93 drives, stage 4c) are not implemented yet; the
+  FDC inputs at the Profi boundary are tied off.
 - 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
   112.5 MHz video clock, so the analog scandoubler may duplicate pixels;
   HDMI is unaffected.
