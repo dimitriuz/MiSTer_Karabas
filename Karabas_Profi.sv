@@ -493,17 +493,29 @@ tape_src u_tape_src (
 );
 
 // {pause, prev, next}: first sync stage, second sync stage, the second stage
-// one clk_bus earlier; a rising edge of the second stage is the pulse.
+// one clk_bus earlier; a rising edge of the second stage sets a 16-clock hold.
+// tape.sv samples these controls only on its `ce` input, the CPU's T-state
+// enable: at Turbo Off that is one clk_bus in eight, so a one-clock pulse
+// would usually be missed. 16 clocks span at least two `ce` pulses at every
+// Turbo setting, and tape.sv reacts to the rising edge it sees, so the longer
+// level still acts exactly once.
 reg [2:0] tape_trig_s [0:2];
+reg [3:0] tape_trig_hold [0:2];
 always @(posedge clk_bus) begin
 	tape_trig_s[0] <= {tape_trig_s[0][1:0], status[31]};
 	tape_trig_s[1] <= {tape_trig_s[1][1:0], status[32]};
 	tape_trig_s[2] <= {tape_trig_s[2][1:0], status[33]};
+	if (tape_trig_s[0][1] & ~tape_trig_s[0][2]) tape_trig_hold[0] <= 4'hF;
+	else if (tape_trig_hold[0]) tape_trig_hold[0] <= tape_trig_hold[0] - 4'd1;
+	if (tape_trig_s[1][1] & ~tape_trig_s[1][2]) tape_trig_hold[1] <= 4'hF;
+	else if (tape_trig_hold[1]) tape_trig_hold[1] <= tape_trig_hold[1] - 4'd1;
+	if (tape_trig_s[2][1] & ~tape_trig_s[2][2]) tape_trig_hold[2] <= 4'hF;
+	else if (tape_trig_hold[2]) tape_trig_hold[2] <= tape_trig_hold[2] - 4'd1;
 end
 
-wire tape_pause = tape_trig_s[0][1] & ~tape_trig_s[0][2];
-wire tape_prev  = tape_trig_s[1][1] & ~tape_trig_s[1][2];
-wire tape_next  = tape_trig_s[2][1] & ~tape_trig_s[2][2];
+wire tape_pause = |tape_trig_hold[0];
+wire tape_prev  = |tape_trig_hold[1];
+wire tape_next  = |tape_trig_hold[2];
 
 tape u_tape (
 	.clk_sys(clk_bus),
