@@ -61,12 +61,18 @@ trap verdict EXIT
 LOG=$(mktemp)
 
 # TZX_MS = tape.sv's CLOCK/1000 = 3500 (ce periods per millisecond)
-ghdl --synth --std=93c -fsynopsys -fexplicit --out=verilog \
-    -gTZX_MS=3500 rtl/tape/tzxplayer.vhd -e tzxplayer > build/sim/tzxplayer_syn.v
-# GHDL folds the bound generic into constants and drops the parameter; put an
-# inert one back so tape.sv's `#(.TZX_MS(CLOCK/1000))` override finds it.
-sed -i '0,/^module tzxplayer$/s//module tzxplayer #(parameter TZX_MS = 3500)/' \
-    build/sim/tzxplayer_syn.v
+# GHDL synthesis is minutes on this part, so it is cached: the netlist is
+# rebuilt only when the VHDL or this recipe changes.
+if [ ! -f build/sim/tzxplayer_syn.v ] || [ rtl/tape/tzxplayer.vhd -nt build/sim/tzxplayer_syn.v ] \
+   || [ "$0" -nt build/sim/tzxplayer_syn.v ]; then
+    ghdl --synth --std=93c -fsynopsys -fexplicit --out=verilog \
+        -gTZX_MS=3500 rtl/tape/tzxplayer.vhd -e tzxplayer > build/sim/tzxplayer_syn.v
+    # GHDL folds the bound generic into constants and drops the parameter; put
+    # an inert one back so tape.sv's `#(.TZX_MS(CLOCK/1000))` override finds it.
+    sed -i '0,/^module tzxplayer$/s//module tzxplayer #(parameter TZX_MS = 3500)/' \
+        build/sim/tzxplayer_syn.v
+    touch build/sim/tzxplayer_syn.v
+fi
 
 # Icarus has no array assignment patterns (`blk_list <= '{default:0}`), so
 # the simulation copy of tape.sv spells the 128-element clear out. The RTL
@@ -104,8 +110,9 @@ iverilog -g2012 -o build/sim/tb_tape_play.vvp \
     sim/models/sd_img_model.sv \
     build/sim/tape_sim.v \
     rtl/tape/tape_src.sv \
+    rtl/tape/tape_conv.sv \
     build/sim/tzxplayer_syn.v
-vvp build/sim/tb_tape_play.vvp > "$LOG" 2>&1 || true
+stdbuf -oL vvp build/sim/tb_tape_play.vvp > "$LOG" 2>&1 || true
 cat "$LOG"
 grep -q 'tb_tape_play: PASS' "$LOG"
 echo "tb_tape_play: PASS"

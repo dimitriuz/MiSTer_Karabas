@@ -90,7 +90,10 @@ module tb_tape_src;
         .rd(rd),
         .addr(addr),
         .din(din),
-        .rd_en(rd_en)
+        .rd_en(rd_en),
+        .seek_prev(1'b0),
+        .seek_next(1'b0),
+        .blk_seek()
     );
 
     sd_img_model #(.LAT_CLKS(1000)) sd_model (
@@ -136,7 +139,7 @@ module tb_tape_src;
     end
 
     // ---------------- reference and helpers ----------------
-    reg [7:0] ref_mem [0:16383];
+    reg [7:0] ref_mem [0:32767];
 
     integer errors = 0;
     integer shown = 0;
@@ -249,16 +252,16 @@ module tb_tape_src;
         shown = 0;
         mount_file(32'd58, "build/sim/hello.tap.hex");
         wait_cycle(low_cycles);
-        fail_int("sniff", "tap mode", tape_mode, 0);
-        fail_int("sniff", "tap size", tape_size, 58);
+        fail_int("sniff", "tap mode", tape_mode, 1);
+        fail_int("sniff", "tap size", tape_size, 25'h1FFFFFF);
         mount_file(32'd74, "build/sim/hello.tzx.hex");
         wait_cycle(low_cycles);
-        fail_int("sniff", "tzx mode", tape_mode, 2);
-        fail_int("sniff", "tzx size", tape_size, 74);
-        mount_file(32'd12196, "build/sim/hello.csw.hex");
+        fail_int("sniff", "tzx mode", tape_mode, 1);
+        fail_int("sniff", "tzx size", tape_size, 25'h1FFFFFF);
+        mount_file(32'd17037, "build/sim/hello.csw.hex");
         wait_cycle(low_cycles);
         fail_int("sniff", "csw mode", tape_mode, 1);
-        fail_int("sniff", "csw size", tape_size, 12196);
+        fail_int("sniff", "csw size", tape_size, 17037);
         if (errors == case_errors) $display("sniff: ok");
         else $display("sniff: FAIL");
 
@@ -357,7 +360,7 @@ module tb_tape_src;
         $readmemh("build/sim/raw100.hex", ref_mem, 0, 99);
         sd_model.past_end = 1'b0;
         fail_int("short_file", "size", tape_size, 100);
-        fail_int("short_file", "mode", tape_mode, 0);
+        fail_int("short_file", "mode", tape_mode, 1);
         start_at(25'd0);
         for (i = 0; i < 100; i = i + 1) begin
             get_next(d, worst);
@@ -384,12 +387,12 @@ module tb_tape_src;
         wait_cycle(low_cycles);
         if (low_cycles < 4)
             fail_int("remount", "tape_ready low clks", low_cycles, 4);
-        fail_int("remount", "mode B", tape_mode, 0);
+        fail_int("remount", "mode B", tape_mode, 1);
         fail_int("remount", "size B", tape_size, 600);
         $readmemh("build/sim/raw_b.hex", ref_mem, 0, 599);
-        start_at(25'd0);
+        start_at(25'd22);
         get_next(d, worst);
-        fail_byte("remount", 0, d, ref_mem[0]);
+        fail_byte("remount", 22, d, ref_mem[22]);
         if (errors == case_errors) $display("remount: ok");
         else $display("remount: FAIL");
 

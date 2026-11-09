@@ -33,7 +33,7 @@ module sd_img_model #(
 
     localparam [1:0] M_IDLE = 2'd0, M_WAIT = 2'd1, M_DATA = 2'd2, M_END = 2'd3;
 
-    reg [7:0] mem [0:16383];
+    reg [7:0] mem [0:32767];
 
     reg [1:0]  state = M_IDLE;
     reg [31:0] base  = 32'd0;
@@ -69,7 +69,7 @@ module sd_img_model #(
             M_DATA: begin
                 buff_wr   <= 1'b1;
                 buff_addr <= idx[8:0];
-                buff_dout <= (off < size) ? mem[off[13:0]] : 8'd0;
+                buff_dout <= (off < size) ? mem[off[14:0]] : 8'd0;
                 idx       <= idx + 10'd1;
                 if (idx == 10'd511)
                     state <= M_END;
