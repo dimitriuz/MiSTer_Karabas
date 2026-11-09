@@ -77,7 +77,7 @@
   - A numeric literal outside strings (digits, optional `.` and fraction, optional `e±n`) not part of a variable name is copied as text and followed by `number_form`. A number right after a letter or `$` belongs to the name.
   - Non-ASCII input is an error naming the line.
 
-- [ ] **Step 1: Tests first** in `tools/tests/test_zxtap.py`:
+- [x] **Step 1: Tests first** in `tools/tests/test_zxtap.py`:
   - `test_print_one`: `tokenize_line("10 PRINT 1") == bytes.fromhex("000a0900f5310e0000010000" + "0d")`, with the length field `0x0009` covering the body and the `0x0d`.
   - `test_goto_gosub`: `"20 GO TO 10: GO SUB 30"` contains `0xEC` and `0xED`, not the letters.
   - `test_string_and_rem`: `'30 PRINT "PRINT": REM PRINT 1'` has exactly one 0xF5 before the string, the string bytes `PRINT` literal, 0xEA for REM, then `PRINT 1` literal with no number form after it.
@@ -88,15 +88,15 @@
   - `test_tap_checksum`: every block from `program_tap` XORs to 0 over flag + data + checksum; the header is 19 bytes after its length; param2 = program length.
   - `test_tzx`: the signature and one 0x10 block per TAP block, with each block's data equal to the TAP block's.
   - `test_csw_roundtrip`: decode the CSW RLE back to pulse lengths in T-states (× 3500000 / rate), group the pulses as pilot/sync/bits, recover the bytes, and compare with the TAP data (tolerance ±1 sample per pulse).
-- [ ] **Step 2: Run** `python3 -m unittest tools.tests.test_zxtap -v` → FAIL (no module).
-- [ ] **Step 3: Implement `tools/zxtap.py`.**
-- [ ] **Step 4: Programs.**
+- [x] **Step 2: Run** `python3 -m unittest tools.tests.test_zxtap -v` → FAIL (no module).
+- [x] **Step 3: Implement `tools/zxtap.py`.**
+- [x] **Step 4: Programs.**
   - `tests/zx/hello.bas`: `10 PRINT "tape ok"` and `20 PRINT PEEK 23672` (FRAMES low byte, proves it ran).
   - `tests/zx/sound.bas`: stage 3's chip test (AY0, AY1, FM, SAA, OPL, Covox), as in `docs/dev/stage3-results.md`, with uppercase allowed now.
   - `tests/zx/gsquery.bas`: the stage 3 GS page query with a 300-round error count.
   - `tools/make_test_taps.sh` writes `build/taps/<name>.tap`, `.tzx` and `.csw` for each `.bas` with `--autostart 10`, and prints the files.
-- [ ] **Step 5: Run** the unit tests → OK (all, 59 + new); `tools/make_test_taps.sh` → 9 files.
-- [ ] **Step 6: Commit** `tools: zxtap, BASIC to TAP/TZX/CSW, and the test programs`.
+- [x] **Step 5: Run** the unit tests → OK (all, 59 + new); `tools/make_test_taps.sh` → 9 files.
+- [x] **Step 6: Commit** `tools: zxtap, BASIC to TAP/TZX/CSW, and the test programs`.
 
 ### Task 2: `tape_src`, the tape file on the SD card
 
@@ -140,7 +140,7 @@ Behaviour (the header comment states all of it):
 
 `sd_img_model.sv` (sim only): serves a byte array (loaded with `$readmemh` from a hex file the tb writes, or filled by the tb) as hps_io does. On `sd_rd` it waits `LAT_CLKS` clk_sys cycles, raises `sd_ack`, emits 512 `sd_buff_wr` pulses with `sd_buff_addr` 0..511 and `sd_buff_dout` (zero past the end of the file), then drops `sd_ack`. A request while `sd_ack` is high is an error.
 
-- [ ] **Step 1: `sim/tb_tape_src.sv`**, clk_sys 50 MHz, clk 28.125 MHz, cases each printing `<case>: ok` or `FAIL <case> ...`:
+- [x] **Step 1: `sim/tb_tape_src.sv`**, clk_sys 50 MHz, clk 28.125 MHz, cases each printing `<case>: ok` or `FAIL <case> ...`:
   - `sniff`: three files (a TAP from `tools/zxtap.py`, its TZX, its CSW, written to `build/sim/` by the run script) give modes 0, 2, 1 and the right sizes.
   - `sequential`: a consumer model of `tape.sv`'s handshake reads every byte 0..size−1 of a 3000-byte file and compares.
   - `prefetch_hides_latency`: `LAT_CLKS` = 100000 (2 ms) and a consumer that wants one byte every 300 µs: after the first byte, no read waits more than 2 clk cycles (log the worst).
@@ -148,10 +148,10 @@ Behaviour (the header comment states all of it):
   - `short_file`: a 100-byte file: bytes 0..99 correct, and `tape_size` = 100.
   - `remount`: mount file A, read 600 bytes, mount file B: `tape_ready` falls, then rises with B's mode and size, and B's byte 0 is read (not A's cached sector 0).
   - Verdict `tb_tape_src: PASS` / `FAIL`.
-- [ ] **Step 2: `sim/run_tb_tape_src.sh`**: run `python3 tools/zxtap.py` on the host to make the fixtures (hello.bas → .tap/.tzx/.csw, plus raw byte files), then Icarus in the sim image, as the other scripts do. RED: FAIL (no module).
-- [ ] **Step 3: Implement `rtl/tape/tape_src.sv`.**
-- [ ] **Step 4: Run** → `tb_tape_src: PASS`; `run_all` → `14 passed, 0 failed`.
-- [ ] **Step 5: Commit** `tape: tape_src, the tape file from the SD card through a two-sector cache`.
+- [x] **Step 2: `sim/run_tb_tape_src.sh`**: run `python3 tools/zxtap.py` on the host to make the fixtures (hello.bas → .tap/.tzx/.csw, plus raw byte files), then Icarus in the sim image, as the other scripts do. RED: FAIL (no module).
+- [x] **Step 3: Implement `rtl/tape/tape_src.sv`.**
+- [x] **Step 4: Run** → `tb_tape_src: PASS`; `run_all` → `14 passed, 0 failed`.
+- [x] **Step 5: Commit** `tape: tape_src, the tape file from the SD card through a two-sector cache`.
 
 ### Task 3: the player in the core
 
@@ -164,14 +164,14 @@ Behaviour (the header comment states all of it):
 - Produces, on `profi` (rewrites): port `ENA_CPU_O : out std_logic` after `GSL_TGL : out std_logic;`; `ENA_CPU_O <= ena_cpu;` after `CLK_GS_O <= clk_gs;`. U1's `ENA_CPU` drives profi's `ena_cpu`: the T80 `CEN`, one pulse per CPU T-state at every turbo.
 - CONF_STR: `"S0,TAPTZXCSW,Tape;"` (main page, after the PSG/Covox items); `"T[31],Tape play/pause;"`, `"T[32],Tape previous block;"`, `"T[33],Tape next block;"`.
 
-- [ ] **Step 1: Import** the two player files verbatim (the Global Constraints check). `files.qip`: `rtl/tape/tzxplayer.vhd` (VHDL), `rtl/tape/tape.sv`, `rtl/tape/tape_src.sv` (SystemVerilog), with an origin comment.
-- [ ] **Step 2: `sim/tb_tape_play.sv` + `sim/run_tb_tape_play.sh`.** The script converts the player with `ghdl --synth --std=93c -fsynopsys -fexplicit --out=verilog -gTZX_MS=3500 rtl/tape/tzxplayer.vhd -e tzxplayer > build/sim/tzxplayer_syn.v`. That is `tape.sv`'s `TZX_MS = CLOCK/1000` = 3500. Then it compiles `tape.sv`, `tape_src.sv`, `sd_img_model.sv` and the tb with Icarus. Cases:
+- [x] **Step 1: Import** the two player files verbatim (the Global Constraints check). `files.qip`: `rtl/tape/tzxplayer.vhd` (VHDL), `rtl/tape/tape.sv`, `rtl/tape/tape_src.sv` (SystemVerilog), with an origin comment.
+- [x] **Step 2: `sim/tb_tape_play.sv` + `sim/run_tb_tape_play.sh`.** The script converts the player with `ghdl --synth --std=93c -fsynopsys -fexplicit --out=verilog -gTZX_MS=3500 rtl/tape/tzxplayer.vhd -e tzxplayer > build/sim/tzxplayer_syn.v`. That is `tape.sv`'s `TZX_MS = CLOCK/1000` = 3500. Then it compiles `tape.sv`, `tape_src.sv`, `sd_img_model.sv` and the tb with Icarus. Cases:
   - `tap_decode`, `tzx_decode`, `csw_decode`: mount `hello` as TAP, TZX, CSW. `ce` = one clk in 8 (3.5 MHz on 28 MHz). Measure `audio_out` edges in `ce` ticks and decode with a ROM-loader-style decoder: pilot ≥ 2000 ticks, sync, bit = pulse pair, 0 if the pair < 2400 ticks else 1. Both blocks (header, data) must decode to exactly the TAP blocks' flag + data + checksum bytes.
   - `ce_follows_enable`: `tap_decode` again with `ce` every clock (turbo 8x): the same pulse lengths in `ce` ticks (±1), so the same bytes.
   - `tape.sv` ports: `ce`, `mode48k(0)`, `turbo(0)`, `byte_wait(0)`, `pause/prev/next(0)`, `stdload(0)`, `req_hdr(0)`, `tape_ready/tape_mode/tape_size` and the memory port from `tape_src`. Verdict `tb_tape_play: PASS`.
   - If `tape.sv`'s `pause` input must be pulsed to start playback (read its `play_pause` logic: is a new tape playing or paused after `tape_ready` rises?), the tb pulses it. Report which, because Task 4 depends on it.
-- [ ] **Step 3: Rewrites + tests** (exact text, like stage 3's `GSM_*` tests) → `python3 tools/prepare_upstream.py`, `tools/check_upstream.sh` OK.
-- [ ] **Step 4: Top** (`Karabas_Profi.sv`):
+- [x] **Step 3: Rewrites + tests** (exact text, like stage 3's `GSM_*` tests) → `python3 tools/prepare_upstream.py`, `tools/check_upstream.sh` OK.
+- [x] **Step 4: Top** (`Karabas_Profi.sv`):
   - `hps_io`: `.VDNUM(1)`, `.BLKSZ(2)` explicit; wire `img_mounted`, `img_readonly`, `img_size`, `sd_lba` (array of one), `sd_blk_cnt` = 0, `sd_rd`, `sd_wr = 0`, `sd_ack`, `sd_buff_addr`, `sd_buff_dout`, `sd_buff_din` = 0, `sd_buff_wr`.
   - `tape_src u_tape_src` (`clk_sys`, `clk(clk_bus)`: the top's existing `clk_bus` wire from profi's `CLK_BUS` port). Every clk_sys ↔ clk_bus crossing is already cut by the sdc's exclusive groups; `tape_src`'s crossings are toggle handshakes and the dual-clock BRAM.
   - `tape u_tape`: `clk_sys(clk_bus)`, `ce(ena_cpu_o)`, controls from the three OSD triggers. Each trigger is synchronised into clk_bus with 2 FF and made into a one-clock pulse.
@@ -179,9 +179,9 @@ Behaviour (the header comment states all of it):
   - profi `TAPE_IN = tape_active ? tape_audio : (adc_act_s ? tape_adc_s : 1'b0)`. `_s` = 2-FF synchronised into clk_bus. No inversion: profi reads `not(TAPE_IN)` as the EAR bit, which matches the ZX core's `ula_tape_in = ~tape_vin`.
   - `LED_USER = tape_active`.
   - CONF_STR lines as above.
-- [ ] **Step 5: Gates**: unit tests, check_upstream, `tb_tape_play: PASS`, `run_all` → `15 passed, 0 failed`.
-- [ ] **Step 6: Commits** `tape: import tape.sv and tzxplayer.vhd (ZX-Spectrum_MISTer c2c4e6f)`, `tools: profi ENA_CPU_O`, `top: tape files on disk slot 0`. README: Tape section (mount in the OSD, formats, play/pause/prev/next items, turbo loading = CPU turbo, the line-in).
-- [ ] **Step 7: Build** `build39.log` → `build: exit 0`. Report per-clock slacks and the fitter summary.
+- [x] **Step 5: Gates**: unit tests, check_upstream, `tb_tape_play: PASS`, `run_all` → `15 passed, 0 failed`.
+- [x] **Step 6: Commits** `tape: import tape.sv and tzxplayer.vhd (ZX-Spectrum_MISTer c2c4e6f)`, `tools: profi ENA_CPU_O`, `top: tape files on disk slot 0`. README: Tape section (mount in the OSD, formats, play/pause/prev/next items, turbo loading = CPU turbo, the line-in).
+- [x] **Step 7: Build** `build39.log` → `build: exit 0`. Report per-clock slacks and the fitter summary.
 
 ### Task 4: Board run (controller)
 
