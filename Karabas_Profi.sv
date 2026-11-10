@@ -150,19 +150,31 @@ wire         sd_buff_wr;
 // sector pointers) and img_src's mount registers. The machine's ROM probes
 // both drives within its first few hundred milliseconds; a probe that is in
 // flight when a mount lands never finishes, and the machine stops on the
-// loader screen with the Drive line drawn (seen on the board with build 49;
-// with no image mounted the same MGL booted, which is what made it look
-// intermittent). So the machine's start is held for 1.34 s after the last
-// mount pulse: mcu_emu does not begin the boot.rom stream until then, and
-// the ROM probes a settled card and a settled image. The counter starts at
-// zero, so a core loaded without any mounted file boots without the wait.
-reg [25:0] settle;
+// loader screen with the Drive line drawn. So mcu_emu does not begin the
+// boot.rom stream until the mounts are settled (rtl/host/mount_settle.sv):
+// 1.34 s after the last disk mount, and at most 3 s from power-up when no
+// disk mount has arrived at all, so a core loaded without a file still
+// boots. Releasing at power-up instead let the machine's probe overtake a
+// late mount, which on the board stops the boot about one time in three.
+// Card media. With no file mounted on the card's slot the model still
+// answers commands and then waits forever for a sector the HPS will never
+// send (its CMD17 has no timeout), so a ROM that probes the card hangs on
+// the Drive line instead of falling back to the disks. Holding the card in
+// reset until a file is mounted makes an absent card look absent: MISO
+// reads 1 and nothing answers, which is what the ROM's probe expects.
+reg sd_media = 1'b0;
 always @(posedge clk_sys) begin
-	if (por_reset)                      settle <= 26'd0;
-	else if (|img_mounted)              settle <= 26'h3FFFFFF;
-	else if (settle != 26'd0)           settle <= settle - 26'd1;
+	if (por_reset)          sd_media <= 1'b0;
+	else if (img_mounted[1]) sd_media <= (img_size != 64'd0);
 end
-wire mounts_settled = (settle == 26'd0);
+
+wire mounts_settled;
+mount_settle u_settle (
+	.clk(clk_sys),
+	.reset(por_reset),
+	.mounted(img_mounted),
+	.settled(mounts_settled)
+);
 
 assign sd_blk_cnt[0] = 6'd0;
 assign sd_blk_cnt[1] = 6'd0;
@@ -637,7 +649,7 @@ wire sd_ss_n, sd_sck, sd_mosi, sd_miso;
 
 sd_card u_sd (
 	.clk_sys(clk_sys),
-	.reset(por_reset),
+	.reset(por_reset | ~sd_media),
 	.sdhc(1'b1),
 	.img_mounted(img_mounted[1]),
 	.img_size(img_size),

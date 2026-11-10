@@ -58,12 +58,51 @@ What was ruled out:
 | the card's response with no media mounted | `tb_sd_spi`'s `eject_mid_command` case | the card has no timeout: with `img_size` 0 it waits in CMD17 forever and the host has to abort with CMD12. A ROM that probes the card without media mounted and waits for the token will wait forever - which is what the bare boot shows (SD icon lit) |
 
 What is left is the startup path outside the SPI data: the ROM's probe
-(presence, CSD/CID, the first file read) against a card that is reset,
-mounted and handed its sector stream by three different clocks and by
-`hps_io`. The next instrument is the card's command stream on the board
-(a small capture FIFO behind the top's `sd_*` pins, read out through an
-OSD item), so the failing boot can be compared with a working one instead
-of guessed at.
+against a card that `hps_io` mounts some time after the core starts.
+
+Build 50's settle counter did not cover the case it was written for,
+because it started at zero: `mounts_settled` was true at power-up, so the
+machine's start was released *before* hps_io had mounted anything, and a
+mount that landed after the probe had begun could still stop it - the
+one-in-three boot. The rule is now in `rtl/host/mount_settle.sv`: 1.34 s
+after the last disk mount, and, when no disk mount has arrived at all, 3 s
+from power-up so a core loaded without a file still boots (`tb_mount_settle`
+pins both windows, that a second mount restarts the window, and that the
+tape's slot does not count). Build 53 is that change, and it made the
+boots worse (below). Build 54 adds the card's media gate and boots every
+time.
+
+Build 53 was tried on the board and made the boots *worse*, which is the
+most informative result of the session: eight boots, one menu. With the
+start released only after the mount, the card always has media when the
+ROM probes it, so the ROM always picks SD (`Drive: SD` on all eight) and
+the boot stops there - with the zeros image as well, which build 50 had
+booted as `Drive: CF`. The working boots so far were the ones where the
+probe did *not* complete: the ROM then fell back to the disks. So the
+fault is not the probe and not the SPI data path (the `async_host` case
+reads sectors intact in the machine's clocking): it is what the ROM does
+*after* it has accepted the card, most likely its own SD driver reading
+the volume (the directory), which no bench case covers yet.
+
+Two consequences are already acted on:
+
+- With no file mounted on the card's slot, the card model answers and
+  then waits forever for a sector the HPS never sends (CMD17 has no
+  timeout), so the probe hangs instead of falling back. Build 54 holds
+  the card in reset until a file is mounted (an absent card answers
+  nothing, MISO reads 1), which makes a boot with no card deterministic:
+  the probe fails, the ROM uses the disks, the menu appears.
+- Build 54 (53 plus the media gate) boots to the menu 16 of 16 times,
+  with a file on the card's slot included, so the board rows that need
+  the menu are open now. The menu it reaches is the ROM's own (`Main
+  menu`, `Drive: CF`, the clock); the drive line reads `Drive: CF`
+  whenever the card is not the only usable drive.
+
+What is still open, then, is the ROM's own SD driver against this card
+model. The next instrument is its command stream on the board (a small
+capture FIFO behind the top's `sd_*` pins, read out through an OSD item),
+so a boot that stops on `Drive: SD` can be compared with a bench case
+that replays the same commands.
 
 Not tested yet, because they need the machine to reach its menu:
 
@@ -119,4 +158,6 @@ Not tested yet, because they need the machine to reach its menu:
 | 49 | `build: exit 0`, `check_timing: OK` |
 | 50 | `build: exit 0`, `check_timing: OK` (RBF on the card during the boot tests) |
 | 51 | abandoned: `build: exit 3` — the `.qsf` was reverted while the fitter ran ("settings file changed outside of Quartus"), not a source error |
-| 52 | `check_timing: FAIL 1 problem`: setup -0.186 ns on a PLL output counter clock. The one-line difference from build 50 (the tape left out of the settle counter) was reverted rather than chased through the fitter: build 50's sources are the committed ones and their RBF is what the board runs. |
+| 52 | `check_timing: FAIL 1 problem`: setup -0.186 ns on a PLL output counter clock (a one-line variant of build 50; reverted rather than chased) |
+| 53 | `mount_settle` releases the start only after a disk mount (or 3 s): 8 boots, 1 menu - the card always has media when the probe runs, so the ROM always picks SD |
+| 54 | 53 plus the card held in reset while its slot has no file: **16 boots, 16 menus**, including 8 of 8 with `test.vhd` mounted (`boot-b54-sd.png`) |
