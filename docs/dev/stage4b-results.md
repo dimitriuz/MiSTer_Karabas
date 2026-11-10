@@ -173,6 +173,16 @@ Reachable now, and partly walked on build 54:
   expected data (`docs/dev/stage4a-shots/b55-prev-block-header.png`). The
   `next` direction keeps its stage 4a evidence (the ROM never prints
   `Program: gsquery` after `next` skips the header).
+- **IDE 0 walked for the first time on build 55 (2026-11-10 13:00), and it
+  fails:** with `test.hdf` on slot 2 (`b55-hdf0.mgl`), `hdf.tap` loads and
+  runs but reports `hdf busy` and stops - the ATA status port (240) kept
+  bit 7 (BUSY) set for its 1000-poll bound (`ide0-busy.png`). Without any
+  image the same tape prints `no hdf` inside the bound and stops cleanly
+  (`ide0-no-image.png`), so the *presence* path works and only the mounted
+  case hangs on BUSY. Neither `hdf ok RDSK` nor the `hdfw.tap` write check
+  has ever passed on this core; step 2 of the 4b board run is open with
+  this as its repro. The image on the card still hashes
+  `e86a3e44f4ff0d99d4ce6a2ee0fe57eba473277a0dbd662ec7305dcacb20be2a`.
 - The OSD's row map on this core page, from `Video` (0): 1
   `MiSTer-pi`, 2 `ROM Bank`, 3 `Turbo`, 4 `PSG Mix`, 5 `Covox`,
   6 `Tape`, 7 `SD Card`, 8 `IDE 0`, 9 `IDE 1`, 10 `Tape play/pause`,

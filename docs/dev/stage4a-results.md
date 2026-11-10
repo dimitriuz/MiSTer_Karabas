@@ -88,23 +88,34 @@ numbers are not comparable with build 47's.
 
 | Gate | Result |
 |---|---|
-| `python3 -m unittest discover -s tools/tests` | `Ran 75 tests ... OK` |
+| `python3 -m unittest discover -s tools/tests` | `Ran 86 tests ... OK` |
 | `tools/check_upstream.sh` | `check_upstream: OK` |
 | `tools/sim.sh sim/run_tb_conv.sh` | `tb_conv: PASS` (TAP and TZX each reproduce `zxtap.py`'s `hello.csw`: 17037 bytes identical) |
-| `tools/sim.sh sim/run_tb_tape_play.sh` | `tb_tape_play: PASS` (`tap_decode`, `tzx_decode`, `csw_decode`, `ce_1in8_pilot`, `nav` all ok) |
-| `tools/sim.sh sim/run_all.sh` | `run_all: 16 passed, 0 failed` |
+| `tools/sim.sh sim/run_tb_tape_play.sh` | `tb_tape_play: PASS` (`tap_decode`, `tzx_decode`, `csw_decode`, `nav`, `tap_1in8`, `ce_follows_enable` all ok; 4308 s) |
+| `tools/sim.sh sim/run_all.sh` | `run_all: 19 passed, 0 failed` (5666 s, exit 0) |
 
 `tb_tape_play` decodes both TAP blocks out of the player's own
 `audio_out` for TAP, TZX and CSW mounts (`tap_decode`, `tzx_decode`,
 `csw_decode`, byte for byte against the TAP), decodes the TAP again at
-Turbo Off and holds its first pilot interval to the 8x one within a ce tick
-(`tap_1in8`, `ce_follows_enable`), and fires `prev`/`next` mid-tape:
+Turbo Off and holds its last complete pilot interval to the 8x one within a
+ce tick (`tap_1in8`, `ce_follows_enable`), and fires `prev`/`next` mid-tape:
 lead-in pulses afterwards (`nav_start`, `nav_next`, `nav_prev`) and the
 converter's block start read from `tape_conv` (21 after `next`, 0 after
 `previous`, which is what tells a real step back from a replay). The run is
 slow by nature: the CSW player advances one 44.1 kHz sample per ≈638 clocks,
-so playing the four tapes in simulation time takes about 45 minutes;
-`run_all` budgets for it.
+so playing the tapes in simulation time takes about 72 minutes (the 1-in-8
+run multiplies the converter's 1000 ms inter-block pauses by eight, hence
+the bench's 40M-clock edge budget); `run_all` budgets for it.
+
+The first full `run_all` after the review fixes failed `tb_tape_play`
+(18 of 19): the bench, not the core. Its 12M-clock edge timeout could not
+span the converter's 1000 ms inter-block pause at one ce in eight (44,100 CSW
+samples x ~79.4 ticks x 8 clocks = ~28.4M clocks), so it called a legitimate
+silence a dead tape and `tap_1in8` stopped after block 0; and
+`ce_follows_enable` compared the *first* pilot interval, a partial pulse when
+the monitor starts mid-pilot (2087 against 2090). Budget 40M clocks, compare
+the last complete pilot: both cases pass, the core's `ce`-tick timebase was
+right all along.
 
 The build-55 re-runs of `Tape play/pause` and `Tape previous block` are in
 `stage4a-shots/b55-*.png`; the OSD protocol that made them reproducible
