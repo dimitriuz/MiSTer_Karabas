@@ -1,24 +1,31 @@
 // Testbench for the tape player chain: rtl/tape/tape.sv (the ZX core's
-// player, verbatim rtl/tape/tzxplayer.vhd through GHDL synthesis) reading
-// through rtl/tape/tape_src.sv (the file image from the SD card, modeled by
-// sim/models/sd_img_model.sv). It decodes what the player puts on
-// `audio_out` the way the Spectrum ROM loader does, in `ce` ticks:
-// pilot pulses are >= 2000 ticks, then the two sync pulses, then each bit is
-// a pulse pair (855+855 T is a 0, 1710+1710 T is a 1; the pair sum 2400
-// separates them). The decoded bytes must equal the TAP blocks' flag + data
-// + checksum bytes, both blocks, byte for byte and byte for byte count.
+// player; rtl/tape/tzxplayer.vhd is synthesized by GHDL but unused, the CSW
+// decoder is what plays) reading through rtl/tape/tape_src.sv (the file image
+// from the SD card, modeled by sim/models/sd_img_model.sv). It decodes what
+// the player puts on `audio_out` the way the Spectrum ROM loader does, in
+// `ce` ticks: pilot pulses are >= 2000 ticks, then the two sync pulses, then
+// each bit is a pulse pair (855+855 T is a 0, 1710+1710 T is a 1; the pair sum
+// 2400 separates them). The decoded bytes must equal the TAP blocks' flag +
+// data + checksum bytes, both blocks, byte for byte and byte for byte count.
 //
 // Cases:
 //   tap_decode, tzx_decode, csw_decode
 //                          hello mounted as TAP / TZX / CSW, ce every clock
-//                          (turbo 8x: ena_cpu follows the enable - the
-//                          brief's ce_follows_enable condition). Per ruling 4
-//                          the decode cases all run at this rate: the pulse
-//                          lengths in ce ticks are what the ROM sees,
-//                          independent of the clk/ce ratio.
-//   ce_1in8_pilot          ce one clock in eight (turbo off, 3.5 MHz on
-//                          28.125 MHz), TAP: two mid-pilot pulse intervals
-//                          must be 2168 +- 1 ce ticks.
+//                          (turbo 8x), both blocks decoded.
+//   ce_follows_enable      tap_1in8 decodes the same TAP at turbo off (ce one
+//                          clock in eight) and `ce_follows_enable` compares
+//                          its first pilot interval with the 8x run: the
+//                          player's timebase is `ce` ticks, so the two must
+//                          agree to one tick and both must decode the bytes.
+//   nav                    prev/next: pilot pulses after each jump, and the
+//                          converter's block start (0 and 21), which tells
+//                          block 0 from block 1 - the pilots alone cannot,
+//                          every block has a lead-in.
+//
+// The measure of a pilot interval: 27 CSW samples at the 3.5 MHz T-state
+// clock, 79.4 ce ticks each, so just under 27 x 79.4 = 2143 ce ticks (not
+// 2168: that is the pulse's T-state count, the player counts ce ticks per
+// sample and drops the fraction in the accumulator).
 //
 // `pause` must be pulsed after the mount: tape.sv parks play_pause = 1 while
 // tape_ready is low (a freshly mounted tape is paused), and both the TAP
@@ -65,7 +72,18 @@ module tb_tape_play;
     reg         pause = 1'b0;
     reg         prev  = 1'b0;
     reg         next  = 1'b0;
-    wire        tape_blk_seek;
+    wire        tape_blk_seek_conv;   // tape_conv's one-clock pulse
+    wire        tape_blk_seek;        // after the top's 15-clock hold
+
+    // Karabas_Profi.sv holds tape_conv's blk_seek for 15 clk_bus clocks: it is
+    // one clk_bus wide and tape.sv samples it only on `ce`. Mirror that here,
+    // so the nav cases exercise the arrangement the board runs.
+    reg  [3:0]  seek_hold = 4'd0;
+    always @(posedge clk) begin
+        if (tape_blk_seek_conv) seek_hold <= 4'hF;
+        else if (seek_hold)     seek_hold <= seek_hold - 4'd1;
+    end
+    assign tape_blk_seek = |seek_hold;
 
     reg         audio_out;
 
@@ -89,7 +107,7 @@ module tb_tape_play;
         .rd_en(tape_rd_en),
         .seek_prev(prev),
         .seek_next(next),
-        .blk_seek(tape_blk_seek)
+        .blk_seek(tape_blk_seek_conv)
     );
 
     sd_img_model #(.LAT_CLKS(1000)) sd_model (
@@ -189,6 +207,9 @@ module tb_tape_play;
     integer errors = 0;
     integer shown = 0;
     integer case_errors;
+    integer pilot_iv = 0;   // first full pilot interval of the last decode
+    integer pilot_8x = 0;   // that value at turbo 8x (ce every clock)
+    integer pilot_1x = 0;   // and at turbo off (ce one clock in eight)
     reg     dead = 1'b0;
 
     task fail_int(input [8*32-1:0] name, input [8*32-1:0] what,
@@ -234,9 +255,13 @@ module tb_tape_play;
         integer p1, p2, i, b, v;
         begin
             get_interval(p1);
-            // skip start-up junk and then every pilot pulse
+            // skip start-up junk and then every pilot pulse; the first full
+            // pilot interval is the turbo-invariance sample (ce_follows_enable)
             while (!dead && p1 < 2000) get_interval(p1);
-            while (!dead && p1 >= 2000) get_interval(p1);
+            while (!dead && p1 >= 2000) begin
+                if (pilot_iv == 0) pilot_iv = p1;
+                get_interval(p1);
+            end
             fail_int(name, "sync1", (p1 >= 300 && p1 <= 1500) ? 1 : 0, 1);
             get_interval(p2);
             fail_int(name, "sync2", (p2 >= 300 && p2 <= 1500) ? 1 : 0, 1);
@@ -314,6 +339,7 @@ module tb_tape_play;
             fail_int(name, "size", tape_size, size_want);
             reset_playback();
             ref_pos = 0;
+            pilot_iv = 0;
             start_play();
             for (b = 0; b < nblocks; b = b + 1)
                 decode_block(block_len[b], name);
@@ -355,6 +381,7 @@ module tb_tape_play;
         // TAP/TZX are streamed through tape_conv: the player sees CSW and
         // an unbounded stream length; the CSW file is passthrough.
         decode_tape("tap_decode", 32'd58, "build/sim/hello.tap.hex", 2'd1, 25'h1FFFFFF);
+        pilot_8x = pilot_iv;
         decode_tape("tzx_decode", 32'd74, "build/sim/hello.tzx.hex", 2'd1, 25'h1FFFFFF);
         decode_tape("csw_decode", 32'd17037, "build/sim/hello.csw.hex", 2'd1, 25'd17037);
 
@@ -397,6 +424,10 @@ module tb_tape_play;
         fail_int("nav_next", "pilot pulses after next (of 60)",
                  (pilot_mid >= 50) ? 1 : 0, 1);
         if (pilot_mid < 50) $display("nav_next: %0d", pilot_mid);
+        // the jump's target, read from the converter: block 1 starts at 21
+        // (block 0 is its 19-byte header behind a two-byte length). The pilot
+        // count alone cannot tell the blocks apart, they all have lead-ins.
+        fail_int("nav_next", "block start", u_tape_src.u_tape_conv.cur_start, 21);
         prev = 1'b1;
         repeat (16) @(posedge clk);
         prev = 1'b0;
@@ -409,32 +440,31 @@ module tb_tape_play;
         fail_int("nav_prev", "pilot pulses after previous (of 60)",
                  (pilot_mid >= 50) ? 1 : 0, 1);
         if (pilot_mid < 50) $display("nav_prev: %0d", pilot_mid);
+        // previous block from block 1 is block 0 (offset 0), not a replay of
+        // block 1, which is where cur_start = 21 would put it
+        fail_int("nav_prev", "block start", u_tape_src.u_tape_conv.cur_start, 0);
         if (errors == case_errors && !dead) $display("nav: ok");
         else $display("nav: FAIL");
 
-        // the ratio case: turbo off (ce 1 in 8). The pilot pulse is 27 CSW
-        // samples (2168 T states at 44100 Hz); the player spends one ce tick
-        // per accumulator wrap and fetches the next RLE byte when the count
-        // reaches 1, so the measured interval is a little under 27 x 79.4.
-        // The exact value is the CSW player's (board-proven with hello.csw);
-        // here only the turbo-off ratio has to stay in that band.
+        // ce_follows_enable: the player's timebase is `ce` ticks (the CPU's
+        // T-states), so a tape plays the same at every Turbo; only the wall
+        // time changes. Decode the same TAP again at turbo off (ce one clock
+        // in eight): the bytes must come out the same and the first pilot
+        // interval must equal the 8x one, which is the measured value of the
+        // 27-sample CSW pilot (not 2168: that is its T-state count, while the
+        // player counts ce ticks per sample).
         case_errors = errors;
         shown = 0;
         ce_1in8 = 1'b1;
-        reset_playback();
-        mount_file(32'd58, "build/sim/hello.tap.hex");
-        wait_ready();
-        reset_playback();
-        start_play();
-        get_interval(p1);
-        while (!dead && p1 < 2000) get_interval(p1);
-        get_interval(p1);
-        get_interval(p2);
-        fail_int("ce_1in8_pilot", "pilot interval",
-                 (p1 >= 2000 && p1 <= 2200) ? 1 : 0, 1);
-        if (p1 < 2000 || p1 > 2200) $display("ce_1in8_pilot: got %0d", p1);
-        if (errors == case_errors && !dead) $display("ce_1in8_pilot: ok");
-        else $display("ce_1in8_pilot: FAIL");
+        decode_tape("tap_1in8", 32'd58, "build/sim/hello.tap.hex", 2'd1, 25'h1FFFFFF);
+        pilot_1x = pilot_iv;
+        ce_1in8 = 1'b0;
+        fail_int("ce_follows_enable", "pilot interval 1x vs 8x",
+                 (pilot_1x >= pilot_8x - 1 && pilot_1x <= pilot_8x + 1) ? 1 : 0, 1);
+        if (!(pilot_1x >= pilot_8x - 1 && pilot_1x <= pilot_8x + 1))
+            $display("ce_follows_enable: 1x %0d, 8x %0d", pilot_1x, pilot_8x);
+        if (errors == case_errors && !dead) $display("ce_follows_enable: ok");
+        else $display("ce_follows_enable: FAIL");
 
         if (errors == 0) $display("tb_tape_play: PASS");
         else $display("tb_tape_play: FAIL %0d errors", errors);

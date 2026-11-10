@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Icarus run of the tape player testbench: rtl/tape/tape.sv (the ZX core's
-# player, verbatim) fed by rtl/tape/tape_src.sv (the file from the SD image,
+# player, with the stage 4a deviations listed in files.qip) fed by
+# rtl/tape/tape_src.sv (the file from the SD image,
 # sim/models/sd_img_model.sv) and the GHDL-synthesised tzxplayer.vhd (the ZX
-# player's TZX engine; tape.sv sets its TZX_MS generic to CLOCK/1000).
+# player's TZX engine, its lead-in raised to 8064; tape.sv sets its TZX_MS
+# generic to CLOCK/1000).
 #
 # The fixtures are made on the host first (zxtap.py needs only python3):
 # hello.tap/.tzx/.csw from tools/zxtap.py and the TAP's hex form the tb reads
@@ -76,7 +78,7 @@ fi
 
 # Icarus has no array assignment patterns (`blk_list <= '{default:0}`), so
 # the simulation copy of tape.sv spells the 128-element clear out. The RTL
-# file stays a verbatim copy. The copy holds only the `tape` module: the
+# file keeps its two documented deviations. The copy holds only the `tape` module: the
 # second module of the file (smart_tape) is not part of this core and its
 # `.*` plus name collisions do not elaborate in Icarus. Three playback
 # registers are block-local and have no reset value in tape.sv (Quartus
