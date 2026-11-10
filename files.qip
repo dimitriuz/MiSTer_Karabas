@@ -27,10 +27,12 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/mt32_mix.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/img_src.sv
 
 # Tape (stage 4a): rtl/tape/tape.sv and rtl/tape/tzxplayer.vhd are copies of
-# ZX-Spectrum_MISTer at c2c4e6f (the ZX core's player), with one deviation:
+# ZX-Spectrum_MISTer at c2c4e6f (the ZX core's player), with two deviations:
 # both data-block lead-ins are 8064 pulses instead of the ZX 3220/4031,
 # because the Profi ROM consumes the data lead-in while its LD_WAIT/LD_LEADER
-# run (board: 3223/4031 fail, 8064 loads; see the comments in the two files).
+# run (board: 3223/4031 fail, 8064 loads; see the comments in the two files);
+# and tape.sv gained a `blk_seek` input so the converted CSW stream can drop
+# its RLE state when `tape_conv.sv` jumps to another block (Tape previous/next).
 # The player reads through rtl/tape/tape_src.sv, this port's SD-file path.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape/tape_conv.sv
 set_global_assignment -name VHDL_FILE rtl/tape/tzxplayer.vhd

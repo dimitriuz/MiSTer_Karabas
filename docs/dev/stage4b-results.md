@@ -108,21 +108,78 @@ Reachable now, and partly walked on build 54:
 
 - the IDE row `s4b-hdf0` reaches 128 BASIC and the tape loader
   (`ide-loader-paused.png`: the 128 ROM's `Load """` screen, the tape
-  still paused). Reaching the trigger row is solved: the gamepad's
-  Home/Mode button opens the OSD (a keyboard `Home`/`F12` stopped doing
-  it after the `cold_reboot`), and the highlighted row is verified by its
-  pixel band on the capture - 172 `Video`, 316 `IDE 0`, 332 `IDE 1`,
-  352 `Tape play/pause`. What is *not* solved is the last step: with the
-  bar confirmed on `Tape play/pause`, `Enter` leaves the loader idle, the
-  same symptom stage 4a blamed on the row aiming. Since the row is right
-  now, the tape's OSD trigger path (`status[31]` through the synchroniser
-  in `Karabas_Profi.sv` into `tape.sv`'s `ce`-sampled controls) is the
-  open suspect.
+  still paused). The row aiming is solved: the gamepad's Home/Mode button
+  opens the OSD (a keyboard `Home`/`F12` stopped doing it after the
+  `cold_reboot`), and the highlighted row is read from its pixel band on
+  the capture - 172 `Video`, 316 `IDE 0`, 332 `IDE 1`, **348 `Tape
+  play/pause`**. A later attempt measured 352: the bar is 20 pixels tall
+  and the brightest of its rows moves by up to 4 pixels with the row's
+  text, so 348 and 352 are the same row; 332 (IDE 1) and 364 (previous
+  block) are neighbours and are *not*.
+- What that session did not settle is the tape trigger itself. On 2026-11-10, with the
+  bar verified on `Tape play/pause` (348), `Enter` left the loader idle on
+  build 54 (three presses, `hello`-size tape) **and on build 47** (three
+  presses, `hdf.tap`), the build whose stage 4a run has screenshots of a
+  playing tape fired the same way. The same session proved `Enter` does
+  activate the OSD: it cycled `Joystick L`'s value (and had to be put back
+  to `Kempston`), it opened the file browser from a file row, and it fired
+  the `Reset` button, which rebooted the core to the Karabas menu.
+- The input path is the prime suspect, not the core: the companion daemon
+  both drops and **delays** presses in this session. A press usually
+  arrives 1-2 s late - an `Enter` meant for `Tape play/pause` changed
+  `Joystick L` about two seconds after the command returned, and a burst
+  of eight `Down` presses put the bar on `Joystick L` (two rows past) while
+  the capture taken right after the burst still showed `Tape play/pause`.
+  A scripted fire therefore has to verify the row, wait >=2.5 s, verify it
+  again, and only then press `Enter`.
+- The trigger RTL is unchanged between builds 47 and 54 (`631cec8`, the
+  15-clock hold, `4'hF` counted down); nothing in stage 4b touches
+  `status[31]`. If the trigger
+  still does not act on a freshly rebooted board with the row verified
+  twice, the next instrument is a build that shows `status[31]` and
+  `tape.sv`'s `play_pause` on the screen, not more OSD aiming.
+- `Enter` does reach `T[]` items on this board: the stage 4a run fired
+  `Tape next block` and `Tape previous block` (`T[32]`, `T[33]`) through the
+  OSD and the captured borders show the block's lead-in
+  (`next-prev-play-border.png`, `next-block-pilot.png`,
+  `prev-block-pilot.png`), on build 47, the same RTL as 54 (that `previous`
+  restarted the *current* block is the 4a review's finding, not the
+  trigger's). `Reset` is an
+  `R[0]` row and `Joystick L` an `O[]` row, so those two prove nothing about
+  `T[]`; the tape screenshots do. What failed on 2026-11-10 was therefore
+  the session's input delivery, not the `T[]` path - and the tape trigger in
+  particular has to be re-fired once with the verified-row protocol. If it
+  still fails there, the probe build (which shows `status[31]` and
+  `play_pause`) is the next step; `T[20] NMI` with DivMMC on is the cheap
+  cross-check that this session's `Enter` reaches a `T[]` row at all
+  (a second-page row, so it needs the page-2 screen, not the page-1 band
+  map).
+- **Re-fired on build 55, same session, with the stepwise protocol:** the
+  OSD was opened, the bar read at 348 (`Tape play/pause`), left alone 2.8 s,
+  read again at 348, and one `Enter` started the tape - `Program: sound`
+  on the 128 loader screen behind the still-open OSD
+  (`b55-play-fired.png`, 11:24). The row was reached one press at a time,
+  each press followed by >=2.5 s and a read of the bar; two presses that
+  produced no change were simply repeated. So the stage 4a trigger path
+  (`T[31]` -> synchroniser -> 15-clock hold -> `tape.sv`'s `ce`-sampled
+  `play_pause`) works on build 55, and the earlier build 54/47 failures
+  were the session's input delivery.
+- **`Tape previous block` (`T[32]`) re-checked on build 55 too:** from
+  `Tape play/pause` (verified) one Down, then `Enter`, mid-load of
+  `sound.tap`'s data block - the border showed the tape signal while
+  playing (`b55-play-border-stripes.png`), and after the jump the header
+  block came back: `Program: sound` printed again and the loader reported
+  `R Tape loading error, 0:1`, which is the ROM finding a header where it
+  expected data (`docs/dev/stage4a-shots/b55-prev-block-header.png`). The
+  `next` direction keeps its stage 4a evidence (the ROM never prints
+  `Program: gsquery` after `next` skips the header).
 - The OSD's row map on this core page, from `Video` (0): 1
   `MiSTer-pi`, 2 `ROM Bank`, 3 `Turbo`, 4 `PSG Mix`, 5 `Covox`,
   6 `Tape`, 7 `SD Card`, 8 `IDE 0`, 9 `IDE 1`, 10 `Tape play/pause`,
   11 `Tape previous block` (`osd-rows.png`; the stage 4a note that
-  `Tape play/pause` is 7 rows down predates the SD and IDE rows).
+  `Tape play/pause` is 7 rows down predates the SD and IDE rows). The
+  `Video` and `MT32-pi` rows are page headers: one row each, and
+  activating one expands the page inline.
 - every SD row (DivMMC on, NMI, the esxDOS browser, `LOAD "TEST.BAS"`,
   `SAVE "OUT.BAS"`, the read-only row) and the IDE 1 and write rows.
 
@@ -162,6 +219,15 @@ Reachable now, and partly walked on build 54:
 |---|---|
 | `tools/sim.sh sim/run_tb_sd_spi.sh` | `tb_sd_spi: PASS` (polarity, init_and_read, write_block, read_multiple, eject_mid_command, async_host) |
 | `tools/sim.sh sim/run_tb_mcu_emu.sh` | `tb_mcu_emu: PASS` (with the `mounts_settle` case) |
+| `tools/sim.sh sim/run_all.sh` | `run_all: 19 passed, 0 failed` |
+
+The full suite was red from `6bea700` (the `mounts_settled` input on
+`mcu_emu`) until 2026-11-10: `tb_mcu_input.sv` was not updated, so the port
+floated, `mr_ok` never went high, the download's `ioctl_wait` stayed raised
+and the bench ran into its own 50 ms timeout (`tb_mcu_input: FAIL timeout`).
+It drives `.mounts_settled(1'b1)` now, the fixed value `tb_mcu_emu` uses for
+its non-settle cases. The gate was missed because the per-task runs only
+listed `tb_sd_spi` and `tb_mcu_emu`; `run_all` is the gate that catches it.
 
 ## Builds
 
@@ -174,3 +240,4 @@ Reachable now, and partly walked on build 54:
 | 52 | `check_timing: FAIL 1 problem`: setup -0.186 ns on a PLL output counter clock (a one-line variant of build 50; reverted rather than chased) |
 | 53 | `mount_settle` releases the start only after a disk mount (or 3 s): 8 boots, 1 menu - the card always has media when the probe runs, so the ROM always picks SD |
 | 54 | 53 plus the card held in reset while its slot has no file: **16 boots, 16 menus**, including 8 of 8 with `test.vhd` mounted (`boot-b54-sd.png`) |
+| 55 | 54 plus the stage 4a review fixes: `tape_conv.sv` steps to the previous block, and `blk_seek` is held 15 clocks like the OSD triggers. `build: exit 0`, `check_timing: OK`, 826 s; setup 0.419 ns, hold 0.247 ns. The tape triggers re-checked on it: `play/pause` starts the load, `previous block` returns to the header |

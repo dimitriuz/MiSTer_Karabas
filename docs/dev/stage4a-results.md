@@ -43,11 +43,25 @@ the same tapes with the same converter before block navigation was added.
 | `hello.csw` at 8x | PASS | `tape ok` (`hello-csw-8x.png`) |
 | `sound.tap` | PASS | loads and runs; lists `1 AY0 / 2 AY1 / 3 FM / 4 SAA / 5 OPL / 6 COVOX`, then `STOP statement, 70:1` (`sound-tap-47.png`). The owner heard every one on the earlier build, whose converter output is the same stream |
 | `gsquery.tap` at 8x | PASS | `GS status 126`, `Pages 62 err 0` (`gsquery-8x.png`): all 62 General Sound RAM pages checked, no errors |
-| `Tape play/pause` | PASS | playing, the border shows the tape signal (cyan/red stripes, `play-border-stripes.png`); fired again it leaves a solid border with the load frozen (`pause-border-solid.png`); a third firing resumes the stripes and the load (`resume-border-stripes.png`). The OSD rows themselves are `osd-tape-items.png`; a mounted tape that is not playing shows the bare loader screen (`tape-loader.png`) |
+| `Tape play/pause` | PASS (re-verified on build 55) | playing, the border shows the tape signal (cyan/red stripes, `play-border-stripes.png`); fired again it leaves a solid border with the load frozen (`pause-border-solid.png`); a third firing resumes the stripes and the load (`resume-border-stripes.png`). The OSD rows themselves are `osd-tape-items.png`; a mounted tape that is not playing shows the bare loader screen (`tape-loader.png`) |
 | `Tape next block` | PASS | skips the header block of `gsquery.tap` (the ROM never prints `Program: gsquery`, `next-block-skipped-header.png`); with `sound.tap` playing, the border leaves its solid data pattern and shows the second block's lead-in (`next-prev-play-border.png` -> `next-block-pilot.png`) |
-| `Tape previous block` | PASS | with `sound.tap` playing, the border again shows a lead-in: the block is replayed from its first byte (`prev-block-pilot.png`) |
+| `Tape previous block` | **wrong on build 47**, PASS on build 55 | the build-47 row read "the block is replayed from its first byte", and that is what the RTL did: `tape_conv.sv` treated any position past a block start as "previous", so the item restarted the current block. A lead-in follows either way, which is why `prev-block-pilot.png` looked right. On build 55, fired mid-load of `sound.tap`'s data block, the header block comes back: `Program: sound` is printed again and the loader aborts at `0:1` because it was expecting data, which is exactly what a jump to the *previous* block does (`b55-prev-block-header.png`) |
 | LED | not tested | the owner's case hides the USER LED |
 | line-in | not tested | no cassette or other audio source on the bench |
+
+## Corrections after the 2026-11-10 review
+
+The code review of the stage (`ce17ce8..a9ecf69`) found four defects the board
+run above could not see. All are fixed; build 55 is the first build that
+carries the fixes, and the board re-check of `Tape previous block` passed on
+it (`b55-prev-block-header.png`, below).
+
+| Defect | Fix | Proof |
+|---|---|---|
+| `Tape previous block` replayed the current block | `rtl/tape/tape_conv.sv` seeks to `prev_start` whenever the stream is inside a block, to 0 in the first one | `tb_tape_play` `nav` reads the converter's `cur_start` after each jump: 21 for `next` (block 1), 0 for `previous` (block 0). The pilot counts alone pass either way, every block has a lead-in |
+| `blk_seek` was one clock wide while `tape.sv` samples it only on `ce`, so at Turbo Off (one `ce` in eight) the RLE reset was usually missed | `Karabas_Profi.sv` holds it for 15 clocks, as it already did for the three OSD triggers; `tb_tape_play` mirrors the hold | `tb_tape_src` `blk_seek`: exactly one pulse per converter jump, none in CSW passthrough |
+| the pilot band (2000..2200 ce ticks) was a guess, and `ce_follows_enable` named in the bench header had no case | `tb_tape_play` decodes the same TAP at Turbo Off and compares its first pilot interval with the 8x run, to one ce tick | `tap_1in8` decodes both blocks byte for byte, `ce_follows_enable` prints the two intervals on failure |
+| `tb_tape_src`'s `sniff` only checked the forced output mode (always CSW), so a TAP/TZX mix-up was invisible | it asserts the sniffed `src_mode` 0/2/1 | `sniff` |
 
 ## Build 47
 
@@ -62,6 +76,14 @@ bus28/bus24 removal/recovery paths 1.007 / 1.498 ns. `check_timing.py`
 also confirms the four generated clocks were created and no 332174/332049/
 332060 sdc warning or 10236/10541 implicit-net warning reaches our sources.
 
+## Build 55 (the review fixes)
+
+`build: exit 0`, `check_timing: OK`, 826 s wall, `output_files/Karabas_Profi.rbf`
+3,521,352 bytes. Worst slacks: setup 0.419 ns, hold 0.247 ns, recovery
+3.692 ns, removal 0.958 ns, minimum pulse width 0.740 ns. Build 55 carries
+the four review fixes above; it is also the stage 4b top, so its fitter
+numbers are not comparable with build 47's.
+
 ## Simulation gates
 
 | Gate | Result |
@@ -74,12 +96,20 @@ also confirms the four generated clocks were created and no 332174/332049/
 
 `tb_tape_play` decodes both TAP blocks out of the player's own
 `audio_out` for TAP, TZX and CSW mounts (`tap_decode`, `tzx_decode`,
-`csw_decode`, byte for byte against the TAP), checks the turbo-off ratio
-(`ce_1in8_pilot`), and fires `prev`/`next` mid-tape and counts lead-in
-pulses afterwards (`nav_start`, `nav_next`, `nav_prev`). The run is slow
-by nature: the CSW player advances one 44.1 kHz sample per ≈638 clocks, so
-playing the three test tapes in simulation time takes about 35 minutes;
+`csw_decode`, byte for byte against the TAP), decodes the TAP again at
+Turbo Off and holds its first pilot interval to the 8x one within a ce tick
+(`tap_1in8`, `ce_follows_enable`), and fires `prev`/`next` mid-tape:
+lead-in pulses afterwards (`nav_start`, `nav_next`, `nav_prev`) and the
+converter's block start read from `tape_conv` (21 after `next`, 0 after
+`previous`, which is what tells a real step back from a replay). The run is
+slow by nature: the CSW player advances one 44.1 kHz sample per ≈638 clocks,
+so playing the four tapes in simulation time takes about 45 minutes;
 `run_all` budgets for it.
+
+The build-55 re-runs of `Tape play/pause` and `Tape previous block` are in
+`stage4a-shots/b55-*.png`; the OSD protocol that made them reproducible
+(one press at a time, read the bar's top edge, verify twice, judge by the
+effect) is in `docs/dev/stage4b-results.md` and the board skill.
 
 ## Why TAP and TZX go through a converter
 

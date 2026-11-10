@@ -25,6 +25,15 @@
   read it before the first task.
 - Never edit `upstream/` or `sys/`. Changes to upstream text are rewrites in `tools/prepare_upstream.py`, each matched exactly once, each with a unit test asserting the exact new text.
 - `rtl/tape/tape.sv` and `rtl/tape/tzxplayer.vhd` are verbatim copies of `~/repo/ZX-Spectrum_MISTer/rtl/` at commit c2c4e6f (check with `git -C ~/repo/ZX-Spectrum_MISTer show c2c4e6f:rtl/tape.sv | diff - rtl/tape/tape.sv`). Their origin goes in a comment in `files.qip` and in the README; they are not edited.
+  **Amended during the stage (2026-11-09), on board evidence:** the copies are no longer
+  verbatim. Both data-block lead-ins were raised (3220→4844 in `tape.sv`, 4031→8064 in
+  `tzxplayer.vhd`) because the Profi ROM consumes the standard lead-in while its
+  `LD_WAIT`/`LD_LEADER` run, and `tape.sv` gained a `blk_seek` input so the converted CSW
+  stream drops its RLE state when `tape_conv.sv` jumps to another block. Both deviations are
+  in the `files.qip` comment, the README and the comments at the edit sites; the diff check
+  above now reports exactly these edits and nothing else. The TZX engine's check uses its
+  own upstream path, `git -C ~/repo/ZX-Spectrum_MISTer show c2c4e6f:rtl/tzxplayer.vhd | diff - rtl/tape/tzxplayer.vhd`
+  (one hunk: `NORMAL_PILOT_PULSES` 4031 → 8064 with its comment).
 - `Karabas_Profi.sv` has `` `default_nettype none ``: declare every new wire.
 - Every task leaves `tools/sim.sh sim/run_all.sh` → `run_all: N passed, 0 failed` and `python3 -m unittest discover -s tools/tests` OK (59 tests today).
 - Tasks that change RTL end with a full build: `setsid nohup tools/build.sh </dev/null >build/logs/buildN.log 2>&1 &`, polled in the foreground until `build: exit` → must be `build: exit 0` (includes `check_timing: OK`, the 10236 and 10541 gates), then `git checkout Karabas_Profi.qsf`. Numbering continues from build 38: the first build of this plan is `build39.log`. Seed fallback (`SEED 2`/`3`) only for failures with both ends in `sys/`. Never weaken a constraint or a test.

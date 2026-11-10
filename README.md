@@ -141,7 +141,9 @@ the player's clock enable is the CPU's own enable, one pulse per T-state.
 Playback goes through one player, the ZX core's CSW player
 (`rtl/tape/tape.sv`, a copy of ZX-Spectrum_MISTer at commit c2c4e6f, with
 the data-block pilot raised to 8064 pulses: the Profi ROM consumes the
-standard lead-in while loading, and standard-pilot blocks fail on it). A
+standard lead-in while loading, and standard-pilot blocks fail on it; and a
+`blk_seek` input added, because a converted stream has to drop its RLE
+state when `tape_conv.sv` jumps to another block). A
 TAP or TZX file is converted on the fly into the CSW byte stream that
 player eats (`rtl/tape/tape_conv.sv`): the same 32-byte CSW v1 header that
 `zxtap.py` writes, then the RLE pulse list of every block. The import's own
