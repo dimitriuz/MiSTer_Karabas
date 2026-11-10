@@ -67,6 +67,7 @@ module tb_mcu_input;
    reg  [55:0]  kb_report      = 56'd0;
    reg          kb_changed     = 1'b0;
    reg          mem_ready      = 1'b1;
+   reg          mounts_settled = 1'b1;   // the disk mounts have settled
 
    // hps_io RTC: BCD 23:59:58, 31.12.25, weekday 3; bit 64 is the update
    // toggle and starts at 0
@@ -99,6 +100,7 @@ module tb_mcu_input;
       .rtc (rtc), .ps2_mouse (ps2_mouse), .ps2_mouse_ext (ps2_mouse_ext),
       .joy0 (joy0), .joy1 (joy1),
       .mem_ready (mem_ready),
+      .mounts_settled (mounts_settled),
       .spi_cs_n (spi_cs_n), .spi_sck (spi_sck), .spi_mosi (spi_mosi),
       .spi_miso (spi_miso),
       .last_reply (last_reply), .reply_valid (reply_valid)
