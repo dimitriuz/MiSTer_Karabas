@@ -251,3 +251,44 @@ listed `tb_sd_spi` and `tb_mcu_emu`; `run_all` is the gate that catches it.
 | 53 | `mount_settle` releases the start only after a disk mount (or 3 s): 8 boots, 1 menu - the card always has media when the probe runs, so the ROM always picks SD |
 | 54 | 53 plus the card held in reset while its slot has no file: **16 boots, 16 menus**, including 8 of 8 with `test.vhd` mounted (`boot-b54-sd.png`) |
 | 55 | 54 plus the stage 4a review fixes: `tape_conv.sv` steps to the previous block, and `blk_seek` is held 15 clocks like the OSD triggers. `build: exit 0`, `check_timing: OK`, 826 s; setup 0.419 ns, hold 0.247 ns. The tape triggers re-checked on it: `play/pause` starts the load, `previous block` returns to the header |
+## The IDE 0 BUSY hang: root cause and the crossing (builds 56-65)
+
+`hdf.tap` and the status probe (`dbg8.tap`, ATA port 240 = `S`, 241 = error)
+on a series of builds narrowed it in this order:
+
+| build | change | `hdf.tap` | why it mattered |
+|---|---|---|---|
+| 55 | `mnt_q` held until the next mount (a *level*) | `hdf busy` | a level reaches `hdf_ata`, but it re-examines the image every clock |
+| 61 | strobe of 1 `clk`, size sampled on the mount edge | `no hdf`, `S=0` | the strobe is not seen; the size sampled on the edge is still 0 |
+| 63 | the same, with the bench wires corrected (see below) | `no hdf`, `S=0` | sim green, board still 0 |
+| 64 | the size crossed only after it stops changing (settle, 1024 clk_sys) | `no hdf` | fixes the size, not the strobe |
+| 65 | plus the strobe held 8 clk | `no hdf` | still nothing at the drive |
+| 66 | 65 with `sdc_img_size` hardcoded to 1 MiB | `no hdf`, `S=0` | rules out the size: even a known-good size does not stick, so `hdf_ata` never sees a mount bit at all (or `dev0_en` is 0) |
+| 67 | forced: strobe and size from reset | inconclusive | the machine booted to the logo with a striped body on both runs and never ran the tape |
+
+The open question after 66 is which of those two it is: no mount bit at
+`hdf_ata`, or `dev0_en` (`sw_hdd`) 0 so `ide_mux` sends the IDE bus to the
+CF pins. The next experiment has to observe `img_mounted[3:2]` itself -
+routing it into the OSD or into the tape's EAR bit and reading it from BASIC
+is enough - rather than inferring it from `hdf_ata`'s `present`.
+
+What the board shows is that **Main's ioctl burst is ordered `0x1c`
+(`img_mounted`) first and `0x1d` (`img_size`) after it**, the opposite of
+what the first crossing assumed: a size sampled on the mount edge is the
+previous one - 0 at the first mount - so the image reads as an eject. A
+level (build 55) hid this because it re-sampled the size every clock
+until the burst had finished. The
+size is now crossed only once `img_size` has been stable for 1024
+`clk_sys` (20 us) after the event, which covers the rest of Main's burst.
+The strobe is held 8 `clk`: `hdf_ata` re-examines the image for each clock
+the bit is up, which is harmless because the machine is still held by
+`mounts_settled`, and a single-clock pulse was not observed on the board
+while a level was (build 55).
+
+The simulation did not catch either half, and the reason is in the bench:
+`tb_img_src` fed `hdf_ata` from the *raw* `img_mounted`/`img_size` instead
+of from the engine's `sdc_img_mounted`/`sdc_img_size`, and it wrote the
+size *before* the mount. It now drives the drive from the engine's outputs
+and writes the size after the mount pulse, like Main; with the settle
+removed the bench then fails exactly as the board did (`ident size got 0
+want 524288`), so both fixes are covered by `sim/run_tb_img_src.sh`.

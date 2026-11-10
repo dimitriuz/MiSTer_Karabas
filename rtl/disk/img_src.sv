@@ -37,15 +37,21 @@
 // hps_io reads the bytes of the buffer's clk_sys port, registered, with
 // sd_buff_addr; the write is complete when sd_ack falls.
 //
-// Mounts. Each img_mounted pulse crosses with the new mounted bits and
+// Mounts. Each img_mounted burst crosses with the new mounted bits and
 // img_size (one size for both slots, as the main module has one img_size
-// input) and sdc_img_mounted/sdc_img_size report them to the machine from
-// clk. A mount never disturbs a transfer in flight: the sector already
-// fetched is streamed and the sector already copied is pushed, and the new
-// image is what the next request reads or writes. An eject (img_size = 0)
-// takes effect the same way, so a following request for that slot ends with
-// sdc_error. A request that is in flight when its image is replaced still
-// ends; it does not hang.
+// input), taken when the burst ends so the size is complete. The machine
+// side needs a strobe, not a level: upstream img_sdc passed the MCU's
+// img_mounted pulse straight through to hdf_ata, which re-takes a held bit
+// as a fresh mount every clock (geo_ok is cleared and the drive answers BSY
+// forever). So sdc_img_mounted is a strobe of 8 clk carrying the event bits
+// (bit 4 = disk 2/device 0, bit 5 = disk 3/device 1) with sdc_img_size, and 0
+// otherwise; a single-clock pulse was not observed by the drive on the board
+// (builds 61-64) while a level was (build 55). A mount never disturbs a transfer in
+// flight: the sector already fetched is streamed and the sector already
+// copied is pushed, and the new image is what the next request reads or
+// writes. An eject (img_size = 0) takes effect the same way, so a following
+// request for that slot ends with sdc_error. A request that is in flight
+// when its image is replaced still ends; it does not hang.
 `default_nettype none
 
 module img_src (
@@ -82,12 +88,12 @@ module img_src (
     output reg   [8:0] sdc_byte_addr,
     output reg   [7:0] sdc_byte_in_data,
     input  wire  [7:0] sdc_byte_out_data,
-    output wire  [7:0] sdc_img_mounted,   // {2'b00, b, a, 4'b0000}
+    output wire  [7:0] sdc_img_mounted,   // one clk: {2'b00, b, a, 4'b0000}
     output wire [63:0] sdc_img_size
 );
 
     // payload layouts
-    //   mount {mounted[1:0], size[63:0]}
+    //   mount {events[1:0], mounted[1:0], size[63:0]}
     //   request {slot, wr, sector[31:0]} = [33:0], slot the top bit
     localparam RQ_SLOT = 33, RQ_WR = 32;
 
@@ -181,22 +187,68 @@ module img_src (
     // completion crossing out
     reg        ack_tgl = 1'b0;
 
-    // mount crossing out
+    // Mount crossing out: {event bits, mounted level, size}.
+    //
+    // hps_io raises img_mounted on Main's `0x1c` command and clears it when
+    // the next command starts, while the `0x1d` size words follow the mount
+    // command: a size sampled on the pulse is the previous one - 0 at the
+    // first mount - so the image reads as an eject and the drive never
+    // examines it (board, builds 61-66). The event is therefore latched and
+    // crossed once img_size has stopped changing for 20 us; if the size never
+    // changes in that event's short life (an eject to 0, or a mount whose
+    // size is already right) it crosses after 82 us with the value it has.
+    localparam [11:0] MNT_SETTLE = 12'd1023;  // 1024 clk_sys, 20 us quiet
+    localparam [12:0] MNT_WAIT   = 13'd4095;  // 4096 clk_sys, 82 us since the event
     reg  [1:0] mounted_sys = 2'b00;
     reg  [1:0] old_mounted = 2'b00;
-    reg [65:0] mount_payload = 66'd0;
+    reg  [1:0] ev_pend = 2'b00;
+    reg [63:0] size_see = 64'd0;
+    reg        size_chg = 1'b0;         // img_size moved since the event
+    reg [11:0] settle = 12'd0;
+    reg [12:0] ev_age = 13'd0;
+    reg [67:0] mount_payload = 68'd0;
     reg        mount_tgl = 1'b0;
 
-    wire [1:0] new_mounted = { img_mounted[1] ? (img_size != 64'd0) : mounted_sys[1],
-                               img_mounted[0] ? (img_size != 64'd0) : mounted_sys[0] };
+    wire [1:0] mount_ev = img_mounted & ~old_mounted;
 
     always @(posedge clk_sys) begin
-        // ---- mount: one {mounted, size} payload per event ----
+        // ---- mount: one {mounted, size} payload per burst ----
         old_mounted <= img_mounted;
-        if (|(img_mounted & ~old_mounted)) begin
-            mounted_sys   <= new_mounted;
-            mount_payload <= {new_mounted, img_size};
-            mount_tgl     <= ~mount_tgl;
+        if (|mount_ev) begin
+            ev_pend  <= ev_pend | mount_ev;
+            size_chg <= 1'b0;
+            settle   <= 12'd0;
+            ev_age   <= 13'd0;
+        end
+
+        if (ev_pend != 2'b00) begin
+            if (img_size != size_see) begin
+                size_see <= img_size;      // still being written
+                settle   <= 12'd0;
+                size_chg <= 1'b1;
+            end
+            else begin
+                if (settle != MNT_SETTLE) settle <= settle + 1'd1;
+                if (ev_age != MNT_WAIT)   ev_age <= ev_age + 1'd1;
+                if ((size_chg && settle == MNT_SETTLE - 1'd1) || ev_age == MNT_WAIT) begin
+                    mounted_sys   <= {ev_pend[1] ? (img_size != 64'd0) : mounted_sys[1],
+                                      ev_pend[0] ? (img_size != 64'd0) : mounted_sys[0]};
+                    mount_payload <= {ev_pend,
+                                      ev_pend[1] ? (img_size != 64'd0) : mounted_sys[1],
+                                      ev_pend[0] ? (img_size != 64'd0) : mounted_sys[0],
+                                      img_size};
+                    mount_tgl     <= ~mount_tgl;
+                    ev_pend       <= 2'b00;
+                    size_chg      <= 1'b0;
+                    settle        <= 12'd0;
+                    ev_age        <= 13'd0;
+                end
+            end
+        end
+        else begin
+            size_see <= img_size;
+            settle   <= 12'd0;
+            ev_age   <= 13'd0;
         end
 
         // ---- request crossing in ----
@@ -276,6 +328,9 @@ module img_src (
     // mount crossing in
     reg        mount_s1 = 1'b0, mount_s2 = 1'b0, mount_seen = 1'b0;
     reg  [1:0] mounted_bus = 2'b00;
+    reg  [1:0] ev_bus = 2'b00;          // a mount event waiting for its strobe
+    reg  [1:0] mnt_q = 2'b00;           // the strobe, mnt_cnt clk wide
+    reg  [2:0] mnt_cnt = 3'd0;
     reg [63:0] size_bus = 64'd0;
 
     wire [7:0] rq = sdc_rd | sdc_wr;
@@ -286,7 +341,7 @@ module img_src (
                             (rq_idx == 4'd5) ? mounted_bus[1] : 1'b0;
 
     assign sdc_slot = slot;
-    assign sdc_img_mounted = {2'b00, mounted_bus[1], mounted_bus[0], 4'b0000};
+    assign sdc_img_mounted = {2'b00, mnt_q[1], mnt_q[0], 4'b0000};
     assign sdc_img_size = size_bus;
 
     always @(posedge clk) begin
@@ -295,12 +350,39 @@ module img_src (
         b_we <= 1'b0;
 
         // ---- crossings ----
+        // hdf_ata takes img_mounted as a strobe, as upstream img_sdc passed the
+        // MCU's pulse through: it re-reads the size and restarts the geometry
+        // examination on every clock the bit is up. One clk, after the size it
+        // carries is stable; the HPS's own one-clk_sys img_mounted is crossed
+        // with the toggle below, never sampled directly, so nothing shorter
+        // than a clk can be lost.
+        // The strobe is held 8 clk: hdf_ata examines the image once per clock
+        // the bit is up, which is harmless, but a single-clock pulse was not
+        // observed by the drive on the board (builds 61-64) while a level was
+        // (build 55), and a wider strobe removes that uncertainty.
+        if (ev_bus != 2'b00) begin
+            mnt_q   <= ev_bus;
+            ev_bus  <= 2'b00;
+            mnt_cnt <= 3'd7;
+        end
+        else if (mnt_cnt != 3'd0) begin
+            mnt_cnt <= mnt_cnt - 1'd1;
+        end
+        else begin
+            mnt_q <= 2'b00;
+        end
+
         mount_s1 <= mount_tgl;
         mount_s2 <= mount_s1;
         if (mount_s2 != mount_seen) begin
             mount_seen  <= mount_s2;
             mounted_bus <= mount_payload[64 +: 2];
             size_bus    <= mount_payload[63:0];
+            // events accumulate: two mounts closer together than the
+            // crossing's latency must both reach the machine (the size is one
+            // register, so they share the last one - Main's commands are
+            // microseconds apart, far more than this window)
+            ev_bus      <= ev_bus | mount_payload[66 +: 2];
         end
         ack_s1 <= ack_tgl;
         ack_s2 <= ack_s1;

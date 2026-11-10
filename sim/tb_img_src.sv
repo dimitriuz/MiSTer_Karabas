@@ -12,8 +12,8 @@
 //
 // Cases (each prints `PASS <case>` or `FAIL <case> <reason>`):
 //   ident                IDENTIFY DEVICE on device 0: words 0, 1, 3, 6, 47,
-//                        60, 61; sdc_img_mounted/size tell the machine
-//                        which slot is mounted;
+//                        60, 61; sdc_img_mounted is a strobe (8 clk) that
+//                        names the slot and sdc_img_size its size;
 //   read_sector          READ SECTORS LBA 1: all 512 bytes;
 //   write_sector         WRITE SECTORS LBA 1 with 0x3C: the HPS memory has
 //                        it, and a second READ through the engine returns it
@@ -147,8 +147,10 @@ module tb_img_src;
         .wr_n(ata_wr_n),
         .din(ata_din),
         .dout(ata_dout),
-        .img_mounted(img_mounted),
-        .img_size(img_size),
+        // exactly the top's wiring: the drive sees the engine's strobe and
+        // the size it carries, not the HPS's own one-clk_sys pulse
+        .img_mounted(sdc_img_mounted[5:4]),
+        .img_size(sdc_img_size),
         .sdc_rd(hdf_rd),
         .sdc_wr(hdf_wr),
         .sdc_sector(hdf_sector),
@@ -221,6 +223,14 @@ module tb_img_src;
     reg  [7:0]  st;
     reg [15:0]  blk [0:255];
     reg [15:0]  w;
+
+    // sdc_img_mounted is a strobe (hdf_ata re-examines the image for every
+    // clock its bit is up), so the checks latch the last one and prove it
+    // ends again; its width is the engine's 8 clk.
+    reg  [7:0]  mount_last = 8'h00;
+
+    always @(posedge clk)
+        if (sdc_img_mounted !== 8'h00) mount_last <= sdc_img_mounted;
 
     task fail_int(input [8*20-1:0] cs, input [8*28-1:0] what,
                   input [63:0] got, input [63:0] want);
@@ -301,22 +311,27 @@ module tb_img_src;
     // ---------------- mount, waits, raw requester ----------------
     task mount(input [1:0] bits, input [63:0] size);
         begin
-            img_size = size;
-            @(posedge clk_sys); #1;
+            // Main's order as the board shows it: `0x1c` (the mount pulse,
+            // one clk_sys, cleared inside the command) comes first and the
+            // `0x1d` size words follow it in the same ioctl burst. A size
+            // sampled on the pulse is the previous one - 0 at the first
+            // mount - and the drive then never examines the image.
             img_mounted = bits;
-            // hps_io's pulse is many clocks wide; clk must see it
-            repeat (4) @(posedge clk_sys); #1;
-            img_mounted = 2'b00;
             @(posedge clk_sys); #1;
+            img_mounted = 2'b00;
+            repeat (3) @(posedge clk_sys); #1;
+            img_size = size;
+            repeat (3) @(posedge clk_sys); #1;
         end
     endtask
 
     task wait_mounted(input [7:0] v, output integer done_ok);
         begin
             done_ok = 0;
-            for (n = 0; n < 4000 && !done_ok; n = n + 1) begin
+            mount_last = 8'hFF;
+            for (n = 0; n < 20000 && !done_ok; n = n + 1) begin
                 @(posedge clk); #1;
-                if (sdc_img_mounted === v) done_ok = 1;
+                if (mount_last === v) done_ok = 1;
             end
         end
     endtask
@@ -324,7 +339,7 @@ module tb_img_src;
     task wait_idle(output integer done_ok);
         begin
             done_ok = 0;
-            for (n = 0; n < 4000 && !done_ok; n = n + 1) begin
+            for (n = 0; n < 20000 && !done_ok; n = n + 1) begin
                 @(posedge clk_sys); #1;
                 if (!sdc_busy && !rd_a && !rd_b && !wr_a && !wr_b &&
                     hps.ack == 2'b00 && !hps.buff_wr) done_ok = 1;
@@ -444,8 +459,10 @@ module tb_img_src;
         case_begin;
         mount(2'b01, FULL);
         wait_mounted(8'h10, ok);
-        fail_int("ident", "mounted", sdc_img_mounted, 8'h10);
+        fail_int("ident", "mounted", mount_last, 8'h10);
         fail_int("ident", "size", sdc_img_size, FULL);
+        repeat (16) @(posedge clk);
+        fail_int("ident", "strobe ended", sdc_img_mounted, 8'h00);
         wait_idle(ok);
         ata_wr(3'd6, 16'h0000);                  // device 0, CHS
         ata_wait(st, ok);
@@ -520,8 +537,11 @@ module tb_img_src;
         // ---- dev1 ----
         case_begin;
         mount(2'b10, FULL);
-        wait_mounted(8'h30, ok);
-        fail_int("dev1", "mounted", sdc_img_mounted, 8'h30);
+        wait_mounted(8'h20, ok);
+        fail_int("dev1", "mounted", mount_last, 8'h20);
+        fail_int("dev1", "size", sdc_img_size, FULL);
+        repeat (16) @(posedge clk);
+        fail_int("dev1", "strobe ended", sdc_img_mounted, 8'h00);
         ata_wr(3'd6, 16'h0010);                  // DEV = 1
         ata_wait(st, ok);
         fail_int("dev1", "not busy", ok, 1);
@@ -541,10 +561,16 @@ module tb_img_src;
 
         // ---- no_image ----
         case_begin;
+        // one mount per crossing: Main's commands are microseconds apart, far
+        // more than the crossing takes, so each is waited out here too
         mount(2'b01, 64'd0);
+        wait_mounted(8'h10, ok);
+        fail_int("no_image", "mounted 0", mount_last, 8'h10);
         mount(2'b10, 64'd0);
-        wait_mounted(8'h00, ok);
-        fail_int("no_image", "mounted", sdc_img_mounted, 8'h00);
+        wait_mounted(8'h20, ok);
+        fail_int("no_image", "mounted", mount_last, 8'h20);
+        fail_int("no_image", "size", sdc_img_size, 64'd0);
+        repeat (8) @(posedge clk);
         ata_rd(3'd7, w);
         fail_int("no_image", "status", w[7:0], 8'h00);
         ata_wr(3'd7, 16'h00EC);                  // a command with no device
@@ -622,11 +648,13 @@ module tb_img_src;
         wait_mounted(8'h10, ok);
         raw_start(3'd4, 32'd1);
         wait_hps_burst;
+        mount_last = 8'hFF;                      // the eject's strobe, not the mount's
         mount(2'b01, 64'd0);
         wait_engine_done(ok);
         fail_int("eject", "done", ok, 1);        // completes or errors, no hang
-        wait_mounted(8'h00, ok);
-        fail_int("eject", "mounted", sdc_img_mounted, 8'h00);
+        fail_int("eject", "mounted", mount_last, 8'h10);
+        fail_int("eject", "size", sdc_img_size, 64'd0);
+        repeat (8) @(posedge clk);
         raw_read(3'd4, 32'd1, rok, rerr);
         fail_int("eject", "next done", rok, 1);
         fail_int("eject", "next error", rerr, 1);
