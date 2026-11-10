@@ -251,7 +251,7 @@ listed `tb_sd_spi` and `tb_mcu_emu`; `run_all` is the gate that catches it.
 | 53 | `mount_settle` releases the start only after a disk mount (or 3 s): 8 boots, 1 menu - the card always has media when the probe runs, so the ROM always picks SD |
 | 54 | 53 plus the card held in reset while its slot has no file: **16 boots, 16 menus**, including 8 of 8 with `test.vhd` mounted (`boot-b54-sd.png`) |
 | 55 | 54 plus the stage 4a review fixes: `tape_conv.sv` steps to the previous block, and `blk_seek` is held 15 clocks like the OSD triggers. `build: exit 0`, `check_timing: OK`, 826 s; setup 0.419 ns, hold 0.247 ns. The tape triggers re-checked on it: `play/pause` starts the load, `previous block` returns to the header |
-## The IDE 0 BUSY hang: root cause and the crossing (builds 56-65)
+## The IDE 0 BUSY hang: what the crossing has to do (builds 55-67)
 
 `hdf.tap` and the status probe (`dbg8.tap`, ATA port 240 = `S`, 241 = error)
 on a series of builds narrowed it in this order:
@@ -268,22 +268,17 @@ on a series of builds narrowed it in this order:
 
 The open question after 66 is which of those two it is: no mount bit at
 `hdf_ata`, or `dev0_en` (`sw_hdd`) 0 so `ide_mux` sends the IDE bus to the
-CF pins. The next experiment has to observe `img_mounted[3:2]` itself -
-routing it into the OSD or into the tape's EAR bit and reading it from BASIC
-is enough - rather than inferring it from `hdf_ata`'s `present`.
+CF pins. ATA port 240 reads 0x0000, which is what `hdf_ata` drives while
+`!here` (a floating CF bus reads 0xFF), so the HDF path is likely the live
+one - but that is inference, not a measurement. The next experiment has to
+observe `img_mounted[3:2]` itself - routing it into the OSD or into the
+tape's EAR bit and reading it from BASIC is enough.
 
-What the board shows is that **Main's ioctl burst is ordered `0x1c`
-(`img_mounted`) first and `0x1d` (`img_size`) after it**, the opposite of
-what the first crossing assumed: a size sampled on the mount edge is the
-previous one - 0 at the first mount - so the image reads as an eject. A
-level (build 55) hid this because it re-sampled the size every clock
-until the burst had finished. The
-size is now crossed only once `img_size` has been stable for 1024
-`clk_sys` (20 us) after the event, which covers the rest of Main's burst.
-The strobe is held 8 `clk`: `hdf_ata` re-examines the image for each clock
-the bit is up, which is harmless because the machine is still held by
-`mounts_settled`, and a single-clock pulse was not observed on the board
-while a level was (build 55).
+What build 66 does establish is that a size sampled on the mount edge is
+wrong: hps_io raises `img_mounted` on Main's `0x1c` and writes `img_size`
+with the `0x1d` commands that follow, so the edge sees the previous size
+(0 at the first mount) and the image reads as an eject. Build 55's level
+hid this by re-sampling the size every clock until the burst had finished.
 
 The simulation did not catch either half, and the reason is in the bench:
 `tb_img_src` fed `hdf_ata` from the *raw* `img_mounted`/`img_size` instead
