@@ -1,6 +1,7 @@
 # Stage 4a board results (tape files)
 
-Board: DE10-Nano MiSTer at 192.168.1.13. Dates: 2026-11-08/09.
+Board: DE10-Nano MiSTer at 192.168.1.13. Dates: 2026-11-08/09, re-checked on 2026-11-10
+with build 55.
 
 | build | what it was |
 |---|---|
@@ -10,6 +11,7 @@ Board: DE10-Nano MiSTer at 192.168.1.13. Dates: 2026-11-08/09.
 | 42 | debug: `tape_audio` on `AUDIO_L`, to decode the HDMI capture |
 | 46 | TAP/TZX streamed through `rtl/tape/tape_conv.sv` (this stage's fix) |
 | 47 | block navigation for the converted stream (`Tape previous/next block`) |
+| 55 | review fixes: `Tape previous block` steps back to the block start, `blk_seek` held for the `ce`-sampled converter, and the 2026-11-10 re-checks of the trigger, the sound tape and both storage rows |
 
 How it was driven: `load_core` with an MGL per tape (absolute `<file>`
 paths, Main resolves relative paths against the core's game dir), the
