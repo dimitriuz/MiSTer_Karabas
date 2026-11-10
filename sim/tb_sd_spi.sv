@@ -8,6 +8,13 @@
 // high; mode-0 sampling: the host changes MOSI while sck is low and samples
 // MISO while it is high).
 //
+// The `async_host` case drives the bus the way the machine does instead:
+// sck from a second, unrelated 28.125 MHz clock (the machine's clk_bus),
+// idling low, one period per phase, and MISO sampled at the falling edge
+// (zc_spi shifts its receive byte in at the edge where sck falls) - the
+// setting in which the card's falling-edge drive and the host's sample
+// land on the same edge.
+//
 // The case `polarity` pins the chip select: the card treats ss = 1 as
 // deselected (sys/sd_card.sv clears bit_cnt and drives miso = 1 then; the
 // reference cores drive .ss(selected ? 0 : 1)), and Profi's SD_CS_N is that
@@ -27,6 +34,8 @@
 //                    sector: the host's bounded read gives 0xFF only, then
 //                    (with the HPS not answering, as with no file) CMD12
 //                    aborts and CMD0 answers again.
+//   async_host       the machine's own clocking (sck from clk_bus, sample at
+//                    the fall): init, sector 1, sector 4 read intact.
 //
 // The last line printed is `tb_sd_spi: PASS` or `tb_sd_spi: FAIL <reason>`;
 // run via sim/run_tb_sd_spi.sh (iverilog -g2012).
@@ -38,6 +47,8 @@ module tb_sd_spi;
     // ---------------- clocks ----------------
     reg clk_sys = 1'b0;                     // 50 MHz, the card's clk_sys and clk_spi
     always #10 clk_sys = ~clk_sys;
+    reg clk_bus = 1'b0;                     // 28.125 MHz, the machine's own clock
+    always #17.7778 clk_bus = ~clk_bus;
 
     localparam integer SECTORS = 64;
     localparam [63:0] FULL = 64'd32768;     // SECTORS * 512
@@ -224,6 +235,66 @@ module tb_sd_spi;
         end
     endtask
 
+
+    // ---------------- the machine's host (zc_spi) ----------------
+    // sck idles low and is counter[0] of a clk_bus counter: one clk_bus
+    // period per phase. mosi changes and miso is sampled at the fall.
+    task aspi_bit(input m, output r);
+        begin
+            mosi = m; @(posedge clk_bus); sck = 1'b1;   // mosi first, then the rise
+            @(posedge clk_bus); r = miso; sck = 1'b0;   // the fall: sample, then drop
+        end
+    endtask
+
+    task aspi_byte(input [7:0] m, output [7:0] r);
+        integer k; reg b;
+        begin
+            r = 8'h00;
+            for (k = 7; k >= 0; k = k - 1) begin
+                aspi_bit(m[k], b);
+                r = {r[6:0], b};
+            end
+        end
+    endtask
+
+    task aspi_frame(input [5:0] idx, input [31:0] arg, input [7:0] crc,
+                    output [7:0] r, output integer got);
+        begin
+            aspi_byte(8'hFF, tmp);
+            aspi_byte({2'b01, idx}, tmp);
+            aspi_byte(arg[31:24], tmp);
+            aspi_byte(arg[23:16], tmp);
+            aspi_byte(arg[15:8], tmp);
+            aspi_byte(arg[7:0], tmp);
+            aspi_byte(crc, tmp);
+            got = 0; r = 8'hFF;
+            for (n = 0; n < 16 && !got; n = n + 1) begin
+                aspi_byte(8'hFF, r);
+                if (r != 8'hFF) got = 1;
+            end
+        end
+    endtask
+
+    // CMD17 for sector s, the token, the 512 bytes; bad counts the mismatches
+    task aspi_read_sec(input integer s, output integer bad);
+        integer i2, g; reg [7:0] dd;
+        begin
+            bad = 0;
+            aspi_frame(6'd17, s, 8'h55, tmp, g);
+            fail_int("async", "CMD17 r1", tmp, 8'h00);
+            g = 0;
+            for (n = 0; n < 64 && !g; n = n + 1) begin
+                aspi_byte(8'hFF, tmp);
+                if (tmp == 8'hFE) g = 1;
+            end
+            fail_int("async", "a data token", g, 1);
+            for (i2 = 0; i2 < 512; i2 = i2 + 1) begin
+                aspi_byte(8'hFF, dd);
+                if (dd !== img_byte(s, i2)) bad = bad + 1;
+            end
+        end
+    endtask
+
     // ---------------- monitors ----------------
     reg wr_seen = 1'b0, wr_then_ack = 1'b0;
     always @(posedge clk_sys) begin
@@ -384,6 +455,28 @@ module tb_sd_spi;
         card_select(1'b0);
         case_end("eject_mid_command");
 
+
+        // ---- async_host ----
+        case_begin;
+        reset = 1'b1; repeat (10) @(posedge clk_sys); reset = 1'b0;
+        mount(FULL);
+        repeat (20) @(posedge clk_sys);
+        card_select(1'b0); aspi_byte(8'hFF, tmp); card_select(1'b1);
+        aspi_frame(6'd0,  32'd0,         8'h95, r1, ok);
+        fail_int("async", "CMD0 r1", r1, 8'h01);
+        aspi_frame(6'd8,  32'h1AA,       8'h87, r1, ok);
+        fail_int("async", "CMD8 r1", r1, 8'h01);
+        aspi_frame(6'd55, 32'd0,         8'h65, r1, ok);
+        fail_int("async", "CMD55 r1", r1, 8'h01);
+        aspi_frame(6'd41, 32'h40000000,  8'h77, r1, ok);
+        fail_int("async", "ACMD41 r1", r1, 8'h00);
+        aspi_frame(6'd58, 32'd0,         8'hFD, r1, ok);
+        fail_int("async", "CMD58 r1", r1, 8'h00);
+        aspi_read_sec(1, n);
+        fail_int("async", "sector 1 mismatches", n, 0);
+        aspi_read_sec(4, n);
+        fail_int("async", "sector 4 mismatches", n, 0);
+        case_end("async_host");
         if (errors == 0) $display("tb_sd_spi: PASS");
         else $display("tb_sd_spi: FAIL %0d checks failed", errors);
         $finish;
