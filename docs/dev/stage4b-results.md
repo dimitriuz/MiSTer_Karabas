@@ -45,7 +45,7 @@ What was ruled out:
 | the tape being mounted | tape-only MGL | hangs |
 | the mounts at all | a core loaded with no `<file>`, four boots | two show the menu (`boot-no-image.png`), two stop on the Drive line (`boot-no-image-hang.png`) |
 | the SD emulation's sector stream (CMD18 / multi-sector reads) | `tb_sd_spi`'s new `read_multiple` case: sectors 4 and 5 in one CMD18 stream, the written sector 2 read back afterwards | passes, so the card and the HPS-side byte transport are sound when clocked like the bench clocks them |
-| the machine's own SPI cadence | a scratch variant of `spi_bit` that samples at the SCK falling edge, as `zc_spi` does (SCK idles low, so every byte starts on a rising edge) | **fails**: the card's 512 data bytes come back wrong (`0x00, 0x83, 0x05, 0x88, 0x0a, ...` where the image holds `0x5c, 0x61, 0x66, 0x6b, 0x70, ...`), because `sys/sd_card.sv` drives MISO only on falling SCK edges while `zc_spi` idles SCK low and so gives the card no falling edge before a byte's first sample |
+| the machine's own SPI cadence | a scratch variant of `spi_bit` that samples at the SCK falling edge, as `zc_spi` does (SCK idles low, so every byte starts on a rising edge) | **fails**: the card's 512 data bytes come back wrong (`0x00, 0x83, 0x05, 0x88, 0x0a, ...` where the image holds `0x5c, 0x61, 0x66, 0x6b, 0x70, ...`) |
 
 The two failure modes share a cause, and it is a race on the SCK falling
 edge. `zc_spi` (upstream) shifts its receive byte in on the clk_bus edge
@@ -66,18 +66,13 @@ drive, so it always reads the settled bit - and
 why the fault looks like a coin flip at power-up rather than a hard
 failure.
 
-The last row is the concrete lead for the next session: the machine's
-`zc_spi` (upstream, unmodified) and MiSTer's `sd_card` disagree about the
-MISO framing, and the ROM's drive probe is the first thing that reads
-more than a command byte. `sim/tb_sd_spi.sv` cannot show it today because
-its own bit-banger starts every byte with a falling edge (SCK idles high);
-the reproducer is `spi_byte` replaced by a byte that starts on the rising
-edge (`sck` idling low). The next step is that same case with `zc_spi`
-itself as the host - the machine's exact strobe protocol, `tx`/`rx` with
-`spi_wait`, as the old throwaway probe in `build/sim/tb_zc_probe.sv` did -
-so the phase can be settled against the real host rather than against a
-hand-written approximation, and the fix (the card's clock phase, or a shim
-between the two) can be measured before it is compiled.
+The next step is an asynchronous reproducer: SCK from a second clock
+(28.125 MHz, the machine's `clk_bus`) instead of from `clk_sys`, which is
+what turns the same-edge collision into a coin flip, with `zc_spi`
+itself as the host so the machine's exact strobe protocol is measured
+rather than approximated. With that in place the fix - a shim that
+latches the card's MISO on the SCK rise, or the card's clock phase - can
+be measured before it is compiled.
 
 Not tested yet, because they need the machine to reach its menu:
 
