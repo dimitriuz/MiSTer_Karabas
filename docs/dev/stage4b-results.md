@@ -280,6 +280,10 @@ with the `0x1d` commands that follow, so the edge sees the previous size
 (0 at the first mount) and the image reads as an eject. Build 55's level
 hid this by re-sampling the size every clock until the burst had finished.
 
+`run_all` was re-run on this tree: `run_all: 19 passed, 0 failed`
+(6142 s; `tb_tape_play` alone is over an hour, it simulates ~28M clocks of
+silence per inter-block pause).
+
 The simulation did not catch either half, and the reason is in the bench:
 `tb_img_src` fed `hdf_ata` from the *raw* `img_mounted`/`img_size` instead
 of from the engine's `sdc_img_mounted`/`sdc_img_size`, and it wrote the
