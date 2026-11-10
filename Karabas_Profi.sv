@@ -509,19 +509,22 @@ sdramclk_ddr
 // are never loaded into memory, rtl/tape/tape_src.sv reads them from the
 // SD image in two cached 512-byte sectors (clk_sys side) and serves the ZX
 // core's player, rtl/tape/tape.sv (clk_bus side), through its rd_en/addr/din
-// memory port. tape.sv and its TZX engine rtl/tape/tzxplayer.vhd are verbatim
-// copies of ZX-Spectrum_MISTer c2c4e6f; the player's TAP/CSW decoder and the
-// TZX engine both count their pulses in `ce` ticks, so `ce` is the CPU's own
-// enable: one pulse per T-state at whatever Turbo is set to.
+// memory port. tape.sv and its TZX engine rtl/tape/tzxplayer.vhd are copies
+// of ZX-Spectrum_MISTer c2c4e6f with the deviations listed in files.qip;
+// what plays is tape.sv's CSW decoder, fed by rtl/tape/tape_conv.sv, and its
+// pulses count `ce` ticks, so `ce` is the CPU's own enable: one pulse per
+// T-state at whatever Turbo is set to.
 //
 // The three OSD triggers (T[33:31]) are two-flop synchronised into clk_bus
-// and turned into one-clock pulses. `tape_active` selects the tape audio for
-// the machine's EAR input; with no tape playing, the LTC2308 line-in on the
-// MiSTer ADC header is the source when it sees a signal, as on the ZX core.
-// A freshly mounted tape is paused: the player's play_pause is 1 until the
-// play/pause trigger.
+// and turned into 15-clock holds (a `ce`-sampled input needs the level to
+// outlast the gap between two `ce` pulses). `tape_active` selects the tape
+// audio for the machine's EAR input; with no tape playing, the LTC2308
+// line-in on the MiSTer ADC header is the source when it sees a signal, as
+// on the ZX core. A freshly mounted tape is paused: the player's play_pause
+// is 1 until the play/pause trigger.
 wire        tape_ready;
-wire  [1:0] tape_mode;        // 0 TAP, 1 CSW, 2 TZX (sniffed by tape_src)
+wire  [1:0] tape_mode;        // always CSW: tape_src forces the converter's
+                              // stream, the sniffed mode is its internal one
 wire [24:0] tape_size;
 wire        tape_rd;
 wire [24:0] tape_addr;
@@ -558,14 +561,16 @@ tape_src u_tape_src (
 );
 
 // {pause, prev, next}: first sync stage, second sync stage, the second stage
-// one clk_bus earlier; a rising edge of the second stage sets a 16-clock hold.
+// one clk_bus earlier; a rising edge of the second stage sets a 15-clock hold.
 // tape.sv samples these controls only on its `ce` input, the CPU's T-state
 // enable: at Turbo Off that is one clk_bus in eight, so a one-clock pulse
-// would usually be missed. 16 clocks span at least two `ce` pulses at every
-// Turbo setting, and tape.sv reacts to the rising edge it sees, so the longer
-// level still acts exactly once.
+// would usually be missed. 15 clocks span at least one `ce` pulse at every
+// Turbo setting (two at Turbo Off), and tape.sv reacts to the rising edge it
+// sees, so the longer level still acts exactly once. tape_src's `blk_seek` is
+// a one-clock clk_bus pulse for the same reason and is held the same way.
 reg [2:0] tape_trig_s [0:2];
 reg [3:0] tape_trig_hold [0:2];
+reg [3:0] tape_seek_hold;
 always @(posedge clk_bus) begin
 	tape_trig_s[0] <= {tape_trig_s[0][1:0], status[31]};
 	tape_trig_s[1] <= {tape_trig_s[1][1:0], status[32]};
@@ -576,11 +581,14 @@ always @(posedge clk_bus) begin
 	else if (tape_trig_hold[1]) tape_trig_hold[1] <= tape_trig_hold[1] - 4'd1;
 	if (tape_trig_s[2][1] & ~tape_trig_s[2][2]) tape_trig_hold[2] <= 4'hF;
 	else if (tape_trig_hold[2]) tape_trig_hold[2] <= tape_trig_hold[2] - 4'd1;
+	if (tape_blk_seek) tape_seek_hold <= 4'hF;
+	else if (tape_seek_hold) tape_seek_hold <= tape_seek_hold - 4'd1;
 end
 
 assign tape_pause = |tape_trig_hold[0];
 assign tape_prev  = |tape_trig_hold[1];
 assign tape_next  = |tape_trig_hold[2];
+wire   tape_blk_seek_held = |tape_seek_hold;
 
 tape u_tape (
 	.clk_sys(clk_bus),
@@ -603,7 +611,7 @@ tape u_tape (
 	.tape_size(tape_size),
 	.stdload(1'b0),
 	.req_hdr(1'b0),
-	.blk_seek(tape_blk_seek),
+	.blk_seek(tape_blk_seek_held),
 
 	.audio_out(tape_audio),
 

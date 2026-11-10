@@ -152,9 +152,12 @@ module tape_conv (
             if (!seek_req && (prev & ~old_prev)) begin
                 seek_req   <= 1'b1;
                 seek_phase <= (src_mode == SRC_TZX) ? P_TZXID : P_TAPLEN;
-                if (rd_addr > cur_start) seek_addr <= cur_start;
-                else if (cur_start != 25'd0) seek_addr <= prev_start;
-                else seek_addr <= rd_addr;
+                // the item is "previous block": go back to the block before
+                // this one. The first block has none, so it restarts from 0.
+                // (rd_addr > cur_start was the old test and it is true at
+                // every position but a block start, so the item replayed the
+                // current block instead of stepping back.)
+                seek_addr  <= (cur_start != 25'd0) ? prev_start : 25'd0;
                 out_valid  <= 1'b0;
                 rd_en      <= 1'b0;
                 blk_end_ok <= 1'b0;
