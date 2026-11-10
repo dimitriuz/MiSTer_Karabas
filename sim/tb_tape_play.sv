@@ -14,7 +14,7 @@
 //                          (turbo 8x), both blocks decoded.
 //   ce_follows_enable      tap_1in8 decodes the same TAP at turbo off (ce one
 //                          clock in eight) and `ce_follows_enable` compares
-//                          its first pilot interval with the 8x run: the
+//                          its last pilot interval with the 8x run: the
 //                          player's timebase is `ce` ticks, so the two must
 //                          agree to one tick and both must decode the bytes.
 //   nav                    prev/next: pilot pulses after each jump, and the
@@ -207,7 +207,7 @@ module tb_tape_play;
     integer errors = 0;
     integer shown = 0;
     integer case_errors;
-    integer pilot_iv = 0;   // first full pilot interval of the last decode
+    integer pilot_iv = 0;   // last full pilot interval of the last decode
     integer pilot_8x = 0;   // that value at turbo 8x (ce every clock)
     integer pilot_1x = 0;   // and at turbo off (ce one clock in eight)
     reg     dead = 1'b0;
@@ -234,7 +234,11 @@ module tb_tape_play;
             while (fifo_w == fifo_r && !dead) begin
                 @(posedge clk);
                 waited = waited + 1;
-                if (waited > 12000000) begin
+                // 40M clk_bus clocks: the converter's 1000 ms pause between
+                // blocks is 44100 CSW samples, ~3.5M ce ticks, and at turbo
+                // off (one ce in eight clocks) that is ~28.4M clocks of
+                // silence - a 12M budget timed out inside it.
+                if (waited > 40000000) begin
                     $display("FAIL timeout waiting for a tape edge");
                     errors = errors + 1;
                     dead = 1'b1;
@@ -258,8 +262,11 @@ module tb_tape_play;
             // skip start-up junk and then every pilot pulse; the first full
             // pilot interval is the turbo-invariance sample (ce_follows_enable)
             while (!dead && p1 < 2000) get_interval(p1);
+            // keep the last complete pilot: the first one is a partial pulse
+            // when the monitor starts mid-pilot (the 1x run starts on a
+            // different phase), so the last one is the comparable sample
             while (!dead && p1 >= 2000) begin
-                if (pilot_iv == 0) pilot_iv = p1;
+                pilot_iv = p1;
                 get_interval(p1);
             end
             fail_int(name, "sync1", (p1 >= 300 && p1 <= 1500) ? 1 : 0, 1);
