@@ -104,14 +104,24 @@ capture FIFO behind the top's `sd_*` pins, read out through an OSD item),
 so a boot that stops on `Drive: SD` can be compared with a bench case
 that replays the same commands.
 
-Not tested yet, because they need the machine to reach its menu:
+Reachable now, and partly walked on build 54:
 
-- every IDE row (`hdf.tap` + `test.hdf` on IDE 0, `hdfw.tap`'s write,
-  IDE 1 on slot 3) — the boot coin flip can be retried with `load_core`
-  until the menu appears, so these rows stay reachable once the boot is
-  deterministic;
+- the IDE row `s4b-hdf0` reaches 128 BASIC and the tape loader
+  (`ir8-00-loader.png`: the 128 ROM's `Load ""` screen, the tape still
+  paused), but the OSD could not be opened afterwards to fire
+  `Tape play/pause`: `Home` and `F12` stopped opening it, and after
+  `cold_reboot` the board did not come back on the network. The OSD is in
+  a state a core reload does not clear - the run before had pressed
+  `Enter` on the `IDE 0` file row, which opens a file browser - so a
+  board script must open the OSD only to fire a trigger and must never
+  press `Enter` on a file row.
+- The OSD's Tapecursor map on this core page, from `Video` (0): 1
+  `MiSTer-pi`, 2 `ROM Bank`, 3 `Turbo`, 4 `PSG Mix`, 5 `Covox`,
+  6 `Tape`, 7 `SD Card`, 8 `IDE 0`, 9 `IDE 1`, 10 `Tape play/pause`,
+  11 `Tape previous block` (`osd-rows.png`; the stage 4a note that
+  `Tape play/pause` is 7 rows down predates the SD and IDE rows).
 - every SD row (DivMMC on, NMI, the esxDOS browser, `LOAD "TEST.BAS"`,
-  `SAVE "OUT.BAS"`, the read-only row).
+  `SAVE "OUT.BAS"`, the read-only row) and the IDE 1 and write rows.
 
 ## Findings for a future script
 
