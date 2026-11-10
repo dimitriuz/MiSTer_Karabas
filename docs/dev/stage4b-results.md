@@ -45,20 +45,26 @@ What was ruled out:
 | the tape being mounted | tape-only MGL | hangs |
 | the mounts at all | a core loaded with no `<file>`, four boots | two show the menu (`boot-no-image.png`), two stop on the Drive line (`boot-no-image-hang.png`) |
 | the SD emulation's sector stream (CMD18 / multi-sector reads) | `tb_sd_spi`'s new `read_multiple` case: sectors 4 and 5 in one CMD18 stream, the written sector 2 read back afterwards | passes, so the card and the HPS-side byte transport are sound when clocked like the bench clocks them |
-| the machine's own SPI cadence | a CMD17 clocked the way `zc_spi` clocks it (SCK idles low, so every byte's first edge is a rising one) | **fails**: the card's 512 data bytes come back wrong (`0x00, 0x83, 0x05, 0x88, 0x0a, ...` where the image holds `0x5c, 0x61, 0x66, 0x6b, 0x70, ...`), because `sys/sd_card.sv` drives MISO only on falling SCK edges while `zc_spi` idles SCK low and so gives the card no falling edge before a byte's first sample |
+| the machine's own SPI cadence | a scratch variant of `spi_bit` that samples at the SCK falling edge, as `zc_spi` does (SCK idles low, so every byte starts on a rising edge) | **fails**: the card's 512 data bytes come back wrong (`0x00, 0x83, 0x05, 0x88, 0x0a, ...` where the image holds `0x5c, 0x61, 0x66, 0x6b, 0x70, ...`), because `sys/sd_card.sv` drives MISO only on falling SCK edges while `zc_spi` idles SCK low and so gives the card no falling edge before a byte's first sample |
 
-The two failure modes share a cause: the machine's SCK comes from
-`clk_bus` (28.125 MHz) while `sys/sd_card.sv` runs its whole SPI state
-machine on `clk_spi`, which this top feeds with `clk_sys` (50 MHz) - the
-module's own comment asks for at least 2 clocks per SCK phase and 3.5 is
-thin once the two clocks are asynchronous, because `mosi` and `sck` can
-be sampled up to one `clk_sys` clock late and the late sample can already
-be the next bit. That would misalign the card's bit counter once per
-power-up depending on the phase the two clocks start in, which is exactly
-the coin flip seen. `clk_spi` is a separate port for this reason
-(the buffer RAM's second port is clocked by it), so the candidate fix is
-to clock the card from a much faster free-running clock (`clk_vid`,
-112.5 MHz, 16 clocks per SCK phase) instead of `clk_sys`.
+The two failure modes share a cause, and it is a race on the SCK falling
+edge. `zc_spi` (upstream) shifts its receive byte in on the clk_bus edge
+at which SCK falls, and `sys/sd_card.sv` drives MISO on that same falling
+edge from `clk_spi`. Both work on the same edge, so the machine's sample
+either takes the bit the card drove at the *previous* fall (correct) or
+the bit it drives at this one (one bit early), depending on which edge
+arrives first - and since `clk_spi` here is `clk_sys` (50 MHz) while SCK
+comes from the machine's 28.125 MHz clock, the outcome can differ from
+one power-up to the next. The card's own header asks for at least two
+`clk_spi` clocks per SCK phase for this reason; the ratio alone does not
+remove the collision, which is why the fix has to be in the glue: sample
+the card's MISO on the SCK *other* edge (the rise, half a phase before
+the machine's sample) so the bit is settled when the machine takes it.
+That also explains why `tb_sd_spi`'s committed bit-banger never sees it -
+it takes `miso` just before `sck` falls, one `clk_sys` ahead of the card's
+drive, so it always reads the settled bit - and
+why the fault looks like a coin flip at power-up rather than a hard
+failure.
 
 The last row is the concrete lead for the next session: the machine's
 `zc_spi` (upstream, unmodified) and MiSTer's `sd_card` disagree about the
