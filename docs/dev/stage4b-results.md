@@ -107,15 +107,18 @@ that replays the same commands.
 Reachable now, and partly walked on build 54:
 
 - the IDE row `s4b-hdf0` reaches 128 BASIC and the tape loader
-  (`ir8-00-loader.png`: the 128 ROM's `Load ""` screen, the tape still
-  paused), but the OSD could not be opened afterwards to fire
-  `Tape play/pause`: `Home` and `F12` stopped opening it, and after
-  `cold_reboot` the board did not come back on the network. The OSD is in
-  a state a core reload does not clear - the run before had pressed
-  `Enter` on the `IDE 0` file row, which opens a file browser - so a
-  board script must open the OSD only to fire a trigger and must never
-  press `Enter` on a file row.
-- The OSD's Tapecursor map on this core page, from `Video` (0): 1
+  (`ide-loader-paused.png`: the 128 ROM's `Load """` screen, the tape
+  still paused). Reaching the trigger row is solved: the gamepad's
+  Home/Mode button opens the OSD (a keyboard `Home`/`F12` stopped doing
+  it after the `cold_reboot`), and the highlighted row is verified by its
+  pixel band on the capture - 172 `Video`, 316 `IDE 0`, 332 `IDE 1`,
+  352 `Tape play/pause`. What is *not* solved is the last step: with the
+  bar confirmed on `Tape play/pause`, `Enter` leaves the loader idle, the
+  same symptom stage 4a blamed on the row aiming. Since the row is right
+  now, the tape's OSD trigger path (`status[31]` through the synchroniser
+  in `Karabas_Profi.sv` into `tape.sv`'s `ce`-sampled controls) is the
+  open suspect.
+- The OSD's row map on this core page, from `Video` (0): 1
   `MiSTer-pi`, 2 `ROM Bank`, 3 `Turbo`, 4 `PSG Mix`, 5 `Covox`,
   6 `Tape`, 7 `SD Card`, 8 `IDE 0`, 9 `IDE 1`, 10 `Tape play/pause`,
   11 `Tape previous block` (`osd-rows.png`; the stage 4a note that
