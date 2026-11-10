@@ -87,6 +87,12 @@ module mcu_emu #(
     // async to clk, synchronised below)
     input  wire         mem_ready,
 
+    // the MiSTer disk mounts have settled (clk domain): the machine must not
+    // probe the card or the IDE images while a mount is still landing, so
+    // the start is held until this is 1 (see Karabas_Profi.sv's settle
+    // counter). Not a memory condition: it only delays the start sequence.
+    input  wire         mounts_settled,
+
     // link to profi
     output wire         spi_cs_n,
     output wire         spi_sck,
@@ -159,7 +165,7 @@ reg waiting;   // a frame went out, its rx_valid has not come back
 reg [1:0] mr_sync;
 always @(posedge clk)
     mr_sync <= reset ? 2'b00 : {mr_sync[0], mem_ready};
-wire mr_ok = mr_sync[1];
+wire mr_ok = mr_sync[1] & mounts_settled;
 
 // ---------------- boot.rom stream ----------------
 

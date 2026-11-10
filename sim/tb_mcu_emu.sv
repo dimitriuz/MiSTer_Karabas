@@ -64,6 +64,7 @@ module tb_mcu_emu;
    reg  [55:0]  kb_report      = 56'd0;
    reg          kb_changed     = 1'b0;
    reg          mem_ready      = 1'b1;   // the machine's SDRAM ready
+   reg          mounts_settled = 1'b1;   // the disk mounts have settled
    // the other MCU inputs, fixed: BCD 23:59:58 31.12.25 weekday 3, no
    // mouse reports, released joysticks. RTC_CLKS is far beyond this run,
    // so the run loop's periodic refresh never adds frames.
@@ -97,6 +98,7 @@ module tb_mcu_emu;
       .rtc (rtc), .ps2_mouse (ps2_mouse), .ps2_mouse_ext (ps2_mouse_ext),
       .joy0 (joy0), .joy1 (joy1),
       .mem_ready (mem_ready),
+      .mounts_settled (mounts_settled),
       .spi_cs_n (spi_cs_n), .spi_sck (spi_sck), .spi_mosi (spi_mosi),
       .spi_miso (spi_miso),
       .last_reply (last_reply), .reply_valid (reply_valid)
@@ -188,7 +190,7 @@ module tb_mcu_emu;
       .kb_report (56'd0), .kb_changed (1'b0),
       .rtc (rtc), .ps2_mouse (ps2_mouse), .ps2_mouse_ext (ps2_mouse_ext),
       .joy0 (joy0), .joy1 (joy1),
-      .mem_ready (1'b1),
+      .mem_ready (1'b1), .mounts_settled (1'b1),
       .spi_cs_n (cs2), .spi_sck (sck2), .spi_mosi (mosi2),
       .spi_miso (miso2),
       .last_reply (rep2_last), .reply_valid (rep2_vld)
@@ -525,6 +527,17 @@ module tb_mcu_emu;
          `FAIL("ioctl_wait is not held while mem_ready is 0")
       if (BUSY !== 1'b1) `FAIL("BUSY dropped with mem_ready 0")
       mem_ready = 1'b1;
+
+      // mounts_settle: the same hold from the clk_sys side. A mount that
+      // lands while the ROM probes the drives never completes the probe on
+      // the board, so the start waits for the mounts (Karabas_Profi.sv).
+      mounts_settled = 1'b0;
+      #1000000;
+      if (nfrm != 0 || cs_ever_low != 0)
+         `FAIL("a frame went out before the disk mounts settled")
+      if (ioctl_wait !== 1'b1)
+         `FAIL("ioctl_wait is not held before the disk mounts settle")
+      mounts_settled = 1'b1;
 
       // the full download, two status changes while streaming
       ioctl_download = 1'b1;

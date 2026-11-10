@@ -145,6 +145,25 @@ wire   [7:0] sd_buff_dout;
 wire   [7:0] sd_buff_din [4];
 wire         sd_buff_wr;
 
+// Mount settle. Main mounts an MGL's files some time after the core starts,
+// and a mount resets the card's queued transfer (sys/sd_card.sv clears its
+// sector pointers) and img_src's mount registers. The machine's ROM probes
+// both drives within its first few hundred milliseconds; a probe that is in
+// flight when a mount lands never finishes, and the machine stops on the
+// loader screen with the Drive line drawn (seen on the board with build 49;
+// with no image mounted the same MGL booted, which is what made it look
+// intermittent). So the machine's start is held for 1.34 s after the last
+// mount pulse: mcu_emu does not begin the boot.rom stream until then, and
+// the ROM probes a settled card and a settled image. The counter starts at
+// zero, so a core loaded without any mounted file boots without the wait.
+reg [25:0] settle;
+always @(posedge clk_sys) begin
+	if (por_reset)                      settle <= 26'd0;
+	else if (|img_mounted)              settle <= 26'h3FFFFFF;
+	else if (settle != 26'd0)           settle <= settle - 26'd1;
+end
+wire mounts_settled = (settle == 26'd0);
+
 assign sd_blk_cnt[0] = 6'd0;
 assign sd_blk_cnt[1] = 6'd0;
 assign sd_blk_cnt[2] = 6'd0;
@@ -245,6 +264,7 @@ mcu_emu u_mcu (
 	.joy1(joystick_1),
 
 	.mem_ready(mem_ready),
+	.mounts_settled(mounts_settled),
 
 	.spi_cs_n(mcu_cs_n),
 	.spi_sck(mcu_sck),
