@@ -270,6 +270,15 @@ Findings from this run, all in the driver rather than the core:
 5. **A key is dropped now and then** (one `A` landed, the next `D` was lost
    twice), so `type_key` retries six times with a growing gap; arrow keys are
    always gamepad presses, never keyboard repeats.
+6. **The OSD stops opening after ~40 minutes of scripted input.** In the last
+   run of the day the loader was reached, but `Home` (gamepad) opened nothing
+   and a keyboard `F12` opened nothing either: the 10 `Down` presses and the
+   `Enter` went to the machine instead, which ended on the ROM's `Calculator`
+   (`1`, then `1`, `1` border colours where the tape should have started,
+   paused, resumed). The first fires after a cold reboot work every time, so
+   this is the documented input wedge, not the walk. Batch the board work:
+   reboot, run the checks, reboot again - and never script a second walk on
+   the assumption that an unverified first one took.
 
 Gates on this build, re-run the same day: `python3 -m unittest discover -s
 tools/tests` → `OK`; `tools/sim.sh sim/run_all.sh` → `run_all: 19 passed,
