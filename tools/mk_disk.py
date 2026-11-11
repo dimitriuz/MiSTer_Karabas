@@ -252,12 +252,11 @@ def fat_read(path, name):
 def trd(path, tracks=80, files=None):
     """write a TR-DOS image; `files` defaults to the auto-run boot program
 
-    The catalog is track 0 side 0 sectors 1-8, the ID sector sector 9,
-    and file data starts at track 1 side 0 sector 1, allocated
-    sequentially (track-major, side-minor, sectors 1..16). A file longer
-    than one side spans into side 1; entries carry only the start track
-    and sector, and the reader resolves the side with the allocation
-    cursor (`_trd_entries`).
+    TR-DOS numbering is flat: logical track = cylinder * 2 + side, file
+    offset = (logical track * 16 + 0-based sector) * 256. Logical track
+    0 holds the catalog in (1-based) sectors 1-8 and the ID sector 9;
+    file data starts at logical track 1, sector 0 (file offset 16 *
+    256), allocated sector by sector across track bounds.
     """
     path = Path(path)
     if files is None:
@@ -274,20 +273,20 @@ def trd(path, tracks=80, files=None):
         entry = bytearray(16)
         entry[0:8] = name.encode("ascii").ljust(8)[:8]
         entry[8] = ord(ftype)
-        entry[9] = 1 + alloc // 32
-        entry[10] = alloc % 16 + 1
+        entry[9] = 1 + alloc // 16
+        entry[10] = alloc % 16
         struct.pack_into("<H", entry, 11, len(payload))
         struct.pack_into("<H", entry, 13, sectors)
         image[i * 16:(i + 1) * 16] = entry
         for k in range(sectors):
-            off = (32 + alloc + k) * TRD_SEC
+            off = (16 + alloc + k) * TRD_SEC
             image[off:off + TRD_SEC] = \
                 payload[k * TRD_SEC:(k + 1) * TRD_SEC].ljust(TRD_SEC, b"\0")
         alloc += sectors
 
     idsec = 8 * TRD_SEC
-    image[idsec + 0xE1] = 0
-    image[idsec + 0xE2] = 1
+    image[idsec + 0xE1] = alloc % 16
+    image[idsec + 0xE2] = 1 + alloc // 16
     image[idsec + 0xE3] = 0x16
     image[idsec + 0xE4] = len(files)
     struct.pack_into("<H", image, idsec + 0xE5, tracks * 2 * 16 - 16)
@@ -300,21 +299,19 @@ def trd(path, tracks=80, files=None):
 def _trd_entries(image):
     """catalog entries in order: name, type, start, length, sectors
 
-    Entries record no side, so an entry whose side-0 position lies before
-    the running allocation cursor starts on side 1 instead."""
-    cursor = 32
+    The start is flat: logical track * 16 + the 0-based sector byte. A
+    zero first byte ends the catalog, 0x01 is TR-DOS's deleted-entry
+    marker."""
     for i in range(128):
         e = image[i * 16:(i + 1) * 16]
-        if e[0] == 0x00 or e[15] == 0xFF:
+        if e[0] == 0x00:
+            return
+        if e[0] == 0x01:
             continue
-        start = e[9] * 32 + e[10] - 1
-        if start < cursor:
-            start += 16
         size = struct.unpack_from("<H", e, 11)[0]
         sectors = struct.unpack_from("<H", e, 13)[0]
         yield (e[0:8].decode("ascii", "replace").rstrip(), chr(e[8]),
-               start, size, sectors)
-        cursor = start + (sectors or -(-size // TRD_SEC))
+               e[9] * 16 + e[10], size, sectors)
 
 
 def trd_ls(path):
@@ -354,16 +351,27 @@ def fdi(path, tracks=80, sides=2, layout="trd"):
     """write an FDI image; its sector records really carry H = side
 
     Header: "FDI", version 0, u16 cyl, u16 sides, off_text, off_data,
-    size_ext 0 (all LE); the track table at 0x0E holds, per (track,
-    side), a u32 DataOffset relative to off_data, a u16 reserved 0 and
-    a u8 sector count. Per track side come the sector data and then
-    7-byte records C,H,R,N,flags,u16 offset (sector size 128 << N).
-    `trd`: 16 x 256. `wide`: cylinder 0 is 8 x 512 (N = 2) plus one
-    flags 0x40 (no data) sector, the rest 16 x 256."""
+    size_ext 0 (all LE). From 0x0E the track table runs, cylinder-major
+    and side-minor: each 7-byte header (u32 DataOffset relative to
+    off_data, u16 reserved 0, u8 sector count) is immediately followed
+    by its 7-byte sector records C,H,R,N,flags,u16 offset (relative to
+    the track's data; sector size 128 << N). The data area from
+    off_data holds only the payloads, track after track; a flags 0x40
+    ("no data") sector has none. `trd`: 16 x 256. `wide`: cylinder 0
+    is 8 x 512 plus one 0x40 sector, the rest 16 x 256."""
     path = Path(path)
     if layout not in ("trd", "wide"):
         raise ValueError(f"mk_disk: unknown FDI layout {layout!r}")
-    table_size = tracks * sides * 7
+    blocks = []
+    for t in range(tracks):
+        for side in range(sides):
+            if layout == "wide" and t == 0:
+                specs = [(t, side, r, 2, 0) for r in range(1, 9)]
+                specs.append((t, side, 9, 1, 0x40))
+            else:
+                specs = [(t, side, r, 1, 0) for r in range(1, 17)]
+            blocks.append(specs)
+    table_size = sum(7 + 7 * len(specs) for specs in blocks)
     off_data = 0x0E + table_size  # size_ext = 0, and no text follows
     if off_data > 0xFFFF:
         raise ValueError("mk_disk: too many tracks for the FDI header")
@@ -374,28 +382,21 @@ def fdi(path, tracks=80, sides=2, layout="trd"):
     struct.pack_into("<H", header, 8, off_data)
     struct.pack_into("<H", header, 0x0A, off_data)
     table = bytearray()
-    blocks = []
+    data = bytearray()
     pos = 0
-    for t in range(tracks):
-        for side in range(sides):
-            if layout == "wide" and t == 0:
-                specs = [(t, side, r, 2, 0) for r in range(1, 9)]
-                specs.append((t, side, 9, 1, 0x40))
-            else:
-                specs = [(t, side, r, 1, 0) for r in range(1, 17)]
-            data = bytearray()
-            descs = bytearray()
-            for (c, h, r, n, flags) in specs:
-                descs += struct.pack("<5BH", c, h, r, n, flags, len(data))
-                if flags & 0x40:
-                    continue
-                base = off_data + pos + len(data)
-                data += bytes(((base + j) * 7 + 3) & 0xFF
-                              for j in range(128 << n))
-            table += struct.pack("<IHB", pos, 0, len(specs))
-            blocks.append(bytes(data) + bytes(descs))
-            pos += len(data) + len(descs)
-    _write(path, bytearray(header) + table + b"".join(blocks))
+    for specs in blocks:
+        table += struct.pack("<IHB", pos, 0, len(specs))
+        track_data = bytearray()
+        for (c, h, r, n, flags) in specs:
+            table += struct.pack("<5BH", c, h, r, n, flags, len(track_data))
+            if flags & 0x40:
+                continue
+            base = off_data + pos + len(track_data)
+            track_data += bytes(((base + j) * 7 + 3) & 0xFF
+                                for j in range(128 << n))
+        data += track_data
+        pos += len(track_data)
+    _write(path, bytearray(header) + table + bytes(data))
 
 
 def _ccitt(data):
@@ -425,6 +426,10 @@ def reftrack(path, track, side, sectors, cpm=False):
     image = bytearray()
     sync = []
     for (c, _, r, n, data) in sectors:
+        if len(data) != 128 << n:
+            raise ValueError(f"mk_disk: reftrack: sector R{r} holds "
+                             f"{len(data)} bytes, N = {n} means "
+                             f"{128 << n}")
         head = bytearray(b"\x4e" * 10 + b"\x00" * 12 + b"\xa1\xa1\xa1\xfe")
         head += bytes([c, side if cpm else 0, r, n])
         crc = _ccitt(bytes(head[-8:]))

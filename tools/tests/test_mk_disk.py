@@ -177,34 +177,42 @@ class TrdTest(unittest.TestCase):
             80 * 32 - 16)
 
     def test_trd_catalog(self):
-        p1 = bytes((i * 5 + 1) & 0xFF for i in range(4100))
+        p1 = bytes((i * 5 + 1) & 0xFF for i in range(20 * 256))
         p2 = b"second file"
         mk_disk.trd(self.img, tracks=80,
                     files=[("boot", "B", p1), ("prog", "C", p2)])
         self.assertEqual(mk_disk.trd_ls(self.img),
-                         [("boot", "B", 4100), ("prog", "C", len(p2))])
+                         [("boot", "B", len(p1)), ("prog", "C", len(p2))])
         self.assertEqual(mk_disk.trd_read(self.img, "boot"), p1)
         self.assertEqual(mk_disk.trd_read(self.img, "prog"), p2)
         img = self.img.read_bytes()
-        # boot is 17 sectors: (1,0,1..16) then (1,1,1); prog continues at
-        # (1,1,2) — a file longer than one track spans into side 1.
-        self.assertEqual(trd_sector(img, 1, 1, 1), p1[16 * 256:] + bytes(252))
-        self.assertEqual(trd_sector(img, 1, 1, 2)[:len(p2)], p2)
+        # TR-DOS numbering is flat: logical track = cylinder * 2 + side.
+        # boot starts at logical track 1 (file offset 16 * 256) and its
+        # 20 sectors cross into logical track 2 (offset 32 * 256); prog
+        # follows contiguously at logical track 2, sector 4.
+        self.assertEqual(img[16 * 256:16 * 256 + 4096], p1[:4096])
+        self.assertEqual(img[32 * 256:36 * 256], p1[4096:])
+        self.assertEqual(img[36 * 256:36 * 256 + len(p2)], p2)
         e0, e1 = img[0:16], img[16:32]
         self.assertEqual(e0[0:8], b"boot    ")
         self.assertEqual(e0[8], ord("B"))
-        self.assertEqual(e0[9], 1)
-        self.assertEqual(e0[10], 1)
-        self.assertEqual(struct.unpack_from("<H", e0, 11)[0], 4100)
-        self.assertEqual(struct.unpack_from("<H", e0, 13)[0], 17)
+        self.assertEqual((e0[9], e0[10]), (1, 0))
+        self.assertEqual(struct.unpack_from("<H", e0, 11)[0], len(p1))
+        self.assertEqual(struct.unpack_from("<H", e0, 13)[0], 20)
         self.assertEqual(e0[15], 0)
         self.assertEqual(e1[0:8], b"prog    ")
         self.assertEqual(e1[8], ord("C"))
-        self.assertEqual(e1[9], 1)
-        self.assertEqual(e1[10], 2)
+        self.assertEqual((e1[9], e1[10]), (2, 4))
         self.assertEqual(struct.unpack_from("<H", e1, 11)[0], len(p2))
         self.assertEqual(struct.unpack_from("<H", e1, 13)[0], 1)
         self.assertEqual(e1[15], 0)
+        idsec = trd_sector(img, 0, 0, 9)
+        used = 20 + 1
+        self.assertEqual(idsec[0xE1], used % 16)
+        self.assertEqual(idsec[0xE2], 1 + used // 16)
+        self.assertEqual(idsec[0xE4], 2)
+        self.assertEqual(struct.unpack_from("<H", idsec, 0xE5)[0],
+                         80 * 32 - 16)
 
     def test_boot_payload(self):
         mk_disk.trd(self.img)
@@ -216,6 +224,29 @@ class TrdTest(unittest.TestCase):
         mk_disk.trd(self.img, tracks=40, files=[])
         with self.assertRaises(KeyError):
             mk_disk.trd_read(self.img, "nope")
+
+    def test_trd_deleted_entry(self):
+        mk_disk.trd(self.img, tracks=40,
+                    files=[("a", "B", b"x"), ("b", "B", b"yy")])
+        img = bytearray(self.img.read_bytes())
+        img[0] = 0x01  # TR-DOS deleted-entry marker, entry 0 ("a")
+        self.img.write_bytes(img)
+        self.assertEqual([name for name, _, _ in mk_disk.trd_ls(self.img)],
+                         ["b"])
+        self.assertEqual(mk_disk.trd_read(self.img, "b"), b"yy")
+        img[0] = 0x00  # a zero first byte ends the catalog
+        self.img.write_bytes(img)
+        self.assertEqual(mk_disk.trd_ls(self.img), [])
+
+    def test_cli_boot_flag(self):
+        plain = Path(self.tmp.name) / "plain.trd"
+        mk_disk.main(["trd", str(plain)])
+        self.assertEqual(mk_disk.trd_ls(plain), [])
+        with self.assertRaises(KeyError):
+            mk_disk.trd_read(plain, "boot")
+        mk_disk.main(["trd", str(plain), "--boot"])
+        self.assertEqual([name for name, _, _ in mk_disk.trd_ls(plain)],
+                         ["boot"])
 
 
 class CpmTest(unittest.TestCase):
@@ -247,46 +278,54 @@ class FdiTest(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<H", img, 6)[0], 2)
         size_ext = struct.unpack_from("<H", img, 0x0C)[0]
         self.assertEqual(size_ext, 0)
-        table_size = 4 * 2 * 7
+        table_size = 4 * 2 * (7 + 16 * 7)
         off_text = struct.unpack_from("<H", img, 8)[0]
         off_data = struct.unpack_from("<H", img, 0x0A)[0]
         self.assertEqual(off_text, 0x0E + size_ext + table_size)
         self.assertEqual(off_data, off_text)
+        # the track table: each 7-byte header is followed immediately by
+        # its sector records, cylinder-major and side-minor
         dataoff, reserved, count = struct.unpack_from("<IHB", img, 0x0E)
         self.assertEqual((dataoff, reserved, count), (0, 0, 16))
-        # track 0 side 0: 16 x 256, N = 1, flags 0, H = side = 0
-        base = off_data
-        self.assertEqual(struct.unpack_from("<5BH", img, base + 4096),
-                         (0, 0, 1, 1, 0, 0))
-        self.assertEqual(struct.unpack_from("<5BH", img, base + 4096 + 7 * 15),
-                         (0, 0, 16, 1, 0, 15 * 256))
-        # track 0 side 1: the table and the descriptors carry H = 1
-        dataoff1, _, count1 = struct.unpack_from("<IHB", img, 0x0E + 7)
-        self.assertEqual((dataoff1, count1), (4096 + 16 * 7, 16))
-        self.assertEqual(
-            struct.unpack_from("<5BH", img,
-                               off_data + dataoff1 + 4096 + 7 * 15),
-            (0, 1, 16, 1, 0, 15 * 256))
-        # track 1 side 0 starts after two full blocks
-        dataoff2, _, _ = struct.unpack_from("<IHB", img, 0x0E + 14)
-        self.assertEqual(dataoff2, 2 * (4096 + 16 * 7))
+        for r in range(1, 17):
+            self.assertEqual(
+                struct.unpack_from("<5BH", img, 0x0E + 7 + 7 * (r - 1)),
+                (0, 0, r, 1, 0, (r - 1) * 256))
+        # track 0 side 1: the header sits right after the 16 records
+        h1 = 0x0E + 7 + 16 * 7
+        dataoff1, _, count1 = struct.unpack_from("<IHB", img, h1)
+        self.assertEqual((dataoff1, count1), (4096, 16))
+        self.assertEqual(struct.unpack_from("<5BH", img, h1 + 7 + 7 * 15),
+                         (0, 1, 16, 1, 0, 15 * 256))
+        # track 1 side 0: after two full table entries; its data starts
+        # after two payload blocks (the data area holds payloads only)
+        h2 = 0x0E + 2 * (7 + 16 * 7)
+        dataoff2, _, _ = struct.unpack_from("<IHB", img, h2)
+        self.assertEqual(dataoff2, 2 * 4096)
+        self.assertEqual(img[off_data], (off_data * 7 + 3) & 0xFF)
+        self.assertEqual(img[off_data + 1], ((off_data + 1) * 7 + 3) & 0xFF)
+        self.assertEqual(img[off_data + 8 * 4096 - 1],
+                         ((off_data + 8 * 4096 - 1) * 7 + 3) & 0xFF)
         mk_disk.fdi(self.img, tracks=2, layout="wide")
         img = self.img.read_bytes()
-        off_data = struct.unpack_from("<H", img, 0x0A)[0]
         dataoff, _, count = struct.unpack_from("<IHB", img, 0x0E)
         self.assertEqual((dataoff, count), (0, 9))
-        descs = [struct.unpack_from("<5BH", img, off_data + 4096 + 7 * i)
+        descs = [struct.unpack_from("<5BH", img, 0x0E + 7 + 7 * i)
                  for i in range(9)]
         self.assertEqual([d[3] for d in descs[:8]], [2] * 8)
         self.assertEqual([d[5] for d in descs[:8]], [i * 512 for i in range(8)])
         self.assertEqual(descs[8][4] & 0x40, 0x40)
-        _, _, count2 = struct.unpack_from("<IHB", img, 0x0E + 2 * 7)
-        self.assertEqual(count2, 16)
-        dataoff2 = struct.unpack_from("<IHB", img, 0x0E + 2 * 7)[0]
-        descs2 = [struct.unpack_from("<5BH", img,
-                                     off_data + dataoff2 + 4096 + 7 * i)
-                 for i in range(16)]
+        # track 1 side 0: its header follows the 9 wide records of both
+        # cylinder-0 sides, and its payload starts after 2 * 4096 bytes
+        hw = 0x0E + 2 * (7 + 9 * 7)
+        dataoff2, _, count2 = struct.unpack_from("<IHB", img, hw)
+        self.assertEqual((dataoff2, count2), (2 * 4096, 16))
+        descs2 = [struct.unpack_from("<5BH", img, hw + 7 + 7 * i)
+                  for i in range(16)]
         self.assertEqual([d[3] for d in descs2], [1] * 16)
+        off_data = struct.unpack_from("<H", img, 0x0A)[0]
+        self.assertEqual(img[off_data + 4096],
+                         ((off_data + 4096) * 7 + 3) & 0xFF)
 
 
 class ReftrackTest(unittest.TestCase):
@@ -324,6 +363,11 @@ class ReftrackTest(unittest.TestCase):
         cpm, _ = parse_reftrack(Path(str(self.out) + "c"))
         self.assertEqual(cpm[27], 1)
         self.assertEqual(cpm[26], 3)
+
+    def test_reftrack_bad_sector(self):
+        with self.assertRaises(ValueError):
+            mk_disk.reftrack(self.out, track=0, side=0,
+                             sectors=[(0, 0, 1, 1, bytes(512))])
 
 
 if __name__ == "__main__":
