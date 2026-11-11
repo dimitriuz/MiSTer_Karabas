@@ -1,18 +1,24 @@
-"""The verified board recipe: boot, reach 128 BASIC, LOAD "", fire the tape.
+"""The verified board recipe: boot, reach the loader, fire the tape.
 
 This is the sequence that works, written down so it does not have to be
 re-derived (2026-11-09/10 runs, `docs/dev/stage4a-results.md`,
 `docs/dev/stage4b-results.md`; driving notes in AGENTS.md):
 
-  1. `boot`  - load an MGL, wait for a picture (the Karabas GO menu).
-  2. `128menu` - gamepad 6 x `down` + keyboard `Enter` = `Run Sinclair 128K`;
-               the 128 ROM's menu appears with `Tape Loader` highlighted.
-  3. `loader` - `Enter`: the loader takes the first file on the tape, so a
-               tape mounted through an MGL needs **no typing at all**.
-               (`basic` steps one down into `128 BASIC` instead, and `load`
-               types `LOAD ""` there for the case where that is wanted.)
-  4. `tape`  - OSD via the gamepad `home`, walk to `Tape play/pause`
-               (10 x `Down` from `Video` on builds 54+), `Enter` fires it.
+  1. `boot`  - load an MGL, wait 18 s for the core, then for the GO main
+               menu (its teal list box). With a disk image mounted the loader
+               probes the CF first and the menu can take 40 s.
+  2. `128menu` - settle 5 s, gamepad 6 x `down`, keyboard `Enter` =
+               `Run Sinclair 128K`. **With a tape mounted the ROM goes
+               straight to `Tape Loader`; without one it shows the 128 menu.**
+  3. `loader` - the loader screen takes the tape's first file, so a tape
+               mounted through an MGL needs **no typing at all**. (`basic`
+               steps one down into `128 BASIC` instead, and `load` types
+               `LOAD ""` there for the case where that is wanted.)
+  4. `fire`  - `Tape play/pause` blind (Home, 10 x gamepad Down, keyboard
+               Enter, Home) and verified by the machine's screen changing:
+               the loader prints `Program: <name>`. `tape` is the same walk
+               with the OSD bar read off the capture card, which is only
+               possible while the card has an HDMI signal.
 
 Traps, all measured on the board:
 
@@ -28,14 +34,15 @@ Traps, all measured on the board:
 - Open the OSD with the gamepad `home` button (`BTN_MODE`), never `KEY_HOME`
   or `KEY_F12` (they stopped working after a `cold_reboot`).
 
-    python3 tools/board/zx.py all    <mgl>      # boot, loader, fire the tape
+    python3 tools/board/zx.py all    <mgl>      # boot, 128menu, loader, fire
     python3 tools/board/zx.py boot   /media/fat/games/Karabas_Profi/x.mgl
-    python3 tools/board/zx.py 128menu | loader | tape | basic | load
+    python3 tools/board/zx.py 128menu | loader | fire | tape | basic | load
 """
 import subprocess
 import sys
 import time
 
+import mister
 from mister import Capture, Remote, read_bar, text_cells
 
 SHOTS = "/tmp"
@@ -104,31 +111,65 @@ def type_text(r, text):
         print(f"  {name}: cells={line:.1f}")
 
 
-def boot(r, mgl):
+def boot(r, mgl, menu=True):
+    """Load an MGL and wait for the picture; with `menu`, for the main menu."""
     subprocess.run(
         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
          f"root@{r.host}", f'echo "load_core {mgl}" > /dev/MiSTer_cmd'],
         check=True)
-    time.sleep(1.0)
-    return r.wait_picture(25.0, shot("boot"))
+    # The old picture stays on the API until the new core drives video, so a
+    # "wait for a picture" right after load_core returns the *previous*
+    # machine's screen. Give the core its 17-20 s first.
+    time.sleep(18.0)
+    if menu and not r.wait_menu(150.0, shot("menu")):
+        raise RuntimeError("no main menu after 150 s")
+    return r.screen(shot("boot"))
 
 
-def to_128_menu(r):
-    """GO menu -> `Run Sinclair 128K` -> the 128 ROM's own menu."""
+def to_128_menu(r, settle=5.0):
+    """GO menu -> `Run Sinclair 128K` -> the 128 ROM's own menu.
+
+    The GO menu is drawn while the loader finishes probing the drives, and a
+    `Down` sent into that window can land on a different row (board,
+    2026-11-11: 6 x Down reached `Run TR-DOS 128K`, i.e. the machine booted
+    TR-DOS and then ran into RAM). Settle before the first press, and let the
+    caller retry the whole walk when the 128 menu does not appear.
+
+    The ROM shows its copyright for a couple of seconds first; wait for the
+    menu itself, because a key sent to the copyright screen is lost.
+    """
+    time.sleep(settle)
     pad_enter(r, MENU_TO_128)
-    time.sleep(3.0)
-    return r.screen(shot("rom"))
+    # With a tape mounted the ROM goes straight to `Tape Loader`; without one
+    # it shows its menu (whose first item is `Tape Loader`).
+    from PIL import Image
+    t0 = time.time()
+    while time.time() - t0 < 25.0:
+        try:
+            r.screen(shot("rom"))
+            im = Image.open(shot("rom")).convert("RGB")
+        except Exception:
+            continue
+        if mister.loader_visible(im) or mister.rom_menu_visible(im):
+            return shot("rom")
+        time.sleep(0.5)
+    raise RuntimeError("neither the loader nor the 128 ROM menu appeared")
 
 
 def to_loader(r):
-    """The 128 menu's first item is `Tape Loader`: Enter starts it, no typing.
+    """Reach the `Tape Loader` screen, whichever way the ROM got there.
 
-    The loader screen (`Tape Loader` / `To cancel - press BREAK twice`) takes
-    the first file on the tape, so a tape mounted through an MGL needs no
-    `LOAD ""` at all.
+    A mounted tape makes `Run Sinclair 128K` enter the loader directly; a
+    machine without one shows the 128 menu instead, where the first item is
+    `Tape Loader`. The loader takes the tape's first file, so no `LOAD ""`
+    and no typing are needed at all.
     """
-    r.press("KEY_ENTER")
-    time.sleep(2.5)
+    from PIL import Image
+    im = Image.open(shot("rom")).convert("RGB")
+    if not mister.loader_visible(im):
+        r.press("KEY_ENTER")
+        if not r.wait_loader(20.0, shot("loader")):
+            raise RuntimeError("the Tape Loader screen did not appear")
     return r.screen(shot("loader"))
 
 
@@ -185,14 +226,58 @@ def tape(r, cap):
     return r.screen(shot("play"))
 
 
+def changed(a, b, frac=0.04):
+    """True when two screenshots differ in more than `frac` of their pixels."""
+    from PIL import Image, ImageChops
+    ia, ib = Image.open(a).convert("L"), Image.open(b).convert("L")
+    diff = ImageChops.difference(ia, ib).point(lambda v: 255 if v > 40 else 0)
+    return sum(diff.histogram()[255:]) > frac * ia.width * ia.height
+
+
+def fire_tape(r, tries=3):
+    """Fire `Tape play/pause` blind, and prove it by the machine's screen.
+
+    With no HDMI signal on the capture card the OSD bar cannot be read, so the
+    walk is the documented one (Home, `TAPE_ROW` x gamepad Down, keyboard
+    Enter, Home) and the *effect* is the check: the loader screen changes when
+    the tape starts. A dropped press costs a whole walk, hence `tries`.
+    """
+    before = r.screen(shot("before"))
+    for attempt in range(1, tries + 1):
+        r.pad("home")
+        time.sleep(2.0)
+        for _ in range(TAPE_ROW):
+            r.pad("down")
+            time.sleep(1.8)
+        r.press("KEY_ENTER")
+        time.sleep(1.5)
+        r.pad("home")
+        time.sleep(4.0)
+        after = r.screen(shot(f"after{attempt}"))
+        if changed(before, after):
+            return after
+        before = after
+    raise RuntimeError(f"the tape did not start after {tries} walks")
+
+
 def main(argv):
     what = argv[1] if len(argv) > 1 else "all"
     r = Remote()
     cap = Capture()
     try:
         r.release_all()
-        if what in ("boot", "all"):
+        if what == "boot":
             print("boot:", boot(r, argv[2]))
+        if what == "all":
+            for attempt in range(1, 4):
+                print("boot:", boot(r, argv[2]))
+                try:
+                    print("128menu:", to_128_menu(r))
+                    break
+                except RuntimeError as exc:
+                    print(f"attempt {attempt}: {exc}")
+            else:
+                raise RuntimeError("the 128 ROM menu did not appear")
         if what in ("128menu", "loader", "tape", "all"):
             print("128menu:", to_128_menu(r))
         if what in ("loader", "tape", "all"):
@@ -201,8 +286,12 @@ def main(argv):
             print("basic:", to_basic(r), f"cells={cells(r):.1f}")
         if what == "load":
             print("load:", load(r))
-        if what in ("tape", "all"):
+        if what == "tape":                 # OSD verified through the capture
             print("tape:", tape(r, cap))
+        if what == "fire":                 # no capture: verified by effect
+            print("fire:", fire_tape(r))
+        if what == "all":
+            print("fire:", fire_tape(r))
     finally:
         r.release_all()
         r.close()

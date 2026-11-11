@@ -111,6 +111,60 @@ class Remote:
         urllib.request.urlretrieve(url, path)
         return path
 
+    def wait_menu(self, seconds=120.0, path="/tmp/board-menu.png"):
+        """Wait for the Karabas GO main menu, not just for any picture.
+
+        With a disk image mounted the GO loader first tries `karabas_boot.$c`
+        on the CF drive and sits on a light-green `Loading hobeta` box for
+        up to a minute before it falls back to the menu (board, 2026-11-11).
+        Pressing arrows at that box is lost, so wait for the menu's blue box.
+        """
+        from PIL import Image
+        t0 = time.time()
+        while time.time() - t0 < seconds:
+            try:
+                self.screen(path)
+                im = Image.open(path).convert("RGB")
+            except Exception:
+                time.sleep(1.0)
+                continue
+            if menu_visible(im):
+                return True
+            time.sleep(2.0)
+        return False
+
+    def wait_loader(self, seconds=30.0, path="/tmp/board-loader.png"):
+        """Wait for the 128 ROM's `Tape Loader` screen."""
+        from PIL import Image
+        t0 = time.time()
+        while time.time() - t0 < seconds:
+            try:
+                self.screen(path)
+                im = Image.open(path).convert("RGB")
+            except Exception:
+                time.sleep(0.5)
+                continue
+            if loader_visible(im):
+                return True
+            time.sleep(0.5)
+        return False
+
+    def wait_rom_menu(self, seconds=30.0, path="/tmp/board-rom.png"):
+        """Wait for the 128 ROM's menu after `Run Sinclair 128K`."""
+        from PIL import Image
+        t0 = time.time()
+        while time.time() - t0 < seconds:
+            try:
+                self.screen(path)
+                im = Image.open(path).convert("RGB")
+            except Exception:
+                time.sleep(0.5)
+                continue
+            if rom_menu_visible(im):
+                return True
+            time.sleep(0.5)
+        return False
+
     def wait_picture(self, seconds=25.0, path="/tmp/board-wait.png"):
         """Poll until the ZX picture is not all black (a core load blanks it)."""
         from PIL import Image
@@ -163,6 +217,77 @@ class Capture:
                 return path
             time.sleep(1.5)
         return path
+
+
+def loader_visible(im):
+    """The 128 ROM's `Tape Loader` screen: a black bar across the lower third.
+
+    With a tape mounted, `Run Sinclair 128K` goes *straight* into the loader
+    - there is no 128 ROM menu on the way (board, 2026-11-11), so this, not
+    the menu, is what to wait for.
+    """
+    w, h = im.size
+    px = im.load()
+    for y in range(int(h * 0.6), int(h * 0.8)):
+        dark = 0
+        for x in range(0, w, 4):
+            if max(px[x, y]) < 40:
+                dark += 1
+                if dark * 4 > w * 0.55:
+                    return True
+    return False
+
+
+def screen_clean(im):
+    """The ZX screen is drawn in at most the 16 ZX colours, on one paper.
+
+    A crashed machine shows uninitialised RAM: hundreds of colours in squares.
+    `rom_menu_visible` is true there too, so this is the check that tells a
+    real menu from a hung machine (board, 2026-11-11: a remembered GO menu
+    cursor sent 6 x Down to `Test&Tools Menu` and the machine ran into RAM).
+    """
+    from collections import Counter
+    w, h = im.size
+    px = im.load()
+    seen = Counter()
+    for y in range(int(h * 0.25), int(h * 0.75), 3):
+        for x in range(int(w * 0.2), int(w * 0.8), 3):
+            seen[px[x, y][:3]] += 1
+    total = sum(seen.values())
+    if not total:
+        return False
+    return seen.most_common(1)[0][1] / total >= 0.40
+
+
+def rom_menu_visible(im):
+    """The 128 ROM's own menu: its list fills the middle of the screen.
+
+    The ROM's copyright screen (`(c) 1982 Sinclair Research Ltd`) has one line
+    at the bottom and nothing else, and 128 BASIC has the editor's `K` at the
+    bottom left, so "dark pixels in the middle band" is the menu and nothing
+    else that comes before it.
+    """
+    w, h = im.size
+    px = im.load()
+    dark = 0
+    for y in range(int(h * 0.35), int(h * 0.75), 2):
+        for x in range(int(w * 0.15), int(w * 0.85), 2):
+            if max(px[x, y]) < 100:
+                dark += 1
+    return dark > 1500
+
+
+def menu_visible(im):
+    """The GO main menu's blue list box, as opposed to the loader's pale box."""
+    im = im.resize((im.width // 4, im.height // 4))
+    px = im.load()
+    blue = 0
+    for y in range(im.height):
+        for x in range(im.width):
+            r, g, b = px[x, y][:3]
+            if r < 40 and 90 <= g <= 130 and 120 <= b <= 170:
+                blue += 1          # the list box is (0,111,144) teal
+    return blue > 1200        # > ~19200 px at full size
 
 
 # --- OSD geometry (from the 2026-11-10 runs, see AGENTS.md) -----------
