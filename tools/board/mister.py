@@ -230,19 +230,20 @@ def loader_visible(im):
     """
     w, h = im.size
     px = im.load()
-    bar = None
+    top = bot = None
     for y in range(int(h * 0.6), int(h * 0.85)):
         dark = sum(1 for x in range(0, w, 4) if max(px[x, y]) < 40)
         if dark * 4 > w * 0.55:
-            bar = y if bar is None else bar
-    if bar is None:
+            top = y if top is None else top
+            bot = y
+    if top is None:
         return False
     under = 0
-    for y in range(bar + 15, min(h, bar + 60)):
+    for y in range(min(h, bot + 10), min(h, bot + 70)):
         for x in range(int(w * 0.17), int(w * 0.75), 4):
             if max(px[x, y]) < 100:
                 under += 1
-    return under > 200
+    return under > 60
 
 
 def screen_clean(im):

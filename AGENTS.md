@@ -91,9 +91,14 @@ thread after a while (menu still responds, the ZX stops seeing keys, only a rebo
 | — | `python3 tools/board/zx.py all <mgl>` | 1-4 in one run, ≈2 min |
 | — | `… basic`, `… load` | step one down into `128 BASIC`, type `LOAD ""` there, one verified key at a time |
 
-Typing, if it has to be done (`load`): `text_cells()` counts character cells on a screenshot
-and the key is pressed again until the line grows, and both shift keys are tried for `"` (PC
-`shift` = ZX SYMBOL SHIFT, so `shift+P` = `"`). Do not type blind and press `Enter`.
+The **loader path needs no typing** - that is the point of it. The typed path (`load`, the
+`LOAD ""` line in 128 BASIC) exists as a fallback and its key spelling is known: `L O A D
+SPACE`, then `shift+P` twice (PC `shift` = ZX SYMBOL SHIFT, so `shift+P` = `"`), then
+`Enter`. Its *verification* is not: `text_cells()` counts the widest dark run of the editor
+band, and on build 70 the count jumps with whatever else is on the screen, so a dropped key
+cannot be told from a measurement artefact (2026-11-11). Until the picture is measured
+properly (a fixed band over the editor's first line), read the typed line on a screenshot
+instead of trusting the counter.
 
 Why it is written down: the remote daemon **drops about one press in five and can deliver a
 press seconds late**, so every step holds keys 0.3 s (`Remote.press`, not `key`'s 45 ms `tap`)

@@ -140,8 +140,11 @@ def to_128_menu(r, settle=5.0):
     """
     time.sleep(settle)
     pad_enter(r, MENU_TO_128)
-    # With a tape mounted the ROM goes straight to `Tape Loader`; without one
-    # it shows its menu (whose first item is `Tape Loader`).
+    # Past the GO menu the ROM ends in one of four places - its copyright, its
+    # menu, `Tape Loader`, or `128 BASIC` - and which one depends on the tape
+    # and on whether a press was delivered twice. All of them are fine here;
+    # `start_tape` takes it from the screen it finds. Only "still on the GO
+    # menu" is a failure (the presses did not take).
     from PIL import Image
     t0 = time.time()
     while time.time() - t0 < 25.0:
@@ -150,10 +153,10 @@ def to_128_menu(r, settle=5.0):
             im = Image.open(shot("rom")).convert("RGB")
         except Exception:
             continue
-        if mister.loader_visible(im) or mister.rom_menu_visible(im):
+        if not mister.menu_visible(im):
             return shot("rom")
         time.sleep(0.5)
-    raise RuntimeError("neither the loader nor the 128 ROM menu appeared")
+    raise RuntimeError("still on the GO menu after Enter - presses lost")
 
 
 def to_loader(r):
@@ -273,39 +276,30 @@ def fire_tape(r, tries=2):
     return shot(f"after{tries}")
 
 
-def run_tape(r):
-    """Fire the tape; if nothing ran, take the typed path and fire again."""
-    shot_a = fire_tape(r)
-    r.screen(shot("check"))
-    from PIL import Image
-    im = Image.open(shot("check")).convert("RGB")
-    if mister.loader_visible(im) or not mister.rom_menu_visible(im):
-        return shot_a                  # the loader answered, or nothing to add
-    load(r)
-    time.sleep(2.0)
-    return fire_tape(r)
-
-
 def start_tape(r):
-    """Get the machine waiting for the tape, from wherever the ROM stopped.
+    """Get the machine waiting for the tape, *before* the OSD is ever used.
 
     `Run Sinclair 128K` ends in the `Tape Loader` when the ROM takes the tape
     path, in its own menu otherwise (then `Enter` starts the loader), and -
     if a press is delivered twice - in `128 BASIC` (then `LOAD ""` is typed,
-    one verified key at a time). All three happen on the board; the machine's
-    answer to the fire, not the screen class, decides whether it worked.
+    one verified key at a time). Typing has to happen before any `home`
+    press: the OSD is invisible in the MiSTer screenshot, so a script that
+    leaves it open types into it and nothing lands (board, 2026-11-11).
     """
     from PIL import Image
     r.screen(shot("now"))
     im = Image.open(shot("now")).convert("RGB")
-    if mister.rom_menu_visible(im) and not mister.loader_visible(im):
+    if mister.loader_visible(im):
+        return shot("now")
+    if mister.rom_menu_visible(im):
         r.press("KEY_ENTER")
         time.sleep(3.0)
         r.screen(shot("loader"))
         im = Image.open(shot("loader")).convert("RGB")
-        if mister.rom_menu_visible(im) and not mister.loader_visible(im):
-            load(r)                     # the menu's 128 BASIC entry
-    return shot("now")
+        if mister.loader_visible(im):
+            return shot("loader")
+    load(r)                             # 128 BASIC: LOAD "" + Enter
+    return shot("loading")
 
 
 def main(argv):
@@ -340,7 +334,7 @@ def main(argv):
             print("fire:", fire_tape(r))
         if what == "all":
             print("start:", start_tape(r))
-            print("tape:", run_tape(r))
+            print("tape:", fire_tape(r))
     finally:
         r.release_all()
         r.close()
