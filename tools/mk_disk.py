@@ -12,11 +12,20 @@ not fit CHS).
 `ls` and `cat` read the VHD's partition back, so a write made on the board
 can be checked on the PC without mtools.
 
+The floppy tasks add the VG93 images: a TR-DOS `.trd` writer plus the
+catalog reader the board write verification uses, a raw CP/M drive, an
+FDI writer, and `reftrack`, the byte-exact reference track (hex plus
+sync flags) the FDD track-builder bench compares against.
+
 CLI:
-  mk_disk.py sd  OUT.vhd [--size-mb N]
-  mk_disk.py hdf OUT.hdf [--sectors N]
-  mk_disk.py ls  IMG.vhd
-  mk_disk.py cat IMG.vhd NAME
+  mk_disk.py sd        OUT.vhd [--size-mb N]
+  mk_disk.py hdf       OUT.hdf [--sectors N]
+  mk_disk.py trd       OUT.trd [--tracks N] [--boot]
+  mk_disk.py cpm       OUT.cpm [--tracks N]
+  mk_disk.py fdi       OUT.fdi [--layout trd|wide]
+  mk_disk.py reftrack  OUT --track T --side S [--cpm]
+  mk_disk.py ls        IMG        (VHD partition or TRD catalog)
+  mk_disk.py cat       IMG NAME
 """
 import argparse
 import struct
@@ -34,6 +43,17 @@ SPT = 63
 LABEL = b"KARABAS SD "
 FS_TYPE = b"FAT16   "
 HDF_SIG = b"KARABAS HDF\n"
+
+BOOT_SRC = (
+    '10 PRINT "trdos ok"\n'
+    '20 FOR I=0 TO 255: POKE 25000+I,I: NEXT I\n'
+    '30 SAVE "out" CODE 25000,256\n'
+    '40 PRINT "saved"\n'
+)
+DISK_NAME = b"MiSTer"
+TRD_SEC = 256
+CPM_TRACK = 2 * 5 * 1024  # one track, both sides
+TRACK_BYTES = 6250
 
 
 def _fat_sectors(part_sectors, spc, fats, root_sectors):
@@ -229,6 +249,212 @@ def fat_read(path, name):
     raise KeyError(name)
 
 
+def trd(path, tracks=80, files=None):
+    """write a TR-DOS image; `files` defaults to the auto-run boot program
+
+    The catalog is track 0 side 0 sectors 1-8, the ID sector sector 9,
+    and file data starts at track 1 side 0 sector 1, allocated
+    sequentially (track-major, side-minor, sectors 1..16). A file longer
+    than one side spans into side 1; entries carry only the start track
+    and sector, and the reader resolves the side with the allocation
+    cursor (`_trd_entries`).
+    """
+    path = Path(path)
+    if files is None:
+        files = [("boot", "B", zxtap.tokenize_program(BOOT_SRC))]
+    image = bytearray(tracks * 2 * 16 * TRD_SEC)
+    if len(files) > 128:
+        raise ValueError(f"mk_disk: {len(files)} files do not fit the catalog")
+    alloc = 0
+    room = (tracks - 1) * 2 * 16
+    for i, (name, ftype, payload) in enumerate(files):
+        sectors = -(-len(payload) // TRD_SEC)
+        if alloc + sectors > room:
+            raise ValueError("mk_disk: no space left on the TRD image")
+        entry = bytearray(16)
+        entry[0:8] = name.encode("ascii").ljust(8)[:8]
+        entry[8] = ord(ftype)
+        entry[9] = 1 + alloc // 32
+        entry[10] = alloc % 16 + 1
+        struct.pack_into("<H", entry, 11, len(payload))
+        struct.pack_into("<H", entry, 13, sectors)
+        image[i * 16:(i + 1) * 16] = entry
+        for k in range(sectors):
+            off = (32 + alloc + k) * TRD_SEC
+            image[off:off + TRD_SEC] = \
+                payload[k * TRD_SEC:(k + 1) * TRD_SEC].ljust(TRD_SEC, b"\0")
+        alloc += sectors
+
+    idsec = 8 * TRD_SEC
+    image[idsec + 0xE1] = 0
+    image[idsec + 0xE2] = 1
+    image[idsec + 0xE3] = 0x16
+    image[idsec + 0xE4] = len(files)
+    struct.pack_into("<H", image, idsec + 0xE5, tracks * 2 * 16 - 16)
+    image[idsec + 0xE7] = 0x10
+    image[idsec + 0xF4] = 0
+    image[idsec + 0xF5:idsec + 0xFD] = DISK_NAME.ljust(8)[:8]
+    _write(path, image)
+
+
+def _trd_entries(image):
+    """catalog entries in order: name, type, start, length, sectors
+
+    Entries record no side, so an entry whose side-0 position lies before
+    the running allocation cursor starts on side 1 instead."""
+    cursor = 32
+    for i in range(128):
+        e = image[i * 16:(i + 1) * 16]
+        if e[0] == 0x00 or e[15] == 0xFF:
+            continue
+        start = e[9] * 32 + e[10] - 1
+        if start < cursor:
+            start += 16
+        size = struct.unpack_from("<H", e, 11)[0]
+        sectors = struct.unpack_from("<H", e, 13)[0]
+        yield (e[0:8].decode("ascii", "replace").rstrip(), chr(e[8]),
+               start, size, sectors)
+        cursor = start + (sectors or -(-size // TRD_SEC))
+
+
+def trd_ls(path):
+    """the catalog of a TRD image: (name, type, length bytes)"""
+    image = Path(path).read_bytes()
+    return [(name, ftype, size)
+            for name, ftype, _, size, _ in _trd_entries(image)]
+
+
+def trd_read(path, name):
+    """one file of a TRD image, exactly its catalog length"""
+    image = Path(path).read_bytes()
+    want = name.lower()
+    for entry, _, start, size, sectors in _trd_entries(image):
+        if entry.lower() != want:
+            continue
+        count = sectors or -(-size // TRD_SEC)
+        off = start * TRD_SEC
+        data = image[off:off + count * TRD_SEC]
+        if len(data) < size:
+            raise ValueError(f"mk_disk: {name}: short file extents")
+        return bytes(data[:size])
+    raise KeyError(name)
+
+
+def cpm(path, tracks=80):
+    """write a raw CP/M drive: tracks*2*5*1024, per-track pattern
+
+    No CP/M system: booting CP/M needs an owner-supplied image. Each
+    track carries the pattern (i*7+3)&0xFF at its own offset i."""
+    path = Path(path)
+    track = bytes(((i * 7 + 3) & 0xFF) for i in range(CPM_TRACK))
+    _write(path, bytearray(track * tracks))
+
+
+def fdi(path, tracks=80, sides=2, layout="trd"):
+    """write an FDI image; its sector records really carry H = side
+
+    Header: "FDI", version 0, u16 cyl, u16 sides, off_text, off_data,
+    size_ext 0 (all LE); the track table at 0x0E holds, per (track,
+    side), a u32 DataOffset relative to off_data, a u16 reserved 0 and
+    a u8 sector count. Per track side come the sector data and then
+    7-byte records C,H,R,N,flags,u16 offset (sector size 128 << N).
+    `trd`: 16 x 256. `wide`: cylinder 0 is 8 x 512 (N = 2) plus one
+    flags 0x40 (no data) sector, the rest 16 x 256."""
+    path = Path(path)
+    if layout not in ("trd", "wide"):
+        raise ValueError(f"mk_disk: unknown FDI layout {layout!r}")
+    table_size = tracks * sides * 7
+    off_data = 0x0E + table_size  # size_ext = 0, and no text follows
+    if off_data > 0xFFFF:
+        raise ValueError("mk_disk: too many tracks for the FDI header")
+    header = bytearray(0x0E)
+    header[0:3] = b"FDI"
+    struct.pack_into("<H", header, 4, tracks)
+    struct.pack_into("<H", header, 6, sides)
+    struct.pack_into("<H", header, 8, off_data)
+    struct.pack_into("<H", header, 0x0A, off_data)
+    table = bytearray()
+    blocks = []
+    pos = 0
+    for t in range(tracks):
+        for side in range(sides):
+            if layout == "wide" and t == 0:
+                specs = [(t, side, r, 2, 0) for r in range(1, 9)]
+                specs.append((t, side, 9, 1, 0x40))
+            else:
+                specs = [(t, side, r, 1, 0) for r in range(1, 17)]
+            data = bytearray()
+            descs = bytearray()
+            for (c, h, r, n, flags) in specs:
+                descs += struct.pack("<5BH", c, h, r, n, flags, len(data))
+                if flags & 0x40:
+                    continue
+                base = off_data + pos + len(data)
+                data += bytes(((base + j) * 7 + 3) & 0xFF
+                              for j in range(128 << n))
+            table += struct.pack("<IHB", pos, 0, len(specs))
+            blocks.append(bytes(data) + bytes(descs))
+            pos += len(data) + len(descs)
+    _write(path, bytearray(header) + table + b"".join(blocks))
+
+
+def _ccitt(data):
+    """the MFM record CRC: CCITT poly 0x1021, seed 0xFFFF, no reflection"""
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc
+
+
+def reftrack(path, track, side, sectors, cpm=False):
+    """write the reference track as hex (one byte per line) and <path>.sync
+
+    Per sector: 10x4E, 12x00, 3xA1 + FE + C,H,R,N + CRC, 22x4E, 12x00,
+    3xA1 + FB + data + CRC, 60x4E; CCITT-FFFF over the three A1s, the
+    mark and the payload, high byte first (MakeVGCRC); padded with 4E
+    to 6250. TR-DOS writes H = 0 on both sides, CP/M H = side. Sync
+    flags are 1 at exactly the six A1 positions. `sectors` entries are
+    (C, H, R, N, data); the ID record's H is `side` (CP/M) or 0 (TR-DOS),
+    so the tuple's H is ignored."""
+    path = Path(path)
+    image = bytearray()
+    sync = []
+    for (c, _, r, n, data) in sectors:
+        head = bytearray(b"\x4e" * 10 + b"\x00" * 12 + b"\xa1\xa1\xa1\xfe")
+        head += bytes([c, side if cpm else 0, r, n])
+        crc = _ccitt(bytes(head[-8:]))
+        head += bytes([crc >> 8, crc & 0xFF])
+        body = bytearray(b"\x4e" * 22 + b"\x00" * 12 + b"\xa1\xa1\xa1\xfb")
+        body += data
+        crc = _ccitt(bytes(body[-(len(data) + 4):]))
+        body += bytes([crc >> 8, crc & 0xFF])
+        image += head + body + b"\x4e" * 60
+        sync += ([0] * 22 + [1, 1, 1] + [0] * 7 + [0] * 22 + [0] * 12 +
+                 [1, 1, 1] + [0] * (len(data) + 3) + [0] * 60)
+    pad = TRACK_BYTES - len(image)
+    if pad < 0:
+        raise ValueError(f"mk_disk: reftrack: {len(image)} > {TRACK_BYTES}")
+    image += b"\x4e" * pad
+    sync += [0] * pad
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"{b:02X}\n" for b in image))
+    Path(str(path) + ".sync").write_text("".join(f"{s}\n" for s in sync))
+
+
+def _ref_sectors(track, cpm):
+    """the CLI reference track's sector contents"""
+    count, n, size = (5, 3, 1024) if cpm else (16, 1, 256)
+    return [(track, 0, r, n,
+             bytes((((r - 1) * size + j) * 7 + 3) & 0xFF
+                   for j in range(size)))
+            for r in range(1, count + 1)]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="mk_disk.py")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -238,9 +464,26 @@ def main(argv=None):
     hd = sub.add_parser("hdf", help="write an RDSK HDF for an IDE slot")
     hd.add_argument("path")
     hd.add_argument("--sectors", type=int, default=2048)
-    ls = sub.add_parser("ls", help="list a VHD's partition")
+    tr = sub.add_parser("trd", help="write a TR-DOS image")
+    tr.add_argument("path")
+    tr.add_argument("--tracks", type=int, default=80)
+    tr.add_argument("--boot", action="store_true",
+                    help="include the auto-run boot program")
+    cp = sub.add_parser("cpm", help="write a raw CP/M drive image")
+    cp.add_argument("path")
+    cp.add_argument("--tracks", type=int, default=80)
+    fd = sub.add_parser("fdi", help="write an FDI image")
+    fd.add_argument("path")
+    fd.add_argument("--layout", choices=("trd", "wide"), default="trd")
+    rt = sub.add_parser("reftrack",
+                        help="write a reference track and its sync file")
+    rt.add_argument("path")
+    rt.add_argument("--track", type=int, required=True)
+    rt.add_argument("--side", type=int, required=True)
+    rt.add_argument("--cpm", action="store_true")
+    ls = sub.add_parser("ls", help="list a VHD partition or a TRD catalog")
     ls.add_argument("path")
-    cat = sub.add_parser("cat", help="write one VHD file to stdout")
+    cat = sub.add_parser("cat", help="write one image file to stdout")
     cat.add_argument("path")
     cat.add_argument("name")
     args = parser.parse_args(argv)
@@ -251,12 +494,32 @@ def main(argv=None):
     elif args.cmd == "hdf":
         hdf(args.path, args.sectors)
         print(args.path)
+    elif args.cmd == "trd":
+        trd(args.path, args.tracks, [] if not args.boot else None)
+        print(args.path)
+    elif args.cmd == "cpm":
+        cpm(args.path, args.tracks)
+        print(args.path)
+    elif args.cmd == "fdi":
+        fdi(args.path, layout=args.layout)
+        print(args.path)
+    elif args.cmd == "reftrack":
+        reftrack(args.path, args.track, args.side,
+                 _ref_sectors(args.track, args.cpm), cpm=args.cpm)
+        print(args.path)
     elif args.cmd == "ls":
-        for name, size in fat_list(args.path):
-            print(f"{size:8d}  {name}")
+        if Path(args.path).suffix == ".trd":
+            for name, ftype, size in trd_ls(args.path):
+                print(f"{size:8d}  {name}.{ftype}")
+        else:
+            for name, size in fat_list(args.path):
+                print(f"{size:8d}  {name}")
     else:
         try:
-            data = fat_read(args.path, args.name)
+            if Path(args.path).suffix == ".trd":
+                data = trd_read(args.path, args.name)
+            else:
+                data = fat_read(args.path, args.name)
         except KeyError:
             print(f"mk_disk.py: {args.name}: no such file", file=sys.stderr)
             return 1
