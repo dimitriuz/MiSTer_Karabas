@@ -248,6 +248,12 @@ each), then fire `Tape play/pause` (Home, 10 x gamepad `Down`, keyboard
 | `sound.tap` | loads and runs | `Program: sound`, `1 AY0`, `2 AY1` (`sound-tap-playing.png`); the six chips were heard on build 55, not re-listened on 70 |
 | `Tape play/pause` | PASS (play and pause) | every tape above reached the ROM only after the fire: a mounted tape is parked paused and the fire is the one press that changes that. With `gsquery.tap` mid-load the border holds the tape signal (cyan/red stripes, 2 colours sampled, `b70-play-border-stripes.png`); fired again the load stops and the border goes solid (1 colour, `b70-pause-border-solid.png`). The third firing did not resume: its walk reported "the screen did not change", so a press of that walk was lost somewhere - resume is recorded as PASS on build 55 only |
 
+The OSD path itself is fine: the owner mounted a tape with the OSD's file
+browser and fired `Tape play/pause` on build 70 by hand (2026-11-11) and it
+played. Everything that went wrong below is in the *scripted* walk - the OSD's
+state at the start of a walk, the parity of the `Home` press, which row the
+cursor was left on.
+
 Findings from this run, all in the driver rather than the core:
 
 1. **The menu walk must happen once.** `zx.py all` called `to_128_menu` twice
