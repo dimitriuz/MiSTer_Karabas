@@ -131,6 +131,16 @@ Never "I sent it, therefore it happened".
   long-lived `/tmp/live.jpg` feeder is gone: a frozen file there produced wrong conclusions
   twice (an OSD that "would not open", a tape "stuck on stripes").
 
+While the card has **no signal** (every grab a uniform `(7,7,7)` frame - the cable or the
+source is off, nothing a script can fix) the OSD cannot be seen at all, and the MiSTer
+screenshot API does not contain it either. Then the OSD's state is *unknowable*: a screen
+that looks like idle BASIC may have the OSD open on top of it, eating every key. Work by
+effect only - fire, and read the machine's picture: `Program: <name>` and the program's own
+output are the proof. If several fires change nothing, check the input path before the
+software: after an hour of scripted presses the ZX stopped taking keys altogether (the
+remote daemon kept delivering, the machine ignored it) and only a `system cold_reboot`
+brought it back; the network needs ≈2 min after that.
+
 ## Results documents
 
 - One per stage: `docs/dev/stageN-results.md`, with the build number, how the run was
