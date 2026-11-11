@@ -246,7 +246,9 @@ each), then fire `Tape play/pause` (Home, 10 x gamepad `Down`, keyboard
 | `hello.tap`, turbo 8x | PASS | `tape ok`, `64`; the ROM's counter reads `0 OK, 20:1` (`hello-tap-turbo-8x.png`). Turbo is status[9:8]: the 16-byte `/media/fat/config/Karabas_Profi_20261111a.CFG` with byte 1 = `0x03`, written before the core loads |
 | `gsquery.tap`, turbo 8x | PASS | `Pages 62 err 0` (`gsquery-turbo-8x.png`) |
 | `sound.tap` | loads and runs | `Program: sound`, `1 AY0`, `2 AY1` (`sound-tap-playing.png`); the six chips were heard on build 55, not re-listened on 70 |
-| `Tape play/pause` | PASS (play and pause) | every tape above reached the ROM only after the fire: a mounted tape is parked paused and the fire is the one press that changes that. With `gsquery.tap` mid-load the border holds the tape signal (cyan/red stripes, 2 colours sampled, `b70-play-border-stripes.png`); fired again the load stops and the border goes solid (1 colour, `b70-pause-border-solid.png`). The third firing did not resume: its walk reported "the screen did not change", so a press of that walk was lost somewhere - resume is recorded as PASS on build 55 only |
+| `Tape play/pause` | PASS (play and pause) | every tape above reached the ROM only after the fire: a mounted tape is parked paused and the fire is the one press that changes that. With `gsquery.tap` mid-load the border holds the tape signal (cyan/red stripes, 2 colours sampled, `b70-play-border-stripes.png`); fired again the load stops and the border goes solid (1 colour, `b70-pause-border-solid.png`). Resume after a pause was not re-fired on 70 - **closed untested**, PASS on build 55 stands (`resume-border-stripes.png`) |
+| `Tape previous/next block` | not re-run on 70 | **closed untested** by the owner's decision (2026-11-11); PASS on build 55 stands (`b55-prev-block-header.png`, `next-block-skipped-header.png`) |
+| `LED`, `line-in` | not tested | **closed untested**: the LED sits under the case, and there is no cassette or audio source on the bench |
 
 The OSD path itself is fine: the owner mounted a tape with the OSD's file
 browser and fired `Tape play/pause` on build 70 by hand (2026-11-11) and it
