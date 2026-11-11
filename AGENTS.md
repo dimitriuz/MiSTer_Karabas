@@ -130,21 +130,25 @@ Never "I sent it, therefore it happened".
 - `Remote.screen(path)` — the MiSTer screenshot API, 1440×1080: the ZX picture only, **no
   OSD and no border**, and the only independent view of what the machine's video generator is
   doing. It answers HTTP 500 for a second or two while a core reloads.
-- `Capture.frame(path)` — the HDMI card, the only view **with the OSD**: one `ffmpeg` grab of a
-  single frame off `/dev/video4` (`video` group, ≈1.5 s, no sudo, no v4l2loopback). ~1 s of
-  latency, so the grab settles first and retries while the frame is all black. The old
-  long-lived `/tmp/live.jpg` feeder is gone: a frozen file there produced wrong conclusions
-  twice (an OSD that "would not open", a tape "stuck on stripes").
+- `Capture.frame(path)` — the HDMI card, the only view **with the OSD**: one `ffmpeg` pass off
+  `/dev/video4` (`video` group, ≈4 s, no sudo, no v4l2loopback), `-t 2.2 -update 1` so the
+  last written frame wins. **The card needs about two seconds before it delivers picture**:
+  `-frames:v 1` (and 3) returns a uniform `(7,7,7)` frame, and so does any window under
+  ≈2 s (measured: 7.0 at 1.2 s, 96.4 at 2.2 s). A black frame is therefore not proof that
+  the card has no signal. The old long-lived `/tmp/live.jpg` feeder is gone: a frozen file
+  there produced wrong conclusions twice (an OSD that "would not open", a tape "stuck on
+  stripes"). The v4l2loopback, when it is wanted, is `/dev/video6` on this host (the module
+  is loaded with `video_nr=-1`), not `/dev/video10`; there is no `share-capture.sh`.
 
-While the card has **no signal** (every grab a uniform `(7,7,7)` frame - the cable or the
-source is off, nothing a script can fix) the OSD cannot be seen at all, and the MiSTer
-screenshot API does not contain it either. Then the OSD's state is *unknowable*: a screen
-that looks like idle BASIC may have the OSD open on top of it, eating every key. Work by
-effect only - fire, and read the machine's picture: `Program: <name>` and the program's own
-output are the proof. If several fires change nothing, check the input path before the
-software: after an hour of scripted presses the ZX stopped taking keys altogether (the
-remote daemon kept delivering, the machine ignored it) and only a `system cold_reboot`
-brought it back; the network needs ≈2 min after that.
+**The OSD is visible on the card and nowhere else.** If the card is not readable, its state
+cannot be decided from the MiSTer screenshot: a screen that looks like the idle `Tape
+Loader` or `128 BASIC` may have the OSD open on top of it, eating every key. `Home` and
+`F12` both *toggle* it, so an odd number of presses - including one the daemon dropped -
+leaves it open, and every later walk then piles its presses into it (2026-11-11: three
+fires in a row changed nothing, and the card showed the cursor sitting on `Tape *.TAP,TZX,CSW`
+with that row's file browser open). A walk is evidence only once its **effect** is seen;
+reload the core to close the OSD rather than pressing `Home` again and hoping for the right
+parity.
 
 ## Results documents
 

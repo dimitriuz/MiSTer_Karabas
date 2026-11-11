@@ -192,9 +192,14 @@ class Capture:
     long-lived writer here: every frame is fresh by construction.
     """
 
+    # The card needs ~2 s to start delivering picture: `-frames:v 1` (and
+    # even 3) with `-update 1` returns an all-black frame, and so does a 1.2 s
+    # window, while 2 s or more keeps the picture. Measured 2026-11-11 on the
+    # board's 1080p output: mean luminance 7.0 at 1.2 s, 96.6 at 2.0 s, 96.0
+    # at 3.0 s, and the raw path (no `-input_format`) behaves the same.
     GRAB = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "v4l2",
             "-input_format", "mjpeg", "-video_size", "1920x1080",
-            "-i", "/dev/video4", "-frames:v", "1", "-y"]
+            "-i", "/dev/video4", "-t", "2.2", "-update", "1", "-y"]
 
     def __init__(self, device="/dev/video4", settle=1.8):
         self.device = device
@@ -205,6 +210,8 @@ class Capture:
 
         A fully black grab means the card is re-syncing (the core just
         reloaded, or the OSD opened), so grab again rather than believe it.
+        A uniform (7,7,7) frame is not proof of "no signal": it is what this
+        card returns when asked for a fixed number of frames.
         """
         from PIL import Image
         cmd = [c if c != "/dev/video4" else self.device for c in self.GRAB]
