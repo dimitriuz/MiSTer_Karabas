@@ -74,48 +74,62 @@ One concern per commit where it is possible (RTL + top, sim, docs), each self-co
 
 ## The board (192.168.1.13)
 
-`ssh -o BatchMode=yes root@192.168.1.13` works without a password. Drive input with the
-**`mister-karabas-board` skill** (MiSTer Companion Remote, `ws://192.168.1.13:9191/remote/v1`,
-`{"type":"controller"|"keyboard"|"system",...}`). Never use ad-hoc `uinput` scripts: they
-wedge the MiSTer input thread after a while (menu still responds, the ZX stops seeing keys,
-only a reboot fixes it).
+`ssh -o BatchMode=yes root@192.168.1.13` works without a password. **Drive the board with
+`tools/board/`** (stdlib + PIL, runs on this host): `mister.py` is the transport (the MiSTer
+Companion Remote WebSocket `ws://192.168.1.13:9191/remote/v1`, plus the two screen views) and
+`zx.py` is the verified recipe. Never use ad-hoc `uinput` scripts: they wedge the MiSTer input
+thread after a while (menu still responds, the ZX stops seeing keys, only a reboot fixes it).
 
-- Load a core: `echo "load_core /media/fat/_Computer/Karabas_Profi_buildNN.rbf" > /dev/MiSTer_cmd`,
-  wait ≈ 10 s.
-- Per-tape mounts: MGL files in `/media/fat/games/Karabas_Profi/`, absolute `<file
-  type="s" index="0" path="..."/>`; tapes live in the same directory.
-- OSD options without the OSD: 16-byte little-endian status file
-  `/media/fat/config/Karabas_Profi.CFG` (ROM bank, turbo, trigger bits), then reload the
-  core. Leave it at all zeros when done.
-- The OSD is **not** in MiSTer's own screenshots. Watch it on the capture card instead
-  (`/tmp/live.jpg`, helper `/tmp/cap.py`): ~1 s of latency and dropped frames, so verify with
-  the *last* non-black frame of a settle window.
+### The recipe (`tools/board/zx.py`)
 
-Input and OSD behaviour that has bitten every scripted run:
+| step | command | what it does |
+|---|---|---|
+| 1 | `python3 tools/board/zx.py boot <mgl>` | `load_core`, wait for a picture (default = tape slot 0, IDE 0 = slot 2) |
+| 2 | `… 128menu` | gamepad 6 × `down`, keyboard `Enter` = `Run Sinclair 128K`; the 128 ROM's menu appears with **`Tape Loader` highlighted** |
+| 3 | `… loader` | `Enter`: the loader takes the tape's **first file** — no typing, no `LOAD ""` |
+| 4 | `… tape` | gamepad `home` opens the OSD, walk to `Tape play/pause` with a bar check per press, keyboard `Enter` fires it |
+| — | `python3 tools/board/zx.py all <mgl>` | 1-4 in one run, ≈2 min |
+| — | `… basic`, `… load` | step one down into `128 BASIC`, type `LOAD ""` there, one verified key at a time |
 
-- Menu arrows come from the **gamepad** (keyboard repeats are lost above turbo 1x);
-  activations are a keyboard `Enter`.
-- OSD: Home opens, F12 closes. The cursor starts on `Video` every time and Up on `Video`
-  wraps to the bottom of the page (`Exit`, `Reset`) — never "press Up until sure".
-  Count Down presses from `Video` on the **build that is loaded**: the map changes when the
-  CONF_STR rows change, so re-read the list from a capture instead of trusting a number
-  recorded for another build. On build 54 (SD and IDE slots present): 8 `IDE 0`,
-  9 `IDE 1`, 10 `Tape play/pause`, 11 `Tape previous block`, 12 `Tape next block`,
-  13 `Joystick L`; on builds 39-47 (no storage rows): 8 `Tape play/pause`. The
-  `Video` and `MT32-pi` group headers are one row each (they open inline when activated),
-  and the blank line between pages is not selectable.
-- OSD trigger items fire with a keyboard `Enter`; the gamepad's OK does not.
-- A converted tape is **paused after mounting**: the ROM's `Tape Loader` screen waits
-  forever with a flat border. Fire `Tape play/pause`. At turbo off the border shows the tape
-  signal — stripes while playing, solid while paused, a lead-in again after a block jump —
-  which makes play/pause and block seek checkable without audio; at 8x a frame is too
-  coarse to show it.
+Typing, if it has to be done (`load`): `text_cells()` counts character cells on a screenshot
+and the key is pressed again until the line grows, and both shift keys are tried for `"` (PC
+`shift` = ZX SYMBOL SHIFT, so `shift+P` = `"`). Do not type blind and press `Enter`.
 
-Capture path on this host: HDMI card `/dev/video4` → v4l2loopback `/dev/video10` → one
-ffmpeg (service `v10share`) that writes `/tmp/live.jpg` at 10 fps. **Exactly one reader** may
-hold `/dev/video10`; a second one gets `Device or resource busy`, and the `xv` output fails on
-this X session (`Not yet implemented in FFmpeg`). `/tmp/share-capture.sh` reloads the
-loopback so several readers fit, but it needs the sudo password.
+Why it is written down: the remote daemon **drops about one press in five and can deliver a
+press seconds late**, so every step holds keys 0.3 s (`Remote.press`, not `key`'s 45 ms `tap`)
+and verifies the effect — `read_bar()` for the OSD (`(top - 174)/16` on the 960×540 grid, 10
+= `Tape play/pause`), `text_cells()` for typing, a saved screenshot for everything else.
+Never "I sent it, therefore it happened".
+
+- Menu arrows and OSD steps come from the **gamepad** (the keyboard path drops repeats above
+  turbo 1x); activations are a keyboard `Enter`, including OSD trigger items.
+- OSD: the gamepad's `home` (`BTN_MODE`) toggles it; `KEY_HOME`/`KEY_F12` stopped working
+  after a `cold_reboot`. The cursor starts on `Video` on a fresh core load, and `Up` on
+  `Video` wraps to the bottom of the page. Count `Down` presses on the **build that is
+  loaded**: rows change with CONF_STR. Build 54+: 8 `IDE 0`, 9 `IDE 1`, 10 `Tape play/pause`,
+  11 previous block, 12 next block, 13 `Joystick L`; builds 39-47 (no storage rows): 8 `Tape
+  play/pause`. Group headers (`Video`, `MT32-pi`) are one row each and open inline; the blank
+  line between pages is not selectable. Never `Enter` a file row (`Tape`, `SD Card`, `IDE 0/1`):
+  it opens the OSD's file browser and the OSD is hard to bring back to a known state.
+- A converted tape is **paused after mounting**: the loader waits forever with a flat border.
+  Fire `Tape play/pause`. At turbo off the border shows the tape signal — stripes while
+  playing, solid while paused, a lead-in again after a block jump — so play/pause and block
+  seek are checkable without audio; at 8x a frame is too coarse to show it.
+- Parallel mounts: MGL files in `/media/fat/games/Karabas_Profi/` with absolute `<file
+  type="s" index="N" path="..."/>`, N = 0 tape, 1 SD card, 2 IDE 0, 3 IDE 1. OSD options
+  without the OSD: the 16-byte little-endian `/media/fat/config/Karabas_Profi.CFG` (ROM bank,
+  turbo, DivMMC), then reload the core; leave it at all zeros when done.
+
+### Screens
+
+- `Remote.screen(path)` — the MiSTer screenshot API, 1440×1080: the ZX picture only, **no
+  OSD and no border**, and the only independent view of what the machine's video generator is
+  doing. It answers HTTP 500 for a second or two while a core reloads.
+- `Capture.frame(path)` — the HDMI card, the only view **with the OSD**: one `ffmpeg` grab of a
+  single frame off `/dev/video4` (`video` group, ≈1.5 s, no sudo, no v4l2loopback). ~1 s of
+  latency, so the grab settles first and retries while the frame is all black. The old
+  long-lived `/tmp/live.jpg` feeder is gone: a frozen file there produced wrong conclusions
+  twice (an OSD that "would not open", a tape "stuck on stripes").
 
 ## Results documents
 
