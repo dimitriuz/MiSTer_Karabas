@@ -78,7 +78,7 @@ def quote(r, before):
         r.press("KEY_P", 0.3)
         r.key(shift, "up")
         time.sleep(0.6)
-        if cells(r) > before + 0.5:
+        if cells(r) > before + 0.3:
             return shift
     raise RuntimeError("neither shift key produced a character")
 
@@ -88,7 +88,7 @@ def type_key(r, name, before, tries=3):
         r.press(name, 0.3)
         time.sleep(0.55)
         now = cells(r)
-        if now > before + 0.5:
+        if now > before + 0.3:
             return now
         time.sleep(0.4)
     raise RuntimeError(f"the daemon dropped {name} {tries} times "
