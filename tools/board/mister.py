@@ -1,0 +1,231 @@
+"""MiSTer Companion Remote client and the two ways to see the board.
+
+Standard library only (the hand-rolled WebSocket below), because the board
+host has no `websocket` module and `tools/` does not take dependencies.
+
+The daemon on the board (already running after boot) owns one persistent
+`uinput` device, so input through it does not wedge the MiSTer input thread
+the way ad-hoc `uinput` scripts do (see AGENTS.md).
+
+    from mister import Remote
+    r = Remote()                       # 192.168.1.13:9191
+    r.key("KEY_A")                     # tap, 45 ms - prefer press()
+    r.press("KEY_ENTER")               # down, hold, up
+    r.pad("down")                      # gamepad dpad / button
+    r.system("release_all")            # drop every held key
+
+Screens, two independent views:
+
+- `Remote.screen(path)` - the MiSTer's own screenshot API. The ZX picture
+  only (no OSD, no border), and the only view that proves what the machine's
+  video generator is doing.
+- `Capture.frame(path)` - the HDMI capture card, the only view with the
+  **OSD** in it: one ffmpeg grab of a single frame from /dev/video4.
+"""
+import base64
+import json
+import os
+import socket
+import struct
+import subprocess
+import time
+import urllib.request
+
+HOST = "192.168.1.13"
+PORT = 9191
+
+
+class Remote:
+    def __init__(self, host=HOST, port=PORT, path="/remote/v1", timeout=10):
+        self.sock = socket.create_connection((host, port), timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        req = (
+            f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\n"
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        )
+        self.sock.sendall(req.encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise RuntimeError("handshake closed")
+            buf += chunk
+        head, _, rest = buf.partition(b"\r\n\r\n")
+        if b"101" not in head.split(b"\r\n")[0]:
+            raise RuntimeError(head.decode(errors="replace"))
+        self.buf = rest
+        self.host = host
+
+    # --- frames -------------------------------------------------------
+    def send(self, obj):
+        data = json.dumps(obj).encode()
+        mask = os.urandom(4)
+        n = len(data)
+        hdr = b"\x81"
+        if n < 126:
+            hdr += bytes([0x80 | n])
+        elif n < 65536:
+            hdr += bytes([0x80 | 126]) + struct.pack(">H", n)
+        else:
+            hdr += bytes([0x80 | 127]) + struct.pack(">Q", n)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        self.sock.sendall(hdr + mask + masked)
+
+    # --- input --------------------------------------------------------
+    def key(self, name, action="tap"):
+        self.send({"type": "keyboard", "key": name, "action": action})
+
+    def press(self, name, hold=0.30):
+        """A key held long enough for the 50 Hz ZX scan; taps are marginal."""
+        self.key(name, "down")
+        time.sleep(hold)
+        self.key(name, "up")
+
+    def pad(self, name, hold=0.30):
+        self.send({"type": "controller", "control": "dpad" if name in
+                   ("up", "down", "left", "right") else "button",
+                   "name": name, "action": "down"})
+        time.sleep(hold)
+        self.send({"type": "controller", "control": "dpad" if name in
+                   ("up", "down", "left", "right") else "button",
+                   "name": name, "action": "up"})
+
+    def system(self, command):
+        self.send({"type": "system", "command": command})
+
+    def release_all(self):
+        self.system("release_all")
+        time.sleep(0.3)
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    # --- screens ------------------------------------------------------
+    def screen(self, path):
+        """The MiSTer screenshot API: the ZX picture, no OSD."""
+        url = f"http://{self.host}:{PORT}/api/screenshot?fresh=1"
+        urllib.request.urlretrieve(url, path)
+        return path
+
+    def wait_picture(self, seconds=25.0, path="/tmp/board-wait.png"):
+        """Poll until the ZX picture is not all black (a core load blanks it)."""
+        from PIL import Image
+        t0 = time.time()
+        while time.time() - t0 < seconds:
+            try:
+                self.screen(path)
+                extrema = Image.open(path).convert("RGB").getextrema()
+            except Exception:            # the API answers 500 mid reload
+                time.sleep(1.0)
+                continue
+            if extrema != ((0, 0), (0, 0), (0, 0)):
+                return True
+            time.sleep(1.0)
+        return False
+
+
+class Capture:
+    """The HDMI card view: the only one with the OSD in it.
+
+    One `ffmpeg` grab of a frame straight off /dev/video4 (~1.5 s, in the
+    `video` group, no sudo). The v4l2loopback chain with a long-lived writer
+    and a reader that falls back to a frozen `/tmp/live.jpg` was the source of
+    more wrong conclusions than any other part of a board run, so there is no
+    long-lived writer here: every frame is fresh by construction.
+    """
+
+    GRAB = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "v4l2",
+            "-input_format", "mjpeg", "-video_size", "1920x1080",
+            "-i", "/dev/video4", "-frames:v", "1", "-y"]
+
+    def __init__(self, device="/dev/video4", settle=1.8):
+        self.device = device
+        self.settle = settle
+
+    def frame(self, path, settle=None):
+        """Wait out the card's ~1 s latency, then grab one frame into `path`.
+
+        A fully black grab means the card is re-syncing (the core just
+        reloaded, or the OSD opened), so grab again rather than believe it.
+        """
+        from PIL import Image
+        cmd = [c if c != "/dev/video4" else self.device for c in self.GRAB]
+        cmd.append(path)
+        time.sleep(self.settle if settle is None else settle)
+        for _ in range(8):
+            subprocess.run(cmd, check=True, timeout=20)
+            if Image.open(path).convert("RGB").getextrema() != (
+                    (0, 0), (0, 0), (0, 0)):
+                return path
+            time.sleep(1.5)
+        return path
+
+
+# --- OSD geometry (from the 2026-11-10 runs, see AGENTS.md) -----------
+
+#: rows of the Karabas_Profi page by number of `Down` presses from `Video`
+ROWS = {
+    0: "Video", 1: "MT32-pi", 2: "ROM Bank", 3: "Turbo", 4: "PSG Mix",
+    5: "Covox", 6: "Tape", 7: "SD Card", 8: "IDE 0", 9: "IDE 1",
+    10: "Tape play/pause", 11: "Tape previous block",
+    12: "Tape next block", 13: "Joystick L",
+}
+
+BAR_X = 330      # a column inside the bar's left padding, 960 px wide
+BAR_TOP = 174    # the `Video` bar's top, on the 960 px capture
+ROW_H = 16
+
+
+def bar_row(column, scale=1.0):
+    """Row index from a bottom-to-top list of (y, bright) samples.
+
+    `column` is the pixel column of the highlight bar (sampled left of every
+    glyph): the bar is a solid ~15 px run of (255,240,243) on the 960x540
+    capture. `scale` is `image height / 540` for a larger grab. Returns the
+    row on the 16 px grid, or None when no bar is visible.
+    """
+    run = [y for y, bright in column if bright]
+    if len(run) < 8 * scale:
+        return None
+    top = (run[0] / scale) if run[0] > 0 else run[0]
+    return round((top - BAR_TOP) / ROW_H)
+
+
+def read_bar(img_path, width=960):
+    """`bar_row` on a capture: which OSD row the highlight is on."""
+    from PIL import Image
+    im = Image.open(img_path).convert("RGB")
+    h = im.height
+    x = round(BAR_X * im.width / width)
+    px = im.load()
+    col = [(y, px[x, y][0] > 245 and px[x, y][1] > 235 and px[x, y][2] > 238)
+           for y in range(h)]
+    return bar_row(col, scale=h / 540.0)
+
+
+def text_cells(img_path, band=(0.60, 0.98)):
+    """Width in ZX character cells of the dark text in a band of the picture.
+
+    The MiSTer API screenshot is 1440x1080 for this core's 352x288 frame, so
+    one ZX character cell is 8 * 1440/352 = 32.7 px. Used to tell a complete
+    typed line from one the remote daemon dropped a key out of.
+    """
+    from PIL import Image
+    im = Image.open(img_path).convert("RGB")
+    w, h = im.size
+    cell = 8.0 * w / 352.0
+    px = im.load()
+    best = None
+    for y in range(int(h * band[0]), int(h * band[1])):
+        xs = [x for x in range(w) if max(px[x, y]) < 100]
+        if xs and (best is None or len(xs) > best[0]):
+            best = (len(xs), min(xs), max(xs))
+    if best is None:
+        return 0.0
+    _, x0, x1 = best
+    return (x1 - x0 + 1) / cell
+
