@@ -280,6 +280,19 @@ with the `0x1d` commands that follow, so the edge sees the previous size
 (0 at the first mount) and the image reads as an eject. Build 55's level
 hid this by re-sampling the size every clock until the burst had finished.
 
+**Re-run on build 70 (2026-11-11), with the board driven by
+`tools/board/zx.py`:** `hdf.tap` + `test.hdf` on slot 2 (MGL `b70-hdf.mgl`)
+loads and runs, and prints `no hdf` again - same symptom as builds 61-66, so
+the mount-strobe/size work did not close it. The GO screen says `Drive: CF`
+and the loader's own attempt to open `karabas_boot.$c` on the CF then stalls
+about 40 s before the menu appears; both are consistent with the HDF being
+visible as a device and its sector 0 never arriving, but neither distinguishes
+"no mount bit at `hdf_ata`" from "`dev0_en` 0", which is still the question.
+The machine-side path of the run is now one command (`python3
+tools/board/zx.py all <mgl>`: boot, settle, `Run Sinclair 128K`, `Tape
+Loader`, fire play/pause), so the next probe build costs one command, not a
+session of key hunting.
+
 `run_all` was re-run on this tree: `run_all: 19 passed, 0 failed`
 (6142 s; `tb_tape_play` alone is over an hour, it simulates ~28M clocks of
 silence per inter-block pause).
