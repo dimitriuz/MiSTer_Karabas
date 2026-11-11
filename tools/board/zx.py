@@ -226,15 +226,26 @@ def tape(r, cap):
     return r.screen(shot("play"))
 
 
-def changed(a, b, frac=0.04):
-    """True when two screenshots differ in more than `frac` of their pixels."""
+def changed(a, b, frac=0.02, band=(0.10, 0.55)):
+    """True when the machine's *program area* moved between two screenshots.
+
+    Only the upper part of the picture is compared: that is where a running
+    program prints (`Program: hello`, `tape ok`), while the OSD overlay, the
+    ROM's status bar and the BASIC cursor sit outside it. A whole-frame
+    compare reported "the tape started" for a screen that merely redrew its
+    status bar (board, 2026-11-11).
+    """
     from PIL import Image, ImageChops
-    ia, ib = Image.open(a).convert("L"), Image.open(b).convert("L")
+    box = None
+    ia = Image.open(a).convert("L")
+    w, h = ia.size
+    box = (0, int(h * band[0]), w, int(h * band[1]))
+    ia, ib = ia.crop(box), Image.open(b).convert("L").crop(box)
     diff = ImageChops.difference(ia, ib).point(lambda v: 255 if v > 40 else 0)
     return sum(diff.histogram()[255:]) > frac * ia.width * ia.height
 
 
-def fire_tape(r, tries=3):
+def fire_tape(r, tries=2):
     """Fire `Tape play/pause` blind, and prove it by the machine's screen.
 
     With no HDMI signal on the capture card the OSD bar cannot be read, so the
@@ -252,12 +263,49 @@ def fire_tape(r, tries=3):
         r.press("KEY_ENTER")
         time.sleep(1.5)
         r.pad("home")
-        time.sleep(4.0)
-        after = r.screen(shot(f"after{attempt}"))
-        if changed(before, after):
-            return after
-        before = after
-    raise RuntimeError(f"the tape did not start after {tries} walks")
+        for _ in range(5):                 # the program needs a few seconds
+            time.sleep(2.0)
+            after = r.screen(shot(f"after{attempt}"))
+            if changed(before, after):
+                return after
+    print(f"WARNING: the screen did not change after {tries} walks - read "
+          f"{shot(f'after{tries}')} before believing the tape ran")
+    return shot(f"after{tries}")
+
+
+def run_tape(r):
+    """Fire the tape; if nothing ran, take the typed path and fire again."""
+    shot_a = fire_tape(r)
+    r.screen(shot("check"))
+    from PIL import Image
+    im = Image.open(shot("check")).convert("RGB")
+    if mister.loader_visible(im) or not mister.rom_menu_visible(im):
+        return shot_a                  # the loader answered, or nothing to add
+    load(r)
+    time.sleep(2.0)
+    return fire_tape(r)
+
+
+def start_tape(r):
+    """Get the machine waiting for the tape, from wherever the ROM stopped.
+
+    `Run Sinclair 128K` ends in the `Tape Loader` when the ROM takes the tape
+    path, in its own menu otherwise (then `Enter` starts the loader), and -
+    if a press is delivered twice - in `128 BASIC` (then `LOAD ""` is typed,
+    one verified key at a time). All three happen on the board; the machine's
+    answer to the fire, not the screen class, decides whether it worked.
+    """
+    from PIL import Image
+    r.screen(shot("now"))
+    im = Image.open(shot("now")).convert("RGB")
+    if mister.rom_menu_visible(im) and not mister.loader_visible(im):
+        r.press("KEY_ENTER")
+        time.sleep(3.0)
+        r.screen(shot("loader"))
+        im = Image.open(shot("loader")).convert("RGB")
+        if mister.rom_menu_visible(im) and not mister.loader_visible(im):
+            load(r)                     # the menu's 128 BASIC entry
+    return shot("now")
 
 
 def main(argv):
@@ -280,7 +328,7 @@ def main(argv):
                 raise RuntimeError("the 128 ROM menu did not appear")
         if what in ("128menu", "loader", "tape", "all"):
             print("128menu:", to_128_menu(r))
-        if what in ("loader", "tape", "all"):
+        if what == "loader":
             print("loader:", to_loader(r))
         if what == "basic":
             print("basic:", to_basic(r), f"cells={cells(r):.1f}")
@@ -291,7 +339,8 @@ def main(argv):
         if what == "fire":                 # no capture: verified by effect
             print("fire:", fire_tape(r))
         if what == "all":
-            print("fire:", fire_tape(r))
+            print("start:", start_tape(r))
+            print("tape:", run_tape(r))
     finally:
         r.release_all()
         r.close()

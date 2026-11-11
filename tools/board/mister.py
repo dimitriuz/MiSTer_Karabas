@@ -220,22 +220,29 @@ class Capture:
 
 
 def loader_visible(im):
-    """The 128 ROM's `Tape Loader` screen: a black bar across the lower third.
+    """The 128 ROM's `Tape Loader` screen.
 
-    With a tape mounted, `Run Sinclair 128K` goes *straight* into the loader
-    - there is no 128 ROM menu on the way (board, 2026-11-11), so this, not
-    the menu, is what to wait for.
+    Both it and `128 BASIC` draw a black bar with the ROM's stripe block near
+    the bottom, so a bar alone is not enough (it made `128 BASIC` read as the
+    loader, and a script then fired a tape that had nowhere to go). The loader
+    has a *second* text line under the bar (`To cancel - press BREAK twice`);
+    `128 BASIC` has paper there.
     """
     w, h = im.size
     px = im.load()
-    for y in range(int(h * 0.6), int(h * 0.8)):
-        dark = 0
-        for x in range(0, w, 4):
-            if max(px[x, y]) < 40:
-                dark += 1
-                if dark * 4 > w * 0.55:
-                    return True
-    return False
+    bar = None
+    for y in range(int(h * 0.6), int(h * 0.85)):
+        dark = sum(1 for x in range(0, w, 4) if max(px[x, y]) < 40)
+        if dark * 4 > w * 0.55:
+            bar = y if bar is None else bar
+    if bar is None:
+        return False
+    under = 0
+    for y in range(bar + 15, min(h, bar + 60)):
+        for x in range(int(w * 0.17), int(w * 0.75), 4):
+            if max(px[x, y]) < 100:
+                under += 1
+    return under > 200
 
 
 def screen_clean(im):
@@ -332,12 +339,14 @@ def read_bar(img_path, width=960):
     return bar_row(col, scale=h / 540.0)
 
 
-def text_cells(img_path, band=(0.60, 0.98)):
+def text_cells(img_path, band=(0.08, 0.70)):
     """Width in ZX character cells of the dark text in a band of the picture.
 
     The MiSTer API screenshot is 1440x1080 for this core's 352x288 frame, so
     one ZX character cell is 8 * 1440/352 = 32.7 px. Used to tell a complete
-    typed line from one the remote daemon dropped a key out of.
+    typed line from one the remote daemon dropped a key out of. The band stops
+    above the ROM's black status bar, which is the widest dark run on the
+    screen and would otherwise mask every keystroke (it did, 2026-11-11).
     """
     from PIL import Image
     im = Image.open(img_path).convert("RGB")
