@@ -270,15 +270,23 @@ Findings from this run, all in the driver rather than the core:
 5. **A key is dropped now and then** (one `A` landed, the next `D` was lost
    twice), so `type_key` retries six times with a growing gap; arrow keys are
    always gamepad presses, never keyboard repeats.
-6. **The OSD stops opening after ~40 minutes of scripted input.** In the last
-   run of the day the loader was reached, but `Home` (gamepad) opened nothing
-   and a keyboard `F12` opened nothing either: the 10 `Down` presses and the
-   `Enter` went to the machine instead, which ended on the ROM's `Calculator`
-   (`1`, then `1`, `1` border colours where the tape should have started,
-   paused, resumed). The first fires after a cold reboot work every time, so
-   this is the documented input wedge, not the walk. Batch the board work:
-   reboot, run the checks, reboot again - and never script a second walk on
-   the assumption that an unverified first one took.
+6. **The OSD can be left open, and nothing on the MiSTer screenshot says so.**
+   The last run of the day reached the loader and then fired three times
+   without the tape starting (`1`, `1`, `1` border colours). The HDMI capture
+   card, opened afterwards, showed why: the OSD was up, its cursor sitting on
+   `Tape *.TAP,TZX,CSW` with that row's file browser open, so the 10 `Down`
+   presses and the `Enter` of every walk had gone into the OSD instead of
+   row 10. `Home` and `F12` both toggle the OSD, so an odd number of presses
+   - including a press that was dropped - leaves it open, and every later
+   walk then piles more presses into it. Two things follow: a walk is only
+   evidence once its *effect* is seen, and a session that has lost track of
+   the OSD has to reload the core (which closes it) rather than press
+   `Home` again and hope for the right parity.
+7. **A single-frame grab off the capture card can be black.** `ffmpeg ...
+   -frames:v 1` on `/dev/video4` returned a black 1920x1080 frame while the
+   card had signal; grabbing into the v4l2loopback and reading the last of
+   three frames showed the picture. Open the device, throw away the first
+   frames, keep the last.
 
 Gates on this build, re-run the same day: `python3 -m unittest discover -s
 tools/tests` → `OK`; `tools/sim.sh sim/run_all.sh` → `run_all: 19 passed,
