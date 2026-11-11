@@ -83,10 +83,16 @@ def quote(r, before):
     raise RuntimeError("neither shift key produced a character")
 
 
-def type_key(r, name, before, tries=3):
-    for _ in range(tries):
+def type_key(r, name, before, tries=6):
+    """One character, proven by the editor line growing.
+
+    The daemon drops a key now and then - `A` landed and `D` was lost twice in
+    a row on the board (2026-11-11) - and a dropped key costs the whole walk,
+    so each one gets six attempts with a growing gap: uinput input queues.
+    """
+    for attempt in range(tries):
         r.press(name, 0.3)
-        time.sleep(0.55)
+        time.sleep(0.55 + attempt * 0.8)
         now = cells(r)
         if now > before + 0.3:
             return now
@@ -287,17 +293,21 @@ def start_tape(r):
     leaves it open types into it and nothing lands (board, 2026-11-11).
     """
     from PIL import Image
+    # The ROM boots through three screens of its own - the copyright, its menu
+    # (`Tape Loader` highlighted) and the loader - and one `Enter` walks one
+    # step, whichever is showing. So press on until the loader shows; in
+    # `128 BASIC` an `Enter` only opens a fresh line, which is harmless.
+    for _ in range(3):
+        r.screen(shot("now"))
+        im = Image.open(shot("now")).convert("RGB")
+        if mister.loader_visible(im):
+            return shot("now")
+        r.press("KEY_ENTER")
+        time.sleep(2.5)
     r.screen(shot("now"))
     im = Image.open(shot("now")).convert("RGB")
     if mister.loader_visible(im):
         return shot("now")
-    if mister.rom_menu_visible(im):
-        r.press("KEY_ENTER")
-        time.sleep(3.0)
-        r.screen(shot("loader"))
-        im = Image.open(shot("loader")).convert("RGB")
-        if mister.loader_visible(im):
-            return shot("loader")
     load(r)                             # 128 BASIC: LOAD "" + Enter
     return shot("loading")
 
@@ -320,7 +330,7 @@ def main(argv):
                     print(f"attempt {attempt}: {exc}")
             else:
                 raise RuntimeError("the 128 ROM menu did not appear")
-        if what in ("128menu", "loader", "tape", "all"):
+        if what in ("128menu", "loader", "tape"):
             print("128menu:", to_128_menu(r))
         if what == "loader":
             print("loader:", to_loader(r))

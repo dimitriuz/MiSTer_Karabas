@@ -220,3 +220,57 @@ Consequences, recorded in the README:
   `/media/fat/games/Karabas_Profi/b4*-*.mgl`, one per tape and format.
 - `/media/fat/config/Karabas_Profi.CFG` left at all zeros (ROM bank ROMain,
   turbo off, no tape triggers).
+## Build 70 re-check (2026-11-11) and the driver that did it
+
+Build 70 (`build: exit 0`, `check_timing: OK`, 761 s, rbf 3,540,140 bytes,
+md5 `cb074aece4cd468535d44388872153e1`) is the stage 4b top; the board ran it
+under the name `Karabas_Profi_20261111a` (same md5), and the tapes were
+mounted with one MGL each, `<file delay="1" type="s" index="0" path="..."/>`.
+Task 4 was already recorded on builds 47/55 above; this section is the same
+route driven by `tools/board/zx.py`, so a future run is one command instead
+of a re-derived sequence.
+
+`tools/board/zx.py all <mgl>` does what the table below needed: load the
+MGL, wait for the GO menu, gamepad 6 x `Down` + keyboard `Enter`
+(`Run Sinclair 128K`), then `Enter` until the ROM reaches its `Tape Loader`
+(the copyright, the ROM menu and the loader are three screens, one `Enter`
+each), then fire `Tape play/pause` (Home, 10 x gamepad `Down`, keyboard
+`Enter`, Home) and judge it by the machine's own screen: the loader prints
+`Program: <name>`.
+
+| Check | Result | Evidence |
+|---|---|---|
+| `hello.tap`, turbo off | PASS | `Program: hello`, `tape ok`, `83` (`hello-tap-turbo-off.png`) |
+| `hello.tzx`, turbo off | PASS | `tape ok`, `79` (`hello-tzx-turbo-off.png`) |
+| `hello.csw`, turbo off | PASS | `tape ok`, `65` (`hello-csw-turbo-off.png`) |
+| `hello.tap`, turbo 8x | PASS | `tape ok`, `64`; the ROM's counter reads `0 OK, 20:1` (`hello-tap-turbo-8x.png`). Turbo is status[9:8]: the 16-byte `/media/fat/config/Karabas_Profi_20261111a.CFG` with byte 1 = `0x03`, written before the core loads |
+| `gsquery.tap`, turbo 8x | PASS | `Pages 62 err 0` (`gsquery-turbo-8x.png`) |
+| `sound.tap` | loads and runs | `Program: sound`, `1 AY0`, `2 AY1` (`sound-tap-playing.png`); the six chips were heard on build 55, not re-listened on 70 |
+| `Tape play/pause` | PASS by effect | every tape above reached the ROM only after the fire: the mounted tape is parked paused and the fire is the one press that changes that |
+
+Findings from this run, all in the driver rather than the core:
+
+1. **The menu walk must happen once.** `zx.py all` called `to_128_menu` twice
+   (once in the retry loop, once in the shared branch); the second call sent
+   six more `Down` presses and an `Enter` into the *ROM's* menu, which
+   navigated to `Calculator`/`128 BASIC` and left every later press in the
+   wrong place. Symptom: typing that never lands, `cells 2.0 -> 1.8`.
+2. **`loader_visible` measured the wrong band.** It looked 15..60 px below
+   the *top* of the black status bar, so the rest of the bar (30 px tall)
+   was inside the band and nearly every screen read as the loader. It now
+   measures below the bar's *bottom*.
+3. **A stale duplicate `text_cells` shadowed its replacement**, and a width
+   in cells cannot see a glyph that lands inside the cursor's span. It counts
+   dark pixels of the editor's first line now: empty `0.0`, one letter
+   `1.0`, two `1.7` (measured on the board).
+4. **The typed path (`LOAD ""` in 128 BASIC) is still not the route.**
+   Letters land as lowercase in the editor's E mode, and a keyword needs K
+   mode; the loader path needs no typing at all, so `all` walks to the loader
+   and only falls back to typing when no ROM screen appears.
+5. **A key is dropped now and then** (one `A` landed, the next `D` was lost
+   twice), so `type_key` retries six times with a growing gap; arrow keys are
+   always gamepad presses, never keyboard repeats.
+
+Gates on this build, re-run the same day: `python3 -m unittest discover -s
+tools/tests` → `OK`; `tools/sim.sh sim/run_all.sh` → `run_all: 19 passed,
+0 failed` (5580 s).
