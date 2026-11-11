@@ -246,7 +246,7 @@ each), then fire `Tape play/pause` (Home, 10 x gamepad `Down`, keyboard
 | `hello.tap`, turbo 8x | PASS | `tape ok`, `64`; the ROM's counter reads `0 OK, 20:1` (`hello-tap-turbo-8x.png`). Turbo is status[9:8]: the 16-byte `/media/fat/config/Karabas_Profi_20261111a.CFG` with byte 1 = `0x03`, written before the core loads |
 | `gsquery.tap`, turbo 8x | PASS | `Pages 62 err 0` (`gsquery-turbo-8x.png`) |
 | `sound.tap` | loads and runs | `Program: sound`, `1 AY0`, `2 AY1` (`sound-tap-playing.png`); the six chips were heard on build 55, not re-listened on 70 |
-| `Tape play/pause` | PASS by effect | every tape above reached the ROM only after the fire: the mounted tape is parked paused and the fire is the one press that changes that |
+| `Tape play/pause` | PASS (play and pause) | every tape above reached the ROM only after the fire: a mounted tape is parked paused and the fire is the one press that changes that. With `gsquery.tap` mid-load the border holds the tape signal (cyan/red stripes, 2 colours sampled, `b70-play-border-stripes.png`); fired again the load stops and the border goes solid (1 colour, `b70-pause-border-solid.png`). The third firing did not resume: its walk reported "the screen did not change", so a press of that walk was lost somewhere - resume is recorded as PASS on build 55 only |
 
 Findings from this run, all in the driver rather than the core:
 
