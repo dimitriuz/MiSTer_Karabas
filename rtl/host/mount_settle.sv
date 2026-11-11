@@ -32,11 +32,19 @@ module mount_settle #(
 
 localparam integer SW = $clog2(BUDGET_CLKS + 2);
 
+// The mounts are *levels* while the OSD can still reach the slot: hps_io
+// raises img_mounted on Main's mount command and clears it only when the next
+// ioctl command arrives, which can be minutes. Reloading the counter for
+// every clock a bit is up therefore holds the machine forever and the screen
+// stays black, so only the rising edge reloads it (board, 2026-11-11: the
+// core came up with no picture at all until the OSD was opened).
 reg [SW-1:0] wait_cnt = BUDGET_CLKS[SW-1:0];
+reg  [3:0]   prev_mounted = 4'h0;
 
-wire disk_mount = |mounted[3:1];
+wire disk_mount = |(mounted[3:1] & ~prev_mounted[3:1]);
 
 always @(posedge clk) begin
+    prev_mounted <= mounted;
     if (reset) begin
         wait_cnt <= BUDGET_CLKS[SW-1:0];
     end else begin

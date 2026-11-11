@@ -9,7 +9,11 @@
 //   mount   a disk mount restarts the wait at SETTLE_CLKS, and `settled`
 //           stays low until it has run out;
 //   extend  a second mount during the window restarts it again;
-//   tape    mounted[0] (the tape) does not restart it.
+//   tape    mounted[0] (the tape) does not restart it;
+//   level   a mount bit that is left up (hps_io's img_mounted is a level and
+//           clears only on the next ioctl command) restarts the wait once,
+//           not on every clock: with a level reload the machine never starts
+//           and the screen stays black (board, 2026-11-11).
 // The last line printed is `tb_mount_settle: PASS` or
 // `tb_mount_settle: FAIL <case>`; run via sim/run_tb_mount_settle.sh.
 `timescale 1ns / 1ps
@@ -93,6 +97,17 @@ module tb_mount_settle;
       count_until_settled(SETTLE + 20, n);
       check("extend", "settled a SETTLE window after the last mount",
             n, SETTLE);
+
+      // ---- level: a bit left up restarts it once, then it settles ----
+      reset = 1'b1;
+      repeat (3) @(posedge clk); #1;
+      reset = 1'b0;
+      repeat (5) @(posedge clk); #1;
+      mounted = 4'b0100;                    // slot 2, and it stays up
+      @(posedge clk); #1;
+      count_until_settled(SETTLE + 20, n);
+      check("level", "settled a SETTLE window after the edge", n, SETTLE);
+      mounted = 4'd0;
 
       // ---- tape: slot 0 does not count ----
       reset = 1'b1;
