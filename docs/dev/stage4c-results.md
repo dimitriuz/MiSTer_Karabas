@@ -30,7 +30,10 @@ combinations and runs them at the same time; the last line is the verdict.
 |Python tools|`python3 -m unittest discover -s tools/tests`|`Ran 104 tests ... OK`|OK|
 |Upstream untouched|`tools/check_upstream.sh`|`check_upstream: OK`|OK|
 |Stub fails|`sim/run_tb_floppy.sh` against a `floppy` stub with `fdc_tr00` tied high, no flux, no requests|`+CASE=1` fails on the step count, the step period and the track the drive asked for, so the bench really reaches the controller|`FAIL restore (3 checks failed)`, `0 requests`|
-|Every case alone|`+CASE=<n>`, one combination|each of the 14 cases prints `PASS <case>`|not yet run in this round|
+|Every case alone|`+CASE=<n>`, one combination|each of the 14 cases prints `PASS <case>`|every case passes in the matrix below, which runs all 14 in each combination; `+CASE=10/12/13` also run alone on 4/225|
+|Mutant: tick-gated stream drop|`floppy.sv` with `active` dropped only on a cell tick, `+CASE=12`, 4/225|`side_flip` fails|FAIL: `no byte of the side that was left got 256 want 0`, `the read ends record-not-found got 0 want 1`|
+|Mutant: drive C/D as the held drive|`floppy.sv` without `selected` in `stream_on` and without `!no_drive` on the step, `+CASE=13`, 4/225|`no_select` fails|FAIL 6 checks: B's head moved 8 to 11, 1 index, 48554 flux pulses, 3 requests|
+|Mutant: no echo check|`floppy.sv` with `trk_ack[8:0] == req_sent` deleted, `+CASE=10`, 4/225|`track_not_ready` fails|FAIL: `and the drive is not streaming got 1 want 0`|
 |The matrix|`tools/sim.sh sim/run_tb_floppy.sh`|six times `tb_floppy: PASS`, verdict last|`tb_floppy: PASS`: 14 of 14 cases in each of the six combinations (4/225, 14/675, 8/459, 28/1377, 8/441, 28/1323), 73 min wall, 2026-11-13|
 
 The cases: `restore` (RESTORE at track 0 steps not at all, a SEEK with the target in
