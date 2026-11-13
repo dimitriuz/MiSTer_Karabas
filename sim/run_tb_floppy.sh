@@ -23,8 +23,7 @@
 # says record not found). Wall time is CPU load, not the disk: a case run alone takes a
 # few minutes, the six together longer, so they run at the same time, each in its own
 # .vvp and its own log, and the logs are printed in the order of the combinations
-# afterwards. (For the record: a full six-combination matrix has not been timed in this
-# round; only single combinations have.)
+# afterwards. The six together take about 73 min of wall time (measured 2026-11-13).
 #
 # The last line of the output is the verdict, `tb_floppy: PASS` or
 # `tb_floppy: FAIL <reason>`, and the script exits non-zero on anything but

@@ -57,18 +57,20 @@
 //                    echo, the sector comes back on the next revolution. The
 //                    re-ask only happens while a command holds the head loaded, so
 //                    the wrong-echo answer and the check for it live inside one
-//                    500 ms read: re-ask (<=200 ms), the index at which a drive
+//                    one full-budget read: re-ask (<=200 ms), the index at which a drive
 //                    that had taken it would arm (<=200 ms more), and a sector's
 //                    worth of flux after that.
-//   side_flip        side 1 is selected mid-revolution and read without waiting
-//                    for an index: the sector of the side that was just left must
-//                    never come back - side 1's data or nothing.
-//   no_select        steps and reports with nobody selected. hrdy_fdc gates the
-//                    select lines with motor (its head-load output), which is low
-//                    between commands, so a seek steps with FDC_DS == 00 - the case
-//                    counts those pulses and fails if none arrived - and what must
-//                    hold is that they move the drive that is held, never drive A,
-//                    and that no store request names a drive nobody chose.
+//   side_flip        the side flips just after an index and the store does not answer:
+//                    the read straight after it must get nothing (record-not-found),
+//                    never the sector of the side that was left; once the store has
+//                    answered, side 1 reads. A drive that drops its stream only at the
+//                    next cell tick (not at once) fails this.
+//   no_select        two states with both select lines down. Motor down (between
+//                    commands, a SEEK steps with FDC_DS == 00): the step moves the held
+//                    drive, never A, and no request names a drive nobody chose. Motor
+//                    up with #FF bits 1:0 = 1x (drive C/D, which this machine does not
+//                    have): no stream (no index, no flux), no step moves a head, no
+//                    request.
 //   pend_drop        with the store's answer withheld, a second written field is
 //                    dropped rather than overwriting the one that is waiting;
 //                    after the answer a new field is offered again.
@@ -253,7 +255,9 @@ hrdy_fdc u_fdc (
 // ---------------- what the drive shows the controller ----------------
 integer idx_pulses = 0, flux_pulses = 0;
 integer steps = 0, step_edges = 0, step_t0 = 0, step_t1 = 0, step_dir = 0;
-integer steps_nods = 0;                // step pulses seen with FDC_DS == 00
+integer steps_nods = 0;                // step pulses seen with FDC_DS == 00 and the motor down
+integer steps_cd   = 0;                // ... and with the motor up (drive C or D selected)
+integer cd0 = 0;
 integer nods0 = 0;
 integer trk0 = 0;
 integer reqa0 = 0;
@@ -267,7 +271,10 @@ always @(posedge clk) begin
         step_t0   = step_t1;
         step_t1   = step_edges;
         step_dir  = FDC_DIR;
-        if (FDC_DS == 2'b00) steps_nods = steps_nods + 1;
+        if (FDC_DS == 2'b00) begin
+            if (FDC_MOTOR) steps_cd = steps_cd + 1;
+            else           steps_nods = steps_nods + 1;
+        end
     end
     step_d <= FDC_STEP;
     if (FDC_INDEX && !idx_d)   idx_pulses  = idx_pulses + 1;
@@ -376,6 +383,7 @@ endtask
 // ---------------- the store model ----------------
 reg        store_rdy   = 1'b1;        // what the model answers ready with
 reg        ack_bad     = 1'b0;        // answer with an echo that is not the request
+reg        ack_stall   = 1'b0;        // the store has a request and does not answer yet
 reg        no_index    = 1'b0;        // do_read: issue now, do not wait for index
 integer    attempt_ms  = ATTEMPT_MS;  // do_read: the patience of one attempt
 reg        store_drv   = 1'b0;        // the buffer served on port B
@@ -406,7 +414,7 @@ always @(posedge clk) begin
         ack_go    <= 1'b1;
         ack_wait  <= 4'd6;
     end
-    else if (ack_go) begin
+    else if (ack_go && !ack_stall) begin
         ack_wait <= ack_wait - 4'd1;
         if (ack_wait == 4'd1) begin
             ack_go    <= 1'b0;
@@ -1091,21 +1099,34 @@ initial begin : test
     // ---- the side flips while the disk is under the head ----
     if (run(12)) begin                   // side_flip
     case_begin;
-    // Side 0 reads, and the read of side 1 is issued without waiting for an
-    // index: mid-revolution is where a drive that kept reading its old buffer is
-    // caught. What may come back is side 1's sector or no sector at all; the
-    // sector of the side that was just left is the bug.
+    // Side 0 reads. Then the side flips and the store does NOT answer (ack_stall):
+    // the real store rebuilds ONE buffer per drive in place, so until it has
+    // answered, port B still serves the bytes of the side that was left - which
+    // here is a good sector with a good CRC and H=0 in its ID, i.e. a read that
+    // ends "no error" with the other side's data. The read is issued mid-revolution
+    // (no_index, straight after the flip) and one try only: what may come back is nothing, never that sector.
     io_wr(1, 0, 8'h3C);                    // drive A, side 0
     do_read(8'h01, 0, TRIES, roK, rn, rbad, rstat);
     fail_int("side_flip", "side 0 reads first", roK, 1);
-    io_wr(1, 0, 8'h2C);                    // side 1, mid-revolution
+    ack_stall = 1'b1;
+    // The flip comes right after an index: the sector is then still ahead of the
+    // head for the rest of the turn, which is the window a drive that kept reading
+    // its old buffer would serve it in (a flip after the sector has passed would be
+    // saved by the next index, with or without the fix).
+    wait_index(300);
+    io_wr(1, 0, 8'h2C);                    // side 1: the request goes out, no answer
     no_index = 1'b1;
-    do_read(8'h01, 1, TRIES, roK, rn, rbad, rstat);
+    do_read(8'h01, 1, 1, roK, rn, rbad, rstat);
     no_index = 1'b0;
-    $display("tb_floppy: side flip: %0d bytes, %0d wrong, status %h, ok %0d", rn, rbad, rstat, roK);
-    fail_int("side_flip", "never the sector of the side that was left", rbad, 0);
-    fail_int("side_flip", "the new side's data, or nothing",
-             (roK == 1) || (rn == 0 && rstat[4] == 1'b1), 1);
+    $display("tb_floppy: side flip, store silent: %0d bytes, %0d wrong, status %h, ok %0d", rn, rbad, rstat, roK);
+    fail_int("side_flip", "no byte of the side that was left", rn, 0);
+    fail_int("side_flip", "the read ends record-not-found", rstat[4], 1);
+    ack_stall = 1'b0;                      // the store answers: side 1 is served
+    repeat (100) @(posedge clk);
+    do_read(8'h01, 1, TRIES, roK, rn, rbad, rstat);
+    $display("tb_floppy: side flip, answered: %0d bytes, %0d wrong, status %h, ok %0d", rn, rbad, rstat, roK);
+    fail_int("side_flip", "after the answer side 1 reads", roK, 1);
+    fail_int("side_flip", "and it is side 1's data", rbad, 0);
     io_wr(1, 0, 8'h3C);                    // side 0 for what follows
     case_end("side_flip");
     end
@@ -1113,58 +1134,70 @@ initial begin : test
     // ---- steps and reports with nobody selected ----
     if (run(13)) begin                   // no_select
     case_begin;
-    // B is the held drive: its buffer reads back (which also loads its head), and
-    // the head is then moved by the pair `restore` proves the chip steps on - a
-    // RESTORE and a SEEK with the target in #7F. The three STEPs after the deselect
-    // are, on the other hand, pulses on a cable whose select lines are down, which
-    // is the thing under test; the case measures that they really arrive instead of
-    // assuming it.
+    // hrdy_fdc decodes #FF bits 1:0 as 00 -> A and 01 -> B and gates both lines
+    // with the motor (its head-load output), so the lines are down in two states:
+    //  (a) motor down: between commands. A SEEK without head load steps in this
+    //      state (measured: its pulses come with FDC_DS == 00), and the step belongs
+    //      to the held drive, never to A.
+    //  (b) motor up, bits 1:0 = 1x: drive C or D, which this machine does not have.
+    //      Nothing streams and no head moves.
     spun_up = 1'b0;
     io_wr(1, 0, 8'h3D);                    // drive B
     do_read(8'h01, 2, TRIES, roK, rn, rbad, rstat);   // B's buffer reads back
     fail_int("no_select", "B reads first", roK, 1);
     spun_up = 1'b1;                        // the read loaded B's head
     io_wr(0, 3, 8'd5);                     // #7F: the track to seek to
-    io_wr(0, 0, 8'h18);                    // STEP with SEEK, head load included: a
-    wait_intrq(100);                       // 0x10 SEEK would leave HLD down, and with
-                                           // it the index and every re-ask after it
-    // The request is re-asked at the index the drive stands on, so what the seek
-    // asked for can only be read from the payload after an index.
-    wait_index(300);
-    fail_int("no_select", "B is at track 5", rq_last[6:0], 5);
-    fail_int("no_select", "and the request says B", rq_last[8], 1);
-    req0 = req_count;
-    reqa0 = req_a;
+    io_wr(0, 0, 8'h10);                    // SEEK without head load: HLD drops at its end
+    wait_intrq(100);
+    fail_int("no_select", "the head is unloaded after a SEEK without head load", FDC_MOTOR, 0);
+    // (a) the next SEEK steps with the motor and both select lines down
     nods0 = steps_nods;
     trk0  = u_drive.trk_b;
-    // hrdy_fdc gates the select lines with motor (its head-load output), so `10`
-    // deselects and so does every moment the head is off the track; STEP is
-    // broadcast on the cable regardless. A step that moves the head makes the drive
-    // ask the store again, and rightly so - what is under test is *whom* it asks and
-    // whose head moved: never the drive nobody chose.
-    io_wr(1, 0, 8'h3E);                    // bits 1:0 = 10: nobody
-    repeat (50) @(posedge clk);
-    repeat (3) begin
-        io_wr(0, 0, 8'h28);                // STEP, head load included: the drive has
-        wait_intrq(100);                   // to keep turning, or no index passes and
-    end                                    // the re-ask below cannot happen at all
-    wait_index(300);                       // an index passes with nobody selected
-    $display("tb_floppy: no select: %0d requests, %0d of them for A, %0d step pulses with select down, A at %0d B at %0d",
-             req_count - req0, req_a - reqa0, steps_nods - nods0, u_drive.trk_a, u_drive.trk_b);
-    fail_int("no_select", "the steps really arrived with nobody selected",
-             (steps_nods - nods0) >= 1, 1);
-    fail_int("no_select", "no request named the drive nobody chose", req_a - reqa0, 0);
-    fail_int("no_select", "the step never lands on drive A", u_drive.trk_a, 0);
-    fail_int("no_select", "the held drive took the three steps",
-             u_drive.trk_b - trk0, 3);
-    io_wr(1, 0, 8'h3D);                    // select B again
-    wait_index(300);
-    $display("tb_floppy: reselected: track %0d, drive %0d", rq_last[6:0], rq_last[8]);
-    fail_int("no_select", "B kept its head position", rq_last[6:0], trk0 + 3);
-    fail_int("no_select", "B is still the held drive", rq_last[8], 1);
-    io_wr(0, 3, 8'd0);                     // B back to track 0
-    io_wr(0, 0, 8'h18);                    // back under the head-load bit
+    reqa0 = req_a;
+    io_wr(0, 3, 8'd8);
+    io_wr(0, 0, 8'h10);
     wait_intrq(100);
+    $display("tb_floppy: no select (motor down): %0d step pulses, B at %0d (was %0d), A at %0d, %0d requests for A",
+             steps_nods - nods0, u_drive.trk_b, trk0, u_drive.trk_a, req_a - reqa0);
+    fail_int("no_select", "the steps really arrived with the select lines down", steps_nods - nods0, 3);
+    fail_int("no_select", "the held drive took them", u_drive.trk_b - trk0, 3);
+    fail_int("no_select", "the step never lands on drive A", u_drive.trk_a, 0);
+    fail_int("no_select", "no request named the drive nobody chose", req_a - reqa0, 0);
+    // (b) head load (target = where B is, no step), then drive C
+    io_wr(0, 3, 8'd8);
+    io_wr(0, 0, 8'h18);
+    wait_intrq(100);
+    fail_int("no_select", "the head is loaded", FDC_MOTOR, 1);
+    io_wr(1, 0, 8'h3E);                    // bits 1:0 = 10: drive C
+    repeat (50) @(posedge clk);
+    cd0   = steps_cd;
+    trk0  = u_drive.trk_b;
+    idx0  = idx_pulses;
+    flux0 = flux_pulses;
+    req0  = req_count;
+    repeat (3) begin
+        io_wr(0, 0, 8'h28);                // STEP, head load included
+        wait_intrq(100);
+    end
+    repeat (250 * edges_per_ms) @(posedge clk);   // more than a turn of the disk
+    $display("tb_floppy: no select (drive C): %0d step pulses, B at %0d (was %0d), A at %0d, %0d index, %0d flux, %0d requests",
+             steps_cd - cd0, u_drive.trk_b, trk0, u_drive.trk_a, idx_pulses - idx0,
+             flux_pulses - flux0, req_count - req0);
+    fail_int("no_select", "the steps really arrived with drive C selected", steps_cd - cd0, 3);
+    fail_int("no_select", "B's head did not move", u_drive.trk_b, trk0);
+    fail_int("no_select", "A's head did not move", u_drive.trk_a, 0);
+    fail_int("no_select", "nothing streams: no index", idx_pulses - idx0, 0);
+    fail_int("no_select", "nothing streams: no flux", flux_pulses - flux0, 0);
+    fail_int("no_select", "no request", req_count - req0, 0);
+    io_wr(1, 0, 8'h3D);                    // select B again
+    idx0 = idx_pulses;
+    wait_index(300);
+    fail_int("no_select", "B turns again", idx_pulses - idx0 >= 1, 1);
+    fail_int("no_select", "B kept its head position", u_drive.trk_b, trk0);
+    io_wr(0, 3, 8'd0);                     // B back to track 0 (the chip's own register
+    io_wr(0, 0, 8'h18);                    // is at 11 after the three steps: it clamps)
+    wait_intrq(100);
+    fail_int("no_select", "B is back at track 0", u_drive.trk_b, 0);
     io_wr(1, 0, 8'h3C);                    // and A selected for what follows
     spun_up = 1'b0;                        // whose first command loads the head
     case_end("no_select");

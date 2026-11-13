@@ -162,7 +162,13 @@ module floppy (
     wire       selected  = |fdc_drive;
     wire       side      = fdc_side_n;                 // FDC_SIDE1: high is side 1
     wire [6:0] track     = sel_drv ? trk_b : trk_a;
-    wire       stream_on = fdc_motor && sel_seen && !reset;
+    // Motor up with both select lines down is drive C or D (#FF bits 1:0 = 1x):
+    // `hrdy_fdc` decodes only 00 -> A and 01 -> B, and this machine has no C or D.
+    // Nobody is selected then: nothing streams and a step goes nowhere. With the
+    // motor down the lines are down as well, and that is the state a seek steps in
+    // (see above), so there the step belongs to the held drive.
+    wire       no_drive  = fdc_motor && !selected;
+    wire       stream_on = fdc_motor && selected && sel_seen && !reset;
 
     wire       drv       = sel_drv;
 
@@ -191,7 +197,7 @@ module floppy (
             end
             // the step counts for the held drive; before anything has been
             // selected there is no drive to step at all
-            if (step_up && sel_seen) begin
+            if (step_up && sel_seen && !no_drive) begin
                 if (sel_drv) trk_b <= step_nx;
                 else         trk_a <= step_nx;
             end
@@ -271,13 +277,16 @@ module floppy (
             fdc_index <= stream_on && (rev_n < IDX_TICKS);
             chan      <= chan_n;
             if (new_byte) q_cur  <= src_q;
-            // A request going out ends the track that is being read: the head
-            // has moved, and the store builds one buffer per drive and side in
-            // place, so what it holds until it answers for the new track is not
-            // that track's data. The drive reads 4Eh filler until the answer has
-            // arrived and the next index comes round.
-            if (cur != req_sent)  active <= 1'b0;
-            else if (new_rev)     active <= stream_ready;
+        end
+        // A request going out ends the track that is being read: the head has
+        // moved, and the store builds one buffer per drive and side in place, so
+        // what it holds until it answers for the new track is not that track's data.
+        // The drive reads 4Eh filler from the very next clock (this is not gated by
+        // the cell tick: the mismatch of cur and req_sent lasts one clock), until the
+        // matching answer has arrived and the next index comes round.
+        if (!reset) begin
+            if (cur != req_sent || !stream_ready) active <= 1'b0;
+            else if (tick && new_rev)             active <= 1'b1;
         end
     end
 

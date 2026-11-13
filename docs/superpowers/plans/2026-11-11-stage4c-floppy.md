@@ -177,8 +177,8 @@ module floppy (
   - `no_motor`: motor off → no index, no flux.
 - [x] **Step 2: Run** `tools/sim.sh sim/run_tb_floppy.sh` against a stub `floppy` (outputs tied) → FAIL on `restore` (no steps), proving the bench reaches the real controller.
 - [x] **Step 3: Implement** `floppy.sv`; run until every case passes.
-- [ ] **Step 4: The matrix.** The runner loops the six upstream combinations — `(DS80, SPEED, TURBO)` = `(0,1.0,1) (1,1.0,1) (0,1.02,1) (1,0.98,1) (0,1.0,0) (1,1.0,0)` — as cell pairs `4/225`, `14/675`, `8/459`, `28/1377`, `8/441`, `28/1323` (56.25×1.02 = 57.375 = 459/8; 48.2142857×0.98 = 47.25 = 1323/28). All six print `tb_floppy: PASS`; the script's verdict is the last line.
-- [ ] **Step 5: Commit** `disk: floppy drive model, proven against the real hrdy_fdc`.
+- [x] **Step 4: The matrix.** The runner loops the six upstream combinations — `(DS80, SPEED, TURBO)` = `(0,1.0,1) (1,1.0,1) (0,1.02,1) (1,0.98,1) (0,1.0,0) (1,1.0,0)` — as cell pairs `4/225`, `14/675`, `8/459`, `28/1377`, `8/441`, `28/1323` (56.25×1.02 = 57.375 = 459/8; 48.2142857×0.98 = 47.25 = 1323/28). All six print `tb_floppy: PASS`; the script's verdict is the last line.
+- [x] **Step 5: Commit** `disk: floppy drive model, proven against the real hrdy_fdc`.
 
 ### Task 4: `fdd_store` + `fdd_src` — the image path end to end
 

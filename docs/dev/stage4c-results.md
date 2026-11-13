@@ -42,11 +42,12 @@ TR-DOS `#3FD5` loop: 416 clk_bus clocks a turn within 3 % at 7 MHz, no WAIT at
 `swap`, `side1`, `wprt` (the write-protect bit, and no `wr_tgl` at all), `bad_crc`
 (RNF **and** CRC error after six turns, nothing written), `track_not_ready` (filler
 while the store has nothing, an answer with the wrong echo does not arm the stream,
-the right answer does), `side_flip` (after a side change mid-revolution the sector of
-the side that was left never comes back), `no_select` (the step pulses that arrive on
-a cable with `FDC_DS == 00` - counted on the wire, the case fails if none did - are
-taken by the drive that is held and never by drive A, and no store request names a
-drive nobody chose), `pend_drop` (a second written field while one waits for its ack
+the right answer does), `side_flip` (the side flips just after an index and the store has not answered:
+the read gets nothing, never the sector of the side that was left; after the answer
+side 1 reads), `no_select` (with the motor down the step pulses that arrive on a cable
+with `FDC_DS == 00` - counted on the wire - are taken by the drive that is held and
+never by drive A; with the motor up and #FF bits 1:0 = 1x, drive C/D, nothing streams,
+no head moves and no store request goes out), `pend_drop` (a second written field while one waits for its ack
 is dropped, and after the answer a new one is offered) and `no_motor`.
 
 ## The chip, for whoever writes the next test
@@ -72,7 +73,14 @@ is dropped, and after the answer a new one is offered) and `no_motor`.
   **holding**: demanding the select line to be up means no head ever moves, and
   falling back to drive A walks A's head and asks the store for A's track on every
   head load. What must never happen is a step, or a store request, naming a drive
-  nobody chose.
+  nobody chose. The other state with both lines down is the **motor up** one: #FF bits
+  1:0 = 1x is drive C or D, which this machine does not have; there nothing streams and
+  no step moves a head (found by the second review: the first version streamed the
+  held drive as C).
+* The drive drops its stream on the **next clock** after a request goes out, not at
+  the next cell tick: the request/answer mismatch lasts one clock (the second review
+  found the tick-gated drop was effective 1 time in 56, and the bench could not see it
+  because its store answered 6 clocks later; `side_flip` now withholds the answer).
 * Selecting a drive is not the same as reading it: the drive that answers is the one
   whose select was up when the command started, and between commands that is nobody.
 * The store request is **re-asked at the index** the drive stands on: the payload that

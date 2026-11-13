@@ -4,10 +4,9 @@
 # ends with the summary `run_all: N passed, M failed`. Exits 0 only when M=0.
 # Called through tools/sim.sh:
 #   tools/sim.sh sim/run_all.sh
-# tb_tape_play takes ~35 minutes; tb_floppy is a few seconds of simulated disk time per
-# speed combination (two of its cases wait out a six-turn search, 1.2 s of disk each) and
-# its six combinations run at the same time - the wall time of the six together has not
-# been timed since the bench stopped walking to an index that cannot come.
+# tb_tape_play takes ~35 minutes and tb_floppy ~73 minutes (six speed combinations of a
+# disk that spins in real time, two of the cases waiting out a six-turn search), so
+# budget for them.
 set -u
 cd "$(dirname "$0")/.."
 
