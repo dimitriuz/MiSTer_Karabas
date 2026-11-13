@@ -39,8 +39,10 @@ Instructions for agents (and humans) changing this repository. Read these with:
 Simulation runtimes, so a long run is not mistaken for a hang:
 
 - `tb_mcu_emu` ≈ 10 min; `tb_tape_play` ≈ 35 min — it plays the test tapes in simulation
-  time, one 44.1 kHz sample per ≈638 clocks (28.125 MHz ÷ 44.1 kHz); everything else is
-  seconds. Budget `run_all` at ≈ 50 min.
+  time, one 44.1 kHz sample per ≈638 clocks (28.125 MHz ÷ 44.1 kHz); `tb_floppy` runs its six speed combinations at the same
+  time and takes ≈ 1 h 15 min of wall time in total (measured 2026-11-13: 73 min; the disk spins in
+  real time and two reads that have to fail cost 2.4 s of simulated time each). Budget
+  `run_all` at ≈ 50 min plus that hour.
 - The GHDL netlist `build/sim/tzxplayer_syn.v` is cached and rebuilt only when
   `sim/run_tb_tape_play.sh` changes.
 - Testbenches that wait on a signal must be guarded by an **edge count**, not by a `$time`

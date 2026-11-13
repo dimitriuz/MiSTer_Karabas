@@ -163,7 +163,7 @@ module floppy (
 - Consumes: the track-buffer and write-buffer `altsyncram` instances live **in the store** (Task 4); this module only drives their ports. In `tb_floppy` the bench instantiates `altsyncram_model` buffers and preloads them.
 - The runner compiles the real controller: `iverilog -g2012 -I upstream/karabas-go-core-profi/src/rtl/vg93` over `sim/tb_floppy.sv`, `sim/models/altsyncram_model.sv`, `rtl/disk/floppy.sv`, and `upstream/.../vg93/{hrdy_fdc.v,fdd_glue.v,vg93_*.v}`; it copies `vg93-microcode-rom.hex` next to the `.vvp` and runs `vvp` from that directory (`vg93_urom.v` does `$readmemh("vg93-microcode-rom.hex")` relative to cwd — the `run_fdc_sim.sh` precedent).
 
-- [ ] **Step 1: The bench first**, `sim/tb_floppy.sv`: DUT `floppy` + real `hrdy_fdc`, the CPU-side tasks (`io_wr`, `io_rd`, `wait_intrq`) copied from `upstream/.../src/sim/tb_hrdy_fdc.v` with the guards converted to edge counts, a bench store model (acks track requests with `ready`, captures `wr_info`/write buffer), and the reference track builder (the upstream bench's `build_track`, one 256-byte sector) preloading drive A's buffer. Parameters `DS80`, `TURBO`, and `CELL_NUM/CELL_DEN` driven by the runner. Cases, each `PASS <case>` / `FAIL <case> <reason>`, verdict `tb_floppy: PASS`:
+- [x] **Step 1: The bench first**, `sim/tb_floppy.sv`: DUT `floppy` + real `hrdy_fdc`, the CPU-side tasks (`io_wr`, `io_rd`, `wait_intrq`) copied from `upstream/.../src/sim/tb_hrdy_fdc.v` with the guards converted to edge counts, a bench store model (acks track requests with `ready`, captures `wr_info`/write buffer), and the reference track builder (the upstream bench's `build_track`, one 256-byte sector) preloading drive A's buffer. Parameters `DS80`, `TURBO`, and `CELL_NUM/CELL_DEN` driven by the runner. Cases, each `PASS <case>` / `FAIL <case> <reason>`, verdict `tb_floppy: PASS`:
   - `restore`: from track 3, command `0x08` → 3 steps ≈ 3 ms apart (TurboFDC), track 0, status busy=0 TR00=1.
   - `poll`: the TR-DOS `#3FD5` loop (64 reads of `#FF`, 47 T between) — turbo: period within 3 % of `(47+5)*8` clocks; turbo off: zero WAIT clocks.
   - `read_sector`: sector 1 → 256 bytes equal the reference, status 0.
@@ -175,8 +175,8 @@ module floppy (
   - `bad_crc`: the bench pre-corrupts one ID CRC byte in the buffer → the FDC reports RNF, no write captured.
   - `track_not_ready`: store model answers `ready=0` → the stream is `0x4E` filler, a read ends RNF, index still pulses; then `ready=1` with the matching echo → the next revolution reads the sector.
   - `no_motor`: motor off → no index, no flux.
-- [ ] **Step 2: Run** `tools/sim.sh sim/run_tb_floppy.sh` against a stub `floppy` (outputs tied) → FAIL on `restore` (no steps), proving the bench reaches the real controller.
-- [ ] **Step 3: Implement** `floppy.sv`; run until every case passes.
+- [x] **Step 2: Run** `tools/sim.sh sim/run_tb_floppy.sh` against a stub `floppy` (outputs tied) → FAIL on `restore` (no steps), proving the bench reaches the real controller.
+- [x] **Step 3: Implement** `floppy.sv`; run until every case passes.
 - [ ] **Step 4: The matrix.** The runner loops the six upstream combinations — `(DS80, SPEED, TURBO)` = `(0,1.0,1) (1,1.0,1) (0,1.02,1) (1,0.98,1) (0,1.0,0) (1,1.0,0)` — as cell pairs `4/225`, `14/675`, `8/459`, `28/1377`, `8/441`, `28/1323` (56.25×1.02 = 57.375 = 459/8; 48.2142857×0.98 = 47.25 = 1323/28). All six print `tb_floppy: PASS`; the script's verdict is the last line.
 - [ ] **Step 5: Commit** `disk: floppy drive model, proven against the real hrdy_fdc`.
 

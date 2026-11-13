@@ -106,13 +106,10 @@ module floppy (
         end
     endfunction
 
-    function [15:0] crc_a13;      // the CRC of the three sync bytes of a mark
-        reg [3:0] k;
-        begin
-            crc_a13 = 16'hFFFF;
-            for (k = 4'd0; k < 4'd3; k = k + 4'd1) crc_a13 = crc_byte(crc_a13, 8'hA1);
-        end
-    endfunction
+    // the CRC of the three sync bytes of a mark. A wire, not a zero-argument
+    // function: Quartus refuses to call a function with no arguments (the value
+    // is a constant, so a wire is what it is).
+    wire [15:0] crc_a13 = crc_byte(crc_byte(crc_byte(16'hFFFF, 8'hA1), 8'hA1), 8'hA1);
 
     // the MFM encoder of the upstream bench: sync words are 4489h (the clock
     // of the mark is missing), otherwise a clock bit between two 0 bits
@@ -149,15 +146,29 @@ module floppy (
     // ---------------- the head and the selection ----------------
     reg [6:0] trk_a = 7'd0;
     reg [6:0] trk_b = 7'd0;
+    reg       sel_drv = 1'b0;          // the drive that is held across a deselect
 
-    wire       drv       = swap ? fdc_drive[0] : fdc_drive[1];
+    // `hrdy_fdc` gates both select lines with `motor`, and `motor` is the chip's
+    // head-load output (`hrdy_fdc.v:133/140/170`), so the select lines are down
+    // whenever the head is not being loaded - which is the state a seek steps in:
+    // measured on the wire, a `SEEK` on a freshly selected drive emits its five
+    // pulses with `FDC_DS == 00` (`no_select` counts them and fails if none did).
+    // A step therefore belongs to the drive that is held, not to whoever is
+    // selected this instant: requiring the select to be up would mean no head ever
+    // moves, and a step that arrived before anything was selected goes nowhere
+    // rather than to drive A.
+    reg sel_seen = 1'b0;               // a drive has been selected since reset
+    wire       now_drv   = swap ? fdc_drive[0] : fdc_drive[1];
     wire       selected  = |fdc_drive;
     wire       side      = fdc_side_n;                 // FDC_SIDE1: high is side 1
-    wire [6:0] track     = drv ? trk_b : trk_a;
-    wire       stream_on = fdc_motor && selected && !reset;
+    wire [6:0] track     = sel_drv ? trk_b : trk_a;
+    wire       stream_on = fdc_motor && sel_seen && !reset;
+
+    wire       drv       = sel_drv;
 
     assign fdc_tr00 = (track == 7'd0);
     assign fdc_wprt = wprt[drv];
+    wire [8:0] cur = {drv, side, track};   // what the store is asked for
 
     reg step_d = 1'b0;
 
@@ -168,12 +179,22 @@ module floppy (
     always @(posedge clk) begin
         step_d <= fdc_step;
         if (reset) begin
-            trk_a <= 7'd0;
-            trk_b <= 7'd0;
+            sel_drv  <= 1'b0;
+            sel_seen <= 1'b0;
+            trk_a    <= 7'd0;
+            trk_b    <= 7'd0;
         end
-        else if (step_up) begin
-            if (drv) trk_b <= step_nx;
-            else     trk_a <= step_nx;
+        else begin
+            if (selected) begin
+                sel_drv  <= now_drv;
+                sel_seen <= 1'b1;
+            end
+            // the step counts for the held drive; before anything has been
+            // selected there is no drive to step at all
+            if (step_up && sel_seen) begin
+                if (sel_drv) trk_b <= step_nx;
+                else         trk_a <= step_nx;
+            end
         end
     end
 
@@ -196,7 +217,6 @@ module floppy (
         if (reset) begin
             acc  <= 17'd0;
             tick <= 1'b0;
-            rev  <= 17'd0;
         end
         else begin
             if (acc + {1'b0, cell_num} >= {1'b0, cell_den}) begin
@@ -240,6 +260,7 @@ module floppy (
 
     always @(posedge clk) begin
         if (reset) begin
+            rev       <= 17'd0;          // rev is reset and advanced here, once
             active    <= 1'b0;
             q_cur     <= {1'b0, FILLER};
             chan      <= 16'd0;
@@ -250,7 +271,13 @@ module floppy (
             fdc_index <= stream_on && (rev_n < IDX_TICKS);
             chan      <= chan_n;
             if (new_byte) q_cur  <= src_q;
-            if (new_rev)  active <= stream_ready;
+            // A request going out ends the track that is being read: the head
+            // has moved, and the store builds one buffer per drive and side in
+            // place, so what it holds until it answers for the new track is not
+            // that track's data. The drive reads 4Eh filler until the answer has
+            // arrived and the next index comes round.
+            if (cur != req_sent)  active <= 1'b0;
+            else if (new_rev)     active <= stream_ready;
         end
     end
 
@@ -274,26 +301,24 @@ module floppy (
     end
 
     // ---------------- the track request ----------------
-    wire [8:0] cur = {drv, side, track};
-
+    // (cur is declared with the head: the read stream has to see it too)
     always @(posedge clk) begin
         if (reset) begin
             trk_req_tgl  <= 1'b0;
-            wr_tgl       <= 1'b0;   // a toggle the store compares with 0
             trk_req      <= 9'd0;
             req_sent     <= 9'd0;
             stream_ready <= 1'b0;
             ack_seen     <= 1'b0;
             wrack_seen   <= 1'b0;
-            wr_pend      <= 1'b0;
         end
         else begin
             ack_seen   <= ack_s2;
             wrack_seen <= wrack_s2;
 
-            // an answer for the request that is out: ready switches the stream
+            // an answer for the request that is out: only a matching echo
+            // switches the stream, ready of an answer for another request is
+            // nothing this drive may believe
             if (ack_ev && (trk_ack[8:0] == req_sent)) stream_ready <= trk_ack[9];
-            if (wrack_ev) wr_pend <= 1'b0;
 
             if (cur != req_sent) begin
                 req_sent     <= cur;
@@ -382,8 +407,14 @@ module floppy (
             dtc   <= 16'd0;
             rsync <= 2'd0;
             rst   <= 3'd0;
+            wr_tgl <= 1'b0;         // the store's toggle pair belongs to this
+            wr_pend <= 1'b0;        // block alone: Quartus rejects two drivers
         end
         else begin
+            // the store answered for the last written sector (cleared here, and
+            // before the WGATE fall below, so a field completed in the same
+            // clock keeps its pending flag)
+            if (wrack_ev) wr_pend <= 1'b0;
             // ---- the clock of the write intervals ----
             if (wg_rise || (wd_rise && fdc_wgate)) dtc <= 16'd0;
             else if (dtc != 16'hFFFF) dtc <= dtc + 16'd1;
@@ -435,7 +466,7 @@ module floppy (
                     if (wsr_n == SYNC3) begin
                         wst   <= W_MARK;
                         wbits <= 4'd0;
-                        wcrc  <= crc_a13();
+                        wcrc  <= crc_a13;
                     end
                 end
                 else if (wbits == 4'd15) begin
