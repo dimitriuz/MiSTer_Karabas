@@ -23,7 +23,8 @@ CLI:
   mk_disk.py trd       OUT.trd [--tracks N] [--boot]
   mk_disk.py cpm       OUT.cpm [--tracks N]
   mk_disk.py fdi       OUT.fdi [--layout trd|wide]
-  mk_disk.py reftrack  OUT --track T --side S [--cpm]
+  mk_disk.py reffrom   OUT --image IMG --kind trd|cpm|fdi --track T --side S
+  mk_disk.py fdistream OUT --image IMG T:S [T:S ...]
   mk_disk.py ls        IMG        (VHD partition or TRD catalog)
   mk_disk.py cat       IMG NAME
 """
@@ -412,28 +413,37 @@ def _ccitt(data):
     return crc
 
 
-def reftrack(path, track, side, sectors, cpm=False):
+def reftrack(path, track, side, sectors, cpm=False, fdi=False):
     """write the reference track as hex (one byte per line) and <path>.sync
 
     Per sector: 10x4E, 12x00, 3xA1 + FE + C,H,R,N + CRC, 22x4E, 12x00,
     3xA1 + FB + data + CRC, 60x4E; CCITT-FFFF over the three A1s, the
     mark and the payload, high byte first (MakeVGCRC); padded with 4E
-    to 6250. TR-DOS writes H = 0 on both sides, CP/M H = side. Sync
-    flags are 1 at exactly the six A1 positions. `sectors` entries are
-    (C, H, R, N, data); the ID record's H is `side` (CP/M) or 0 (TR-DOS),
-    so the tuple's H is ignored."""
+    to 6250. TR-DOS writes H = 0 on both sides, CP/M H = side, and for
+    `fdi` the ID's H is the sector tuple's own. Sync flags are 1 at
+    exactly the six A1 positions. `sectors` entries are (C, H, R, N,
+    data); for the non-FDI kinds the ID record's H is `side` (CP/M) or 0
+    (TR-DOS) and the tuple's H is ignored. A tuple with data=None is an
+    FDI "no data" sector (flags 0x40): ID only, no data mark, and the
+    trailing 4E gap follows the ID's CRC.
+    """
     path = Path(path)
     image = bytearray()
     sync = []
-    for (c, _, r, n, data) in sectors:
+    for (c, h, r, n, data) in sectors:
+        idh = h if fdi else (side if cpm else 0)
+        head = bytearray(b"\x4e" * 10 + b"\x00" * 12 + b"\xa1\xa1\xa1\xfe")
+        head += bytes([c, idh, r, n])
+        crc = _ccitt(bytes(head[-8:]))
+        head += bytes([crc >> 8, crc & 0xFF])
+        if data is None:
+            image += head + b"\x4e" * 60
+            sync += [0] * 22 + [1, 1, 1] + [0] * 7 + [0] * 60
+            continue
         if len(data) != 128 << n:
             raise ValueError(f"mk_disk: reftrack: sector R{r} holds "
                              f"{len(data)} bytes, N = {n} means "
                              f"{128 << n}")
-        head = bytearray(b"\x4e" * 10 + b"\x00" * 12 + b"\xa1\xa1\xa1\xfe")
-        head += bytes([c, side if cpm else 0, r, n])
-        crc = _ccitt(bytes(head[-8:]))
-        head += bytes([crc >> 8, crc & 0xFF])
         body = bytearray(b"\x4e" * 22 + b"\x00" * 12 + b"\xa1\xa1\xa1\xfb")
         body += data
         crc = _ccitt(bytes(body[-(len(data) + 4):]))
@@ -458,6 +468,107 @@ def _ref_sectors(track, cpm):
              bytes((((r - 1) * size + j) * 7 + 3) & 0xFF
                    for j in range(size)))
             for r in range(1, count + 1)]
+
+
+def _fdi_walk(image):
+    """(tracks, sides, off_data, blocks) of an FDI image
+
+    blocks is the track table in its file order (cylinder-major, side-
+    minor): each entry is (DataOffset, [(C, H, R, N, flags, offset), ...]).
+    """
+    tracks = struct.unpack_from("<H", image, 4)[0]
+    sides = struct.unpack_from("<H", image, 6)[0]
+    off_data = struct.unpack_from("<H", image, 0x0A)[0]
+    pos = 0x0E
+    blocks = []
+    for _ in range(tracks * sides):
+        data_off, _, count = struct.unpack_from("<IHB", image, pos)
+        pos += 7
+        secs = [struct.unpack_from("<5BH", image, pos + 7 * i)
+                for i in range(count)]
+        pos += 7 * count
+        blocks.append((data_off, secs))
+    return tracks, sides, off_data, blocks
+
+
+def reffrom(path, image, track, side, kind):
+    """the reference track of a real image: kind is trd, cpm or fdi
+
+    The sector data are the image's own bytes at the offsets the drive's
+    track builder reads, so the reference and the hardware see the very
+    same contents (the CLI's pattern sectors only match a pattern image:
+    a TRD track 0 carries the catalog, and CP/M's side 1 sits at an odd
+    multiple of 5120 inside its two-side track block).
+    """
+    image = Path(image).read_bytes()
+    if kind == "trd":
+        lt = track * 2 + side
+        sectors = [(track, 0, r, 1,
+                    image[lt * 4096 + (r - 1) * 256: lt * 4096 + r * 256])
+                   for r in range(1, 17)]
+        reftrack(path, track, side, sectors)
+    elif kind == "cpm":
+        lt = track * 2 + side
+        sectors = [(track, side, r, 3,
+                    image[lt * 5120 + (r - 1) * 1024: lt * 5120 + r * 1024])
+                   for r in range(1, 6)]
+        reftrack(path, track, side, sectors, cpm=True)
+    elif kind == "fdi":
+        tracks, sides, off_data, blocks = _fdi_walk(image)
+        data_off, secs = blocks[track * sides + side]
+        sectors = []
+        for (c, h, r, n, flags, off) in secs:
+            if flags & 0x40:
+                sectors.append((c, h, r, n, None))
+            else:
+                base = off_data + data_off + off
+                sectors.append((c, h, r, n,
+                                image[base: base + (128 << n)]))
+        reftrack(path, track, side, sectors, fdi=True)
+    else:
+        raise ValueError(f"mk_disk: reffrom: unknown kind {kind!r}")
+
+
+def fdistream(path, image, pairs):
+    """the fill program of the store's table and data ports, for FDI images
+
+    Lines of address and data (one hex value per line): the bytes a host
+    fills a drive with — the table block of each requested (track, side)
+    (header and sector records) and the data-area bytes of its sectors.
+    The addresses are the store's table layout: bit 21 tags a table byte,
+    bit 20 selects its header ({1, track, byte}) from its sector records
+    ({0, track, sector, byte}); a data byte is addressed by its index in
+    the data area. A flags-0x40 sector streams no data.
+    """
+    image = Path(image).read_bytes()
+    tracks, sides, off_data, blocks = _fdi_walk(image)
+    lines = []
+    pos_table = 0x0E
+    for idx, (data_off, secs) in enumerate(blocks):
+        t, s = divmod(idx, sides)
+        if (t, s) in pairs:
+            for i in range(7 * (1 + len(secs))):
+                b = i % 7
+                rec = i // 7
+                val = image[pos_table + i]
+                if rec == 0:
+                    if b == 5:               # the reserved u16's low half
+                        continue
+                    addr = 0x300000 | (idx << 3) | (4 if b == 6 else b)
+                else:
+                    addr = 0x200000 | (idx << 8) | ((rec - 1) << 3) | b
+                lines.append((addr, val))
+        pos_table += 7 + 7 * len(secs)
+    for (t, s) in pairs:
+        data_off, secs = blocks[t * sides + s]
+        for (c, h, r, n, flags, off) in secs:
+            if flags & 0x40:
+                continue
+            base = off_data + data_off + off
+            for j in range(128 << n):
+                lines.append((data_off + off + j, image[base + j]))
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text("".join(f"{a:08X}\n{b:02X}\n" for a, b in lines))
 
 
 def main(argv=None):
@@ -486,6 +597,18 @@ def main(argv=None):
     rt.add_argument("--track", type=int, required=True)
     rt.add_argument("--side", type=int, required=True)
     rt.add_argument("--cpm", action="store_true")
+    rf = sub.add_parser("reffrom",
+                        help="reference track from a real image")
+    rf.add_argument("path")
+    rf.add_argument("--image", required=True)
+    rf.add_argument("--kind", choices=("trd", "cpm", "fdi"), required=True)
+    rf.add_argument("--track", type=int, required=True)
+    rf.add_argument("--side", type=int, required=True)
+    fs = sub.add_parser("fdistream",
+                        help="the store fill program of an FDI image")
+    fs.add_argument("path")
+    fs.add_argument("--image", required=True)
+    fs.add_argument("pairs", nargs="+", metavar="TRACK:SIDE")
     ls = sub.add_parser("ls", help="list a VHD partition or a TRD catalog")
     ls.add_argument("path")
     cat = sub.add_parser("cat", help="write one image file to stdout")
@@ -511,6 +634,13 @@ def main(argv=None):
     elif args.cmd == "reftrack":
         reftrack(args.path, args.track, args.side,
                  _ref_sectors(args.track, args.cpm), cpm=args.cpm)
+        print(args.path)
+    elif args.cmd == "reffrom":
+        reffrom(args.path, args.image, args.track, args.side, args.kind)
+        print(args.path)
+    elif args.cmd == "fdistream":
+        pairs = [tuple(int(v) for v in p.split(":")) for p in args.pairs]
+        fdistream(args.path, args.image, pairs)
         print(args.path)
     elif args.cmd == "ls":
         if Path(args.path).suffix == ".trd":

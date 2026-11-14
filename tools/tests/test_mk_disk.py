@@ -370,5 +370,133 @@ class ReftrackTest(unittest.TestCase):
                              sectors=[(0, 0, 1, 1, bytes(512))])
 
 
+
+
+def parse_stream(path):
+    """fdistream output: pairs of (address, data)"""
+    vals = [int(line, 16) for line in Path(path).read_text().splitlines()]
+    return list(zip(vals[0::2], vals[1::2]))
+
+
+class ReffromTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.img = Path(self.tmp.name) / "t.img"
+        self.out = Path(self.tmp.name) / "ref"
+
+    def test_reffrom_trd(self):
+        mk_disk.trd(self.img)                 # the auto-run boot disk
+        img = self.img.read_bytes()
+        mk_disk.reffrom(self.out, self.img, track=5, side=1, kind="trd")
+        data, _ = parse_reftrack(self.out)
+        for r in range(1, 17):
+            base = (r - 1) * 388
+            self.assertEqual(data[base + 22:base + 30],
+                             bytes([0xA1, 0xA1, 0xA1, 0xFE, 5, 0, r, 1]))
+            want = ccitt([0xA1, 0xA1, 0xA1, 0xFE, 5, 0, r, 1])
+            self.assertEqual(data[base + 30:base + 32],
+                             struct.pack(">H", want))
+            self.assertEqual(data[base + 70:base + 326],
+                             trd_sector(img, 5, 1, r))
+
+    def test_reffrom_trd_uses_the_image(self):
+        # track 0 side 0 is the catalog: its sector 1 is the first
+        # directory entry, not any pattern the CLI could invent
+        mk_disk.trd(self.img)
+        img = self.img.read_bytes()
+        mk_disk.reffrom(self.out, self.img, track=0, side=0, kind="trd")
+        data, _ = parse_reftrack(self.out)
+        self.assertEqual(data[70:78], img[0:8])
+        self.assertEqual(data[70], ord("b"))  # the boot file's entry
+
+    def test_reffrom_cpm(self):
+        mk_disk.cpm(self.img, tracks=80)
+        img = self.img.read_bytes()
+        mk_disk.reffrom(self.out, self.img, track=3, side=1, kind="cpm")
+        data, _ = parse_reftrack(self.out)
+        lt = 7
+        for r in range(1, 6):
+            base = (r - 1) * 1156
+            self.assertEqual(data[base + 22:base + 30],
+                             bytes([0xA1, 0xA1, 0xA1, 0xFE, 3, 1, r, 3]))
+            self.assertEqual(data[base + 70:base + 70 + 1024],
+                             img[lt * 5120 + (r - 1) * 1024:
+                                 lt * 5120 + r * 1024])
+        # side 1 sits 5120 into its two-side track block: byte value
+        # (5120 * 7 + 3) & 0xFF, where the CLI pattern would say 3
+        self.assertEqual(data[70], (5120 * 7 + 3) & 0xFF)
+
+    def test_reffrom_fdi(self):
+        mk_disk.fdi(self.img, tracks=4)
+        img = self.img.read_bytes()
+        off_data = struct.unpack_from("<H", img, 0x0A)[0]
+        mk_disk.reffrom(self.out, self.img, track=0, side=1, kind="fdi")
+        data, _ = parse_reftrack(self.out)
+        for r in range(1, 17):
+            base = (r - 1) * 388
+            # H comes from the sector record, and it is the side
+            self.assertEqual(data[base + 22:base + 30],
+                             bytes([0xA1, 0xA1, 0xA1, 0xFE, 0, 1, r, 1]))
+            want = ccitt([0xA1, 0xA1, 0xA1, 0xFE, 0, 1, r, 1])
+            self.assertEqual(data[base + 30:base + 32],
+                             struct.pack(">H", want))
+            self.assertEqual(data[base + 70:base + 326],
+                             img[off_data + 4096 + (r - 1) * 256:
+                                 off_data + 4096 + r * 256])
+
+    def test_reffrom_fdi_nodata(self):
+        mk_disk.fdi(self.img, tracks=2, layout="wide")
+        mk_disk.reffrom(self.out, self.img, track=0, side=0, kind="fdi")
+        data, sync = parse_reftrack(self.out)
+        base = 8 * 644                       # after the eight 512 B sectors
+        self.assertEqual(data[base + 22:base + 30],
+                         bytes([0xA1, 0xA1, 0xA1, 0xFE, 0, 0, 9, 1]))
+        want = ccitt([0xA1, 0xA1, 0xA1, 0xFE, 0, 0, 9, 1])
+        self.assertEqual(data[base + 30:base + 32], struct.pack(">H", want))
+        # ID only: the 4E gap follows the ID's CRC, no data mark anywhere
+        self.assertEqual(data[base + 32], 0x4E)
+        self.assertNotIn(0xFB, data[base + 32:base + 92])
+        self.assertEqual(sync[base + 22:base + 25], [1, 1, 1])
+        self.assertEqual(set(s for s in sync[base + 25:base + 92]), {0})
+
+
+class FdistreamTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.img = Path(self.tmp.name) / "t.fdi"
+        self.out = Path(self.tmp.name) / "prog"
+
+    def test_fdistream_table(self):
+        mk_disk.fdi(self.img, tracks=2, layout="wide")
+        img = self.img.read_bytes()
+        mk_disk.fdistream(self.out, self.img, [(0, 0)])
+        prog = parse_stream(self.out)
+        table = {a: d for a, d in prog if a & 0x200000}
+        # the track header of block 0: u32 DataOffset, then the count
+        for b, v in enumerate(struct.pack("<I", 0)):
+            self.assertEqual(table[0x300000 | b], v)
+        self.assertEqual(table[0x300000 | 4], 9)
+        self.assertNotIn(0x300000 | 5, table)
+        for s in range(9):
+            rec = struct.unpack_from("<5BH", img, 0x0E + 7 + 7 * s)
+            for b, v in enumerate(struct.pack("<5BH", *rec)):
+                self.assertEqual(table[0x200000 | (s << 3) | b], v)
+        # block 1 (track 0, side 1) is not requested and not streamed
+        self.assertNotIn(0x300000 | 8, table)
+
+    def test_fdistream_data(self):
+        mk_disk.fdi(self.img, tracks=2, layout="wide")
+        img = self.img.read_bytes()
+        off_data = struct.unpack_from("<H", img, 0x0A)[0]
+        mk_disk.fdistream(self.out, self.img, [(0, 0)])
+        prog = parse_stream(self.out)
+        data = {a: d for a, d in prog if not a & 0x200000}
+        self.assertEqual(len(data), 8 * 512)  # the 0x40 sector has none
+        for addr, val in data.items():
+            self.assertEqual(val, img[off_data + addr])
+
+
 if __name__ == "__main__":
     unittest.main()
