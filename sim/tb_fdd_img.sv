@@ -116,6 +116,9 @@ module tb_fdd_img;
         .ddr_dout_ready(ddr_dout_ready)
     );
 
+
+
+
     ddram_model #(
         .LAT(4),
         .BUSY_PCT(20),
@@ -291,10 +294,30 @@ module tb_fdd_img;
         end
     endtask
 
+    reg         lrq_valid = 1'b0;               // the last track request's
+    reg         lrq_d     = 1'b0;               // drive, for the interrupt
+    reg [8:0]   lrq_req   = 9'd0;               // echo the store replays
+
     task automatic fill_config(input d, input [1:0] kind,
                                input [6:0] tracks, input sides);
+        integer k;
+        reg seen;
         begin
             fill_send({2'd0, d, kind, tracks, sides, 19'd0});
+            // A remount of the drive that streams interrupts it: the store
+            // answers an unsolicited not-ready with the last echo (ruling
+            // I3). It lands two clocks after the fill ack when the store
+            // was idle; a config that kills a build answers earlier still,
+            // and no second one follows.
+            if (lrq_valid && lrq_d == d) begin
+                seen = trk_ack_tgl;
+                k = 0;
+                @(posedge bclk);
+                while (trk_ack_tgl === seen && k < 32) begin
+                    @(posedge bclk);
+                    k = k + 1;
+                end
+            end
         end
     endtask
 
@@ -339,6 +362,9 @@ module tb_fdd_img;
             @(posedge bclk);
             trk_req     <= {d, s, t};
             trk_req_tgl <= ~trk_req_tgl;
+            lrq_valid  = 1'b1;
+            lrq_d      = d;
+            lrq_req    = {d, s, t};
             seen        = trk_ack_tgl;
             k           = 0;
             @(posedge bclk);
@@ -355,6 +381,131 @@ module tb_fdd_img;
                          trk_ack[8:0], {d, s, t});
                 errors = errors + 1;
             end
+        end
+    endtask
+
+    // a request whose ack is collected later, and a bare wait for one ack
+    task automatic req_nowait(input d, input s, input [6:0] t);
+        begin
+            @(posedge bclk);
+            trk_req     <= {d, s, t};
+            trk_req_tgl <= ~trk_req_tgl;
+            lrq_valid   = 1'b1;
+            lrq_d       = d;
+            lrq_req     = {d, s, t};
+        end
+    endtask
+
+    task automatic ack_wait(input [8*40-1:0] who,
+                            input d, input s, input [6:0] t,
+                            output rdy);
+        integer k;
+        reg seen;
+        begin
+            seen = trk_ack_tgl;
+            k    = 0;
+            @(posedge bclk);
+            while (trk_ack_tgl === seen) begin
+                @(posedge bclk);
+                k = k + 1;
+                if (k > REQ_BUDGET) tfail("a track request was never acked");
+            end
+            rdy = trk_ack[9];
+            if (trk_ack[8:0] !== {d, s, t}) begin
+                $display("FAIL %0s: ack echo %03o is not the request %03o",
+                         who, trk_ack[8:0], {d, s, t});
+                errors = errors + 1;
+            end
+        end
+    endtask
+
+    // a sector write whose ack is collected later
+    reg wr_seen;
+    task automatic wr_issue(input d, input s, input [6:0] t,
+                            input [7:0] C, H, R, input [2:0] N,
+                            input integer len, input integer kind,
+                            input [7:0] c);
+        integer k;
+        begin
+            for (k = 0; k < len; k = k + 1) begin
+                @(posedge bclk);
+                wr_addr <= k[9:0];
+                wr_data <= pat(kind, k, c);
+                wr_we   <= 1'b1;
+                @(posedge bclk);
+                wr_we   <= 1'b0;
+            end
+            @(posedge bclk);
+            wr_info    <= {d, s, t, C, H, R, N};
+            wr_tgl     <= ~wr_tgl;
+            wr_seen    = wr_ack_tgl;
+        end
+    endtask
+
+    // the scheduler's race: the write and the request toggle on the very
+    // same bclk edge, so one IDLE visit must serve the write first
+    task automatic wr_race_req(input d, input s, input [6:0] t,
+                               input [7:0] C, H, R, input [2:0] N,
+                               input integer len, input integer kind,
+                               input [7:0] c,
+                               input rd, input rs, input [6:0] rt);
+        integer k;
+        begin
+            for (k = 0; k < len; k = k + 1) begin
+                @(posedge bclk);
+                wr_addr <= k[9:0];
+                wr_data <= pat(kind, k, c);
+                wr_we   <= 1'b1;
+                @(posedge bclk);
+                wr_we   <= 1'b0;
+            end
+            @(posedge bclk);
+            wr_info     <= {d, s, t, C, H, R, N};
+            wr_tgl      <= ~wr_tgl;
+            wr_seen     = wr_ack_tgl;
+            trk_req     <= {rd, rs, rt};
+            trk_req_tgl <= ~trk_req_tgl;
+            lrq_valid   = 1'b1;
+            lrq_d       = rd;
+            lrq_req     = {rd, rs, rt};
+        end
+    endtask
+
+    task automatic wr_expect(input [8*40-1:0] who);
+        integer k;
+        begin
+            k = 0;
+            @(posedge bclk);
+            while (wr_ack_tgl === wr_seen) begin
+                @(posedge bclk);
+                k = k + 1;
+                if (k > WR_BUDGET) tfail("a written sector was never acked");
+            end
+        end
+    endtask
+
+    reg fa_seen;
+
+    // the remount's race: the config toggles on the very edge the request
+    // does, so it lands while the store is already in the builder
+    task automatic req_race_config(input d, input s, input [6:0] t);
+        begin
+            fa_seen = fill_ack_tgl;
+            @(posedge bclk);
+            trk_req     <= {d, s, t};
+            trk_req_tgl <= ~trk_req_tgl;
+            fill_word   <= {2'd0, d, 2'd0, 7'd80, 1'b1, 19'd0};
+            fill_tgl    <= ~fill_tgl;
+            lrq_valid   = 1'b1;
+            lrq_d       = d;
+            lrq_req     = {d, s, t};
+        end
+    endtask
+
+    // one raw image byte (a forged FDI block writes its own table bytes)
+    task automatic fill_raw(input [21:0] a, input [7:0] v);
+        begin
+            fill_send({2'd1, a, v});
         end
     endtask
 
@@ -402,12 +553,15 @@ module tb_fdd_img;
     endtask
 
     // ---------------- the drain host ----------------
-    integer dn_seen = 0;                        // toggles counted
-    integer dnq_n   = 0;                        // toggles consumed
-    integer dnq_drv [0:63];
+    integer dn_seen = 0;                        // presentations counted
+    integer dnq_n   = 0;                        // presentations consumed
+    reg     dn_armed = 1'b0;                    // armed on reset release:
+                                                // the X to 0 of the output
+    integer dnq_drv [0:63];                     // is not a presentation
     integer dnq_blk [0:63];
 
-    always @(posedge drn_tgl) begin
+    always @(negedge reset) dn_armed = 1'b1;
+    always @(drn_tgl) if (dn_armed) begin
         if (dn_seen < 64) begin
             dnq_drv[dn_seen] = drn_info[11];
             dnq_blk[dn_seen] = drn_info[10:0];
@@ -836,6 +990,7 @@ module tb_fdd_img;
     localparam [1:0] KIND_TRD = 2'd0, KIND_CPM = 2'd1, KIND_FDI = 2'd2;
 
     initial begin : test
+        integer k, r, b, i;
         @(posedge clk);
         reset <= 1'b1;
         repeat (10) @(posedge clk);
@@ -1004,6 +1159,147 @@ module tb_fdd_img;
         expect_drain(1'b1, 11'd83, 1'b0);
         expect_no_drain("remount_mid_drain: a third block");
         case_end("remount_mid_drain");
+
+        // ---------------- bounds_not_ready ----------------
+        // a 40 track single sided mount: the store answers out of range
+        // requests with a not-ready, the last legal one stays ready
+        case_start();
+        fill_config(1'b0, KIND_TRD, 7'd40, 1'b0);
+        fill_ready(1'b0);
+        req_track(1'b0, 1'b0, 7'd40, rdy);
+        if (rdy) bad("bounds: track 40 of a 40 track mount is ready");
+        req_track(1'b0, 1'b1, 7'd0, rdy);
+        if (rdy) bad("bounds: side 1 of a single sided mount is ready");
+        req_track(1'b0, 1'b0, 7'd39, rdy);
+        if (!rdy) bad("bounds: track 39 of 40 must be ready");
+        case_end("bounds_not_ready");
+
+        // ---------------- redirty_during_drain ----------------
+        // the block picked for drain is written again before its ack: it
+        // must be drained a second time carrying both writes
+        case_start();
+        fill_config(1'b0, KIND_TRD, 7'd80, 1'b1);
+        fill_mem(0, 21'd0, 4096);
+        fill_ready(1'b0);
+        req_track(1'b0, 1'b0, 7'd0, rdy);
+        wr_sector(1'b0, 1'b0, 7'd0, 8'd0, 8'd0, 8'd3, 3'd1, 256, 0, 8'd0);
+        wait_drain_toggle;                          // block 1 picked, no ack
+        wr_sector(1'b0, 1'b0, 7'd0, 8'd0, 8'd0, 8'd4, 3'd1, 256, 2, 8'h5C);
+        // the first drain may mix: only its identity and ack matter
+        expect_drain(1'b0, 11'd1, 1'b0);
+        build_exp(0, 1, 21'd512, 256, 0, 8'd0);     // R3: A0^j at 512..767
+        for (k = 256; k < 512; k = k + 1)           // R4: 5C+j at 768..1023
+            exp_blk[k] = pat(2, k - 256, 8'h5C);
+        expect_drain(1'b0, 11'd1, 1'b1);            // the re-dirty drains
+        expect_no_drain("redirty: a third drain of block 1");
+        case_end("redirty_during_drain");
+
+        // ---------------- remount_aborts_build ----------------
+        // a config that lands during a build of the same drive answers the
+        // waiting request with a not-ready and leaves the drive unready
+        case_start();
+        fill_config(1'b0, KIND_TRD, 7'd80, 1'b1);
+        fill_mem(0, 21'd0, 4096);
+        fill_ready(1'b0);
+        req_race_config(1'b0, 1'b0, 7'd0);          // the config toggles on
+        k = 0;                                      // the request's own edge
+        @(posedge bclk);
+        while (fill_ack_tgl === fa_seen) begin
+            @(posedge bclk);
+            k = k + 1;
+            if (k > FILL_BUDGET) tfail("the racing config was never acked");
+        end
+        ack_wait("abort", 1'b0, 1'b0, 7'd0, rdy);   // the kill's not-ready
+        if (rdy) bad("abort: the kill must ack the old request not-ready");
+        req_track(1'b0, 1'b0, 7'd0, rdy);
+        if (rdy) bad("abort: still ready right after the remount");
+        fill_mem(0, 21'd0, 4096);
+        fill_ready(1'b0);
+        req_track(1'b0, 1'b0, 7'd0, rdy);           // state survived
+        if (!rdy) bad("abort: the remounted drive never streamed");
+        check_track("abort: rebuilt after the abort", 0);
+        case_end("remount_aborts_build");
+
+        // ---------------- write_and_request ----------------
+        // a write and a new request pending together: the write must keep
+        // the position table it was asked for, not the requested track's
+        case_start();
+        req_track(1'b0, 1'b1, 7'd5, rdy);           // stream t5s1 (A loaded)
+        if (!rdy) bad("w+r: t5s1 not ready");
+        wr_race_req(1'b0, 1'b1, 7'd5, 8'd5, 8'd1, 8'd3, 3'd1, 256, 2, 8'h31,
+                    1'b0, 1'b0, 7'd0);              // both toggle on one edge
+        ack_wait("w+r", 1'b0, 1'b0, 7'd0, rdy);
+        if (!rdy) bad("w+r: t0s0 not ready");
+        wr_expect("w+r");
+        dd_expect("w+r: t5s1 file bytes", 1'b0, 21'd45568, 256, 2, 8'h31);
+        build_exp(0, 89, 21'd45568, 256, 2, 8'h31);
+        expect_drain(1'b0, 11'd89, 1'b1);
+        expect_no_drain("w+r: a second block");
+        case_end("write_and_request");
+
+        // ---------------- fdi_drive1_forged ----------------
+        // FDI on drive 1 (position tables hold two drives) and a forged
+        // track 2/1 block the bench built byte by byte: write-back must
+        // match it by C,H,R,N and patch drive 1's own DDR window
+        case_start();
+        fill_config(1'b1, KIND_FDI, 7'd80, 1'b1);
+        fill_prog(0);                               // the real track 0/1
+        // header: ti = track 2 side 1 (2*2+1), DataOffset 0x2000, 4 records
+        fill_raw(22'h300000 | (5 << 3) | 0, 8'h00);
+        fill_raw(22'h300000 | (5 << 3) | 1, 8'h20);
+        fill_raw(22'h300000 | (5 << 3) | 2, 8'h00);
+        fill_raw(22'h300000 | (5 << 3) | 3, 8'h00);
+        fill_raw(22'h300000 | (5 << 3) | 4, 8'd4);
+        for (r = 0; r < 4; r = r + 1)
+            for (b = 0; b < 7; b = b + 1)
+                fill_raw(22'h200000 | (5 << 8) | (r << 3) | b[2:0],
+                         (b == 0) ? 8'd2    : (b == 1) ? 8'd1  :
+                         (b == 2) ? (r + 1) : (b == 3) ? 8'd1  :
+                         (b == 4) ? ((r == 3) ? 8'h40 : 8'd0) :
+                         (b == 6) ? {5'd0, r[2:0]}     : 8'd0);
+        for (i = 0; i < 1024; i = i + 1)
+            fill_raw(21'h2000 + i[20:0], pat(2, i, 8'h5A));
+        fill_ready(1'b1);
+        req_track(1'b1, 1'b1, 7'd0, rdy);           // the real block, drive 1
+        if (!rdy) bad("fdi1: drive 1 track 0 not ready");
+        check_track("fdi1 t0s1", 4);
+        req_track(1'b1, 1'b1, 7'd2, rdy);           // the forged block
+        if (!rdy) bad("fdi1: the forged track 2 is not ready");
+        for (r = 0; r < 3; r = r + 1)              // record 4 has no data
+            check_patch("fdi1 forged", 13'd70 + r * 388, 256, 2, 8'h5A);
+        wr_sector(1'b1, 1'b1, 7'd2, 8'd2, 8'd1, 8'd3, 3'd1, 256, 2, 8'h77);
+        check_patch("fdi1 patched", 13'd846, 256, 2, 8'h77);
+        dd_expect("fdi1: forged data", 1'b1, 21'h2200, 256, 2, 8'h77);
+        wr_sector(1'b1, 1'b1, 7'd2, 8'd2, 8'd1, 8'd2, 3'd1, 256, 1, 8'd0);
+        check_patch("fdi1 patched 2", 13'd458, 256, 1, 8'd0);
+        dd_expect("fdi1: record 2", 1'b1, 21'h2100, 256, 1, 8'd0);
+        wr_sector(1'b1, 1'b1, 7'd2, 8'd2, 8'd1, 8'd4, 3'd1, 256, 1, 8'd0);
+        dd_expect("fdi1: no data stays", 1'b1, 21'h2300, 256, 2, 8'h5A);
+        expect_no_drain("fdi1: an FDI write never drains");
+        case_end("fdi_drive1_forged");
+
+        // ---------------- fdi_overflow ----------------
+        // six 1 KiB records do not fit the 8 KiB track buffer: not ready
+        case_start();
+        fill_config(1'b1, KIND_FDI, 7'd80, 1'b1);
+        fill_raw(22'h300000 | (6 << 3) | 0, 8'h00);
+        fill_raw(22'h300000 | (6 << 3) | 1, 8'h00);
+        fill_raw(22'h300000 | (6 << 3) | 2, 8'h40);
+        fill_raw(22'h300000 | (6 << 3) | 3, 8'h00);
+        fill_raw(22'h300000 | (6 << 3) | 4, 8'd6);
+        for (r = 0; r < 6; r = r + 1)
+            for (b = 0; b < 7; b = b + 1)
+                fill_raw(22'h200000 | (6 << 8) | (r << 3) | b[2:0],
+                         (b == 0) ? 8'd3    : (b == 2) ? (r + 1) :
+                         (b == 3) ? 8'd3    :
+                         (b == 6) ? {3'd0, r[2:0], 2'd0} : 8'd0);
+        for (i = 0; i < 5120; i = i + 1)            // the first five records
+            fill_raw(21'h4000 + i[20:0], pat(2, i, 8'h11));
+        fill_ready(1'b1);
+        req_track(1'b1, 1'b0, 7'd3, rdy);
+        if (rdy) bad("overflow: 6 x 1024 B does not fit 8 KiB");
+        case_end("fdi_overflow");
+
 
         // ---------------- verdict ----------------
         $display("tb_fdd_img: %0d errors", errors);

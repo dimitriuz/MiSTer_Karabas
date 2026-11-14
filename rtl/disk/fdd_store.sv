@@ -39,14 +39,24 @@
 // from the record) and formats each sector exactly as mk_disk.reftrack
 // writes it - 10x4E, 12x00, 3xA1 + FE + C,H,R,N + CRC, 22x4E, 12x00, 3xA1 +
 // FB + data + CRC, 60x4E, CCITT-FFFF over the three A1s, the mark and the
-// data, high byte first - a flags-0x40 FDI sector emitting the ID block and
-// the tail only. The track buffer (8192x9 per drive, {sync, byte}, sync 1
-// only at the six A1s) is written whole and padded to 6250 with 4E. Each
-// sector records {buffer offset of its data, file offset, ok} in the
-// drive's position table, and the ack answers {ready, echo} - ready 0 (no
-// image mounted, the track beyond the mounted geometry, an FDI block with
-// no sectors) acks without building, which is what an empty drive looks
-// like to the chip.
+// CRC of the data. A track buffer (8192x9 {sync, byte}, sync 1 only at the
+// six A1s) is written whole and padded to 6250 with 4E. Each request for a
+// drive that is not ready, or outside the geometry its config declared
+// (tracks, sides), or for an empty track (no sectors) acks without
+// building, which is what an empty drive looks like to the chip.
+//
+// The FDI table lives in this module in 232-byte blocks: 32 records of 7
+// bytes at 0..223, the 5-byte header (DataOffset[20:0], count) at 224, so
+// the header and record 31 cannot collide. Track and side pick the block
+// (index = track*2 + side, 84*2 = 168 per drive). cfg_drv belongs to the
+// config event: fills from the two drives must not interleave (the host
+// protocol is serial; fdd_src guarantees it).
+//
+// A config interrupts whatever the drive was doing: a build in flight for
+// that drive aborts with a not-ready ack (never ready=1 for the image the
+// host is replacing), and a config that lands while the drive streams
+// answers an unsolicited not-ready with the last request echo, so the
+// floppy drops the stale stream.
 //
 // Write-back: on wr_tgl (the written sector sitting in the 1024x8 buffer,
 // port A clocked by clk_bus, exactly as floppy.sv drives it) the sector is
@@ -142,19 +152,23 @@ module fdd_store (
     // header at 220..224 - the header lies in the padding stride leaves
     // after sector 31's record (records use 7 of every 8), so the two can
     // never collide. 168 blocks (84 tracks x 2 sides) x 2 drives.
-    reg [7:0]  tbl [0:76607];
+    reg [7:0]  tbl [0:77951];
     reg [16:0] t_addr;
     reg [7:0]  t_q;                          // registered read, one clock
     always @(posedge clk) t_q <= tbl[t_addr];
 
     function [16:0] blk_base(input d, input [7:0] t);
-        begin blk_base = ((d ? 17'd168 : 17'd0) + {9'd0, t}) * 17'd228; end
+        begin blk_base = ((d ? 17'd168 : 17'd0) + {9'd0, t}) * 17'd232; end
     endfunction
 
     // ---------------- drive state ----------------
     reg [1:0]    cfg_k2    [0:1];
     reg          cfg_ready [0:1];
     reg          cfg_drv;                  // last configured (owns table bytes)
+    reg [6:0]    cfg_tracks [0:1];         // geometry from config
+    reg          cfg_sides  [0:1];         // side 1 exists
+    reg          req_valid;                // a request was processed once
+    reg          killed;                   // a build aborted by a remount
     reg [4095:0] dirty;                  // {drive, block[10:0]}: 512 B each
     reg [5:0]    pos_cnt   [0:1];
     reg [7:0]    pos_ti    [0:1];          // table block the positions came from
@@ -194,19 +208,14 @@ module fdd_store (
     reg [35:0] wrq_pay = 36'd0;
     reg dna_s1 = 1'b0, dna_s2 = 1'b0, dna_seen = 1'b0, dna_pend = 1'b0;
 
-    always @(posedge clk or posedge reset) begin
-        if (reset) begin
-            fill_s1 <= 1'b0; fill_s2 <= 1'b0; fill_seen <= 1'b0;
-            trq_s1  <= 1'b0; trq_s2  <= 1'b0; trq_seen  <= 1'b0;
-            wrq_s1  <= 1'b0; wrq_s2  <= 1'b0; wrq_seen  <= 1'b0;
-            dna_s1  <= 1'b0; dna_s2  <= 1'b0; dna_seen  <= 1'b0;
-        end
-        else begin
-            fill_s1 <= fill_tgl;    fill_s2 <= fill_s1;
-            trq_s1  <= trk_req_tgl; trq_s2  <= trq_s1;
-            wrq_s1  <= wr_tgl;      wrq_s2  <= wrq_s1;
-            dna_s1  <= drn_ack_tgl; dna_s2  <= dna_s1;
-        end
+    // one driver for the whole sampler chain (the *_seen registers are
+    // initialised at their declaration; a second reset driver here would
+    // be Quartus error 10028)
+    always @(posedge clk) begin
+        fill_s1 <= fill_tgl;    fill_s2 <= fill_s1;
+        trq_s1  <= trk_req_tgl; trq_s2  <= trq_s1;
+        wrq_s1  <= wr_tgl;      wrq_s2  <= wrq_s1;
+        dna_s1  <= drn_ack_tgl; dna_s2  <= dna_s1;
     end
 
     // ---------------- the work registers ----------------
@@ -265,12 +274,16 @@ module fdd_store (
                      S_W_DRT  = 7'd37, S_W_ACK  = 7'd38,
                      S_W_SC0  = 7'd39, S_W_SC1  = 7'd40,
                      S_D_SC   = 7'd41, S_D_W8   = 7'd42,
-                     S_D_T0   = 7'd43, S_D_T1   = 7'd44, S_D_T2 = 7'd45,
+                     S_D_T0   = 7'd43, S_D_T1   = 7'd44,
                      S_W_SCW  = 7'd46;
     wire [20:0] b_fo = b_fbase + {10'd0, b_i};   // this data byte, file addr
     wire [20:0] w_fo = w_fbase + {10'd0, w_i};   // written byte, file addr
     wire [20:0] w_end = w_fbase + {10'd0, w_len} - 21'd1;  // last byte written
     wire [2:0]  w_Nc = (w_N > 3'd3) ? 3'd3 : w_N;  // the 1024-byte ceiling
+    // an in-flight build of a drive that a pending config remounts must not
+    // answer ready for the old image: it aborts with a not-ready ack
+    wire kill_fill = fill_pend && (fill_pay[31:30] == 2'd0) &&
+                     (fill_pay[29] == b_drv);
 
     // the id byte the builder emits in S_B_ID (FE C H R N)
     reg [7:0] id_b;
@@ -295,6 +308,12 @@ module fdd_store (
             fill_pend <= 1'b0; req_new <= 1'b0;
             wrq_pend <= 1'b0;  dna_pend <= 1'b0;
             dn_inflight <= 1'b0;
+            dirty <= 4096'd0;
+            cfg_k2[0] <= 2'd0; cfg_k2[1] <= 2'd0;
+            cfg_ready[0] <= 1'b0; cfg_ready[1] <= 1'b0;
+            cfg_tracks[0] <= 7'd0; cfg_tracks[1] <= 7'd0;
+            cfg_sides[0] <= 1'b0; cfg_sides[1] <= 1'b0;
+            cfg_drv <= 1'b0; req_valid <= 1'b0; killed <= 1'b0;
         end
         else begin
             // ---- handshake events (every state sees them) ----
@@ -318,26 +337,45 @@ module fdd_store (
                 dna_pend <= 1'b1;
             end
 
-            case (state)
+            // A killed build's not-ready ack is this remount's answer: no
+            // second one from the config branch afterwards.
+            if (kill_fill && state >= 7'd8 && state <= 7'd25) begin
+                killed <= 1'b1;
+                state  <= S_B_NR0;
+            end
+            else case (state)
             // ==================== the scheduler ====================
             S_IDLE: begin
                 if (dna_pend) begin        // an acked block stops being dirty
                     dna_pend <= 1'b0;
-                    if (dn_inflight) begin
-                        dirty[{dn_drv, dn_blk}] <= 1'b0;
-                        dn_inflight <= 1'b0;
-                    end
+                    if (dn_inflight)
+                        dn_inflight <= 1'b0;   // the ack only releases the
+                                               // in-flight flag (the dirty
+                                               // bit went at the pick)
                 end
                 if (fill_pend) begin
                     fill_pend    <= 1'b0;
                     fill_ack_tgl <= ~fill_ack_tgl;
                     case (fill_pay[31:30])
                         2'd0: begin                 // config: mounts, ejects
-                            cfg_k2[fill_pay[29]]   <= fill_pay[28:27];
+                            cfg_k2[fill_pay[29]]    <= fill_pay[28:27];
+                            cfg_tracks[fill_pay[29]] <= fill_pay[26:20];
+                            cfg_sides[fill_pay[29]]  <= fill_pay[19];
                             cfg_ready[fill_pay[29]] <= 1'b0;
                             dirty[{fill_pay[29], 11'd0} +: 2048] <= 2048'd0;
                             pos_cnt[fill_pay[29]]   <= 6'd0;
                             cfg_drv                 <= fill_pay[29];
+                            if (killed)
+                                killed <= 1'b0;   // the build already NR'd
+                            else if (req_valid && req_cur[8] == fill_pay[29]) begin
+                                // the drive may still stream its old track:
+                                // an unsolicited not-ready with the old echo
+                                // makes the floppy drop the stream
+                                b_drv  <= fill_pay[29];
+                                b_side <= req_cur[7];
+                                b_trk  <= req_cur[6:0];
+                                state  <= S_B_NR0;
+                            end
                         end
                         2'd1: begin                 // one image/table byte
                             if (!fill_pay[29]) begin            // image byte
@@ -350,7 +388,7 @@ module fdd_store (
                             else if (fill_pay[28] &&
                                      fill_pay[18:11] <= 8'd167) begin
                                 tbl[blk_base(cfg_drv, fill_pay[18:11])
-                                     + 17'd220 + {14'd0, fill_pay[10:8]}]
+                                     + 17'd224 + {14'd0, fill_pay[10:8]}]
                                     <= fill_pay[7:0];           // header byte
                             end
                             else if (!fill_pay[28] &&
@@ -367,36 +405,10 @@ module fdd_store (
                         default: ;
                     endcase
                 end
-                else if (req_new) begin
-                    req_new    <= 1'b0;
-                    b_drv      <= req_cur[8];
-                    b_side     <= req_cur[7];
-                    b_trk      <= req_cur[6:0];
-                    b_ti       <= {req_cur[7:0], 1'b0} + {8'd0, req_cur[7]};
-                    b_k2       <= cfg_k2[req_cur[8]];
-                    b_bufp     <= 13'd0;
-                    stream_drv <= req_cur[8];
-                    pos_ti[req_cur[8]] <= {req_cur[7:0], 1'b0}
-                                          + {8'd0, req_cur[7]};
-                    if (!cfg_ready[req_cur[8]] || req_cur[6:0] > LAST)
-                        state <= S_B_NR0;
-                    else if (cfg_k2[req_cur[8]] == K_FDI) begin
-                        b_hi  <= 3'd0;
-                        state <= S_B_HDR0;
-                    end
-                    else begin
-                        b_cnt <= (cfg_k2[req_cur[8]] == K_CPM)
-                                   ? 6'd5 : 6'd16;
-                        pos_cnt[req_cur[8]] <= (cfg_k2[req_cur[8]] == K_CPM)
-                                                  ? 6'd5 : 6'd16;
-                        b_sec <= 6'd0;
-                        state <= S_B_SEC;
-                    end
-                end
-                else if (wrq_pend) begin
-                    wrq_pend <= 1'b0;
-                    w_drv    <= wrq_pay[35];
-                    w_side   <= wrq_pay[34];
+                else if (wrq_pend) begin    // a pending write is served
+                    wrq_pend <= 1'b0;       // before a new track request, so
+                    w_drv    <= wrq_pay[35]; // its position table is the one
+                    w_side   <= wrq_pay[34]; // the write belongs to
                     w_C      <= wrq_pay[26:19];
                     w_H      <= wrq_pay[18:11];
                     w_R      <= wrq_pay[10:3];
@@ -412,6 +424,35 @@ module fdd_store (
                                   wrq_pay[10:3] <= {2'd0, pos_cnt[wrq_pay[35]]})
                                      ? wrq_pay[8:3] - 6'd1 : 6'd63;
                         state <= S_W_ST;
+                    end
+                end
+                else if (req_new) begin
+                    req_new    <= 1'b0;
+                    req_valid  <= 1'b1;
+                    b_drv      <= req_cur[8];
+                    b_side     <= req_cur[7];
+                    b_trk      <= req_cur[6:0];
+                    b_ti       <= {req_cur[6:0], 1'b0} + {8'd0, req_cur[7]};
+                    b_k2       <= cfg_k2[req_cur[8]];
+                    b_bufp     <= 13'd0;
+                    stream_drv <= req_cur[8];
+                    pos_ti[req_cur[8]] <= {req_cur[6:0], 1'b0}
+                                          + {8'd0, req_cur[7]};
+                    if (!cfg_ready[req_cur[8]] || req_cur[6:0] > LAST ||
+                        req_cur[6:0] >= cfg_tracks[req_cur[8]] ||
+                        (req_cur[7] && !cfg_sides[req_cur[8]]))
+                        state <= S_B_NR0;
+                    else if (cfg_k2[req_cur[8]] == K_FDI) begin
+                        b_hi  <= 3'd0;
+                        state <= S_B_HDR0;
+                    end
+                    else begin
+                        b_cnt <= (cfg_k2[req_cur[8]] == K_CPM)
+                                   ? 6'd5 : 6'd16;
+                        pos_cnt[req_cur[8]] <= (cfg_k2[req_cur[8]] == K_CPM)
+                                                  ? 6'd5 : 6'd16;
+                        b_sec <= 6'd0;
+                        state <= S_B_SEC;
                     end
                 end
                 else if (dirty_any && !dn_inflight) begin
@@ -449,7 +490,7 @@ module fdd_store (
             // ==================== the track builder ====================
             // FDI header: DataOffset in bytes 0..3 (of 21 bits), count at 4
             S_B_HDR0: begin
-                t_addr <= blk_base(b_drv, b_ti) + 17'd220 + {14'd0, b_hi};
+                t_addr <= blk_base(b_drv, b_ti) + 17'd224 + {14'd0, b_hi};
                 state  <= S_B_HRW;
             end
             S_B_HDR1: begin
@@ -491,15 +532,30 @@ module fdd_store (
                     state <= S_B_R0;
                 end
                 else begin
-                    b_fbase <= b_doff[20:0] + {5'd0, t_q, b_rolo};
-                    b_len   <= 11'd128 << b_N;
-                    pos_buf [{b_drv, b_sec}]  <= b_bufp + 13'd70;
-                    pos_file[{b_drv, b_sec}]  <= b_doff[20:0]
-                                                 + {5'd0, t_q, b_rolo};
-                    pos_ok  [{b_drv, b_sec}]  <= !t_q[6];
-                    b_i   <= 11'd0;
-                    b_c   <= 7'd0;
-                    state <= S_B_G1;
+                    if ((b_bufp + 14'd140 +
+                         {3'd0, 11'd128 << ((b_N > 3'd3) ? 3'd3 : b_N)})
+                        > 14'd6250) begin
+                        // the record does not fit in the track buffer; the
+                        // track cannot be served from this table. A 6250-byte
+                        // track holds about 11 records of 512 B; more are
+                        // rejected as an invalid layout, and the write-back
+                        // cannot corrupt the next track either (its position
+                        // entries were never recorded).
+                        state <= S_B_NR0;
+                    end
+                    else begin
+                        b_fbase <= b_doff[20:0] + {5'd0, t_q, b_rolo};
+                        b_len   <= 11'd128 << b_N;
+                        pos_buf [{b_drv, b_sec}]  <= b_bufp + 13'd70;
+                        pos_file[{b_drv, b_sec}]  <= b_doff[20:0]
+                                                     + {5'd0, t_q, b_rolo};
+                        // a no-data record is not writable (the flags byte,
+                        // latched two record states back)
+                        pos_ok  [{b_drv, b_sec}]  <= !b_nodata;
+                        b_i   <= 11'd0;
+                        b_c   <= 7'd0;
+                        state <= S_B_G1;
+                    end
                 end
             end
             // sector start for TRD / CP/M: the geometry decides everything
@@ -784,6 +840,8 @@ module fdd_store (
             // ==================== the drain ====================
             S_D_SC: begin
                 if (dirty[dn_ptr]) begin
+                    dirty[dn_ptr] <= 1'b0;    // picked: a later write marks
+                                              // it again and it drains twice
                     dn_drv <= dn_ptr[11];
                     dn_blk <= dn_ptr[10:0];
                     dn_ln  <= 6'd0;
@@ -817,13 +875,9 @@ module fdd_store (
                 state    <= S_D_T1;
             end
             S_D_T1: begin
-                drn_tgl     <= 1'b1;
-                dn_inflight <= 1'b1;
-                state       <= S_D_T2;
-            end
-            S_D_T2: begin
-                drn_tgl <= 1'b0;
-                state   <= S_IDLE;
+                drn_tgl     <= ~drn_tgl;   // a real toggle: every
+                dn_inflight <= 1'b1;       // presentation is an edge
+                state       <= S_IDLE;
             end
 
             default: state <= S_IDLE;
