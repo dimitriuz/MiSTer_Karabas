@@ -10,8 +10,9 @@
 //            previous one - 0 at the first mount - and the drive then looks
 //            empty forever). The crossing is what the geometry is resolved
 //            from and what arms a fill, so a mount always carries its own
-//            size. wprt is the latched img_readonly, high also for a drive
-//            with no image: an empty drive cannot be written.
+//            size. wprt is the latched img_readonly OR'd with the mask of the
+//            drives whose image is an FDI, high also for a drive with no
+//            image: neither can be written back to the host.
 //
 //   geometry tracks_trd = size/8192, tracks_cpm = size/10240. Auto: TRD when
 //            size % 8192 == 0 && tracks_trd <= 84, else CP/M when
@@ -56,7 +57,11 @@
 //            only in the byte-wait state with nothing pending - the mcu_emu
 //            ownership rule - so the source holds its next byte while the
 //            store's ack for the previous one is on its way, and no strobe is
-//            ever lost. The 14-byte header is validated ("FDI", version 0,
+//            ever lost. Because that wait is one line for the whole core, a
+//            claimed download also owns the SD ports: no sector request is
+//            raised while a window stands, and one that has not been picked
+//            up yet is withdrawn (see sd_allow). The 14-byte header is
+//            validated ("FDI", the u16 fields as the vendor tool writes them:
 //            cylinders 1..84 = the store's cap, sides 1..2, and an off_data
 //            far enough past the header for one table group), then
 //            config{FDI, cyl, sides} goes out and the track table is
@@ -77,16 +82,20 @@
 //            aborts the download with ioctl_wait low and no ready, so the
 //            drive stays empty and the rest of the host's stream is ignored
 //            rather than hung; a bad header is caught before the config, so
-//            the image a drive already had survives it. ready goes out when
-//            the download window closes with the data area streaming - the
-//            file's length is not known before that - and a window that
-//            closes earlier leaves the drive empty as well.
+//            the image a drive already had survives it. A data byte past the
+//            window is the other case: the table's own offsets live inside
+//            it, so only a file longer than the store can hold reaches it,
+//            and such a file still has to be answered - the byte is dropped
+//            and the download ends with its ready like a short one. ready
+//            goes out when the download window closes with the data area
+//            streaming - the file's length is not known before that - and a
+//            window that closes earlier leaves the drive empty as well.
 //
 // The engine is one clock-domain state machine that runs one activity at a
 // time: a mount event, a fill sector, a drain block, or a download. Every
 // crossing to the store (gs_clk) is a toggle with a two-flop synchroniser:
 // the fill word and its ack, the drain block and its ack. One driver per
-// register: the reset synchroniser, the settle (mounts, geometry, wprt) and
+// register: the reset synchroniser, the settle (mounts, geometry) and
 // the engine own their registers alone.
 `default_nettype none
 
@@ -119,7 +128,7 @@ module fdd_src (
     output reg         ioctl_wait,
 
     // the drives' write-protect: a clk_sys level, the top synchronises it
-    output reg  [1:0]  wprt,
+    output wire [1:0]  wprt,
 
     // fdd_store's fill port (gs_clk; the toggle crosses it)
     output reg         fill_tgl,
@@ -197,11 +206,12 @@ module fdd_src (
     reg [1:0]  chg_ev      = 2'b00;
     reg        chg_tgl     = 1'b0;
 
-    // the FDI header's write-protect flag crosses here on a toggle: this block
-    // is the only writer of wprt and mnt_ro, so the download asks and the
-    // settle applies (a mount that commits in the same clock is newer, wins,
-    // and re-reads img_readonly)
-    reg wp_seen = 1'b0;
+    // (wprt and the write-back permission are derived from the committed
+    //  mount state plus the FDI mask below, so no second block ever writes
+    //  them and an aborted download cannot leave a stale value behind. The
+    //  OSD's per-drive switch is not one of the sources here: whoever drives
+    //  fdc_wprt ORs status[33:32] in, the way it did before this module
+    //  existed, and folding it in here would only let it outrank a mount.)
 
     reg        mnt_lvl    [0:1];
     reg        mnt_ro     [0:1];
@@ -210,6 +220,23 @@ module fdd_src (
     reg [6:0]  mnt_tracks [0:1];
     reg        mnt_sides  [0:1];
     reg [11:0] mnt_sectors[0:1];
+
+    // Whether the drive's image came from an FDI download. The host has no
+    // file to write such a drive back to - the diskpool slot behind it still
+    // holds whatever TRD or CP/M was mounted there - so an FDI drive is never
+    // written back and, like any image the host cannot take back, it reads
+    // write-protected to the FDC. The FDI header's own write-protect flag
+    // (hdr[3]) therefore needs no latch: the drive is protected either way,
+    // and honouring a cleared flag would only let a write land in a file that
+    // is not this drive's image.
+    reg [1:0]  fdi      = 2'b00;
+    // mnt_ro is img_readonly as the settle latched it for this drive: the
+    // input is one line shared by both slots, so only the value carried by
+    // this drive's own mount burst says anything about it. drv_ro is what the
+    // engine and the FDC act on, and a drive with no image is protected too -
+    // there is nothing there to write.
+    wire [1:0] drv_ro = {mnt_ro[1] | fdi[1], mnt_ro[0] | fdi[0]};
+    assign wprt = drv_ro | ~{mnt_lvl[1], mnt_lvl[0]};
 
     wire [1:0] mount_ev = img_mounted & ~old_mounted;
 
@@ -225,8 +252,7 @@ module fdd_src (
             ev_age      <= 13'd0;
             chg_ev      <= 2'b00;
             chg_tgl     <= 1'b0;
-            wp_seen     <= 1'b0;
-            wprt        <= 2'b11;
+            // (fdi is reset by the engine, whose only writer it is)
             for (sv = 0; sv <= 1; sv = sv + 1) begin
                 mnt_lvl[sv]     <= 1'b0;
                 mnt_ro[sv]      <= 1'b0;
@@ -239,11 +265,7 @@ module fdd_src (
         end
         else begin
             old_mounted <= img_mounted;
-            if (wp_seen != wp_tgl) begin
-                wp_seen         <= wp_tgl;
-                wprt[wp_drvv]   <= wp_valv;
-                mnt_ro[wp_drvv] <= wp_valv;
-            end
+            // (no write-protect branch: wprt follows mnt_lvl and the fdi mask)
             if (|mount_ev) begin
                 ev_pend  <= ev_pend | mount_ev;
                 size_chg <= 1'b0;
@@ -265,14 +287,14 @@ module fdd_src (
                         for (sv = 0; sv <= 1; sv = sv + 1)
                             if (ev_pend[sv]) begin
                                 mnt_lvl[sv]     <= (img_size != 64'd0);
-                                mnt_ro[sv]      <= img_readonly;
+                                mnt_ro[sv]      <= (img_size == 64'd0) |
+                                                   img_readonly;
                                 mnt_valid[sv]   <= (img_size != 64'd0) && g_ok;
                                 mnt_kind[sv]    <= g_kind;
                                 mnt_tracks[sv]  <= g_tracks;
                                 mnt_sides[sv]   <= 1'b1;
                                 mnt_sectors[sv] <= g_sectors[11:0];
-                                wprt[sv]        <= (img_size == 64'd0) |
-                                                   img_readonly;
+                                // (wprt is derived, not stored)
                             end
                         chg_ev   <= ev_pend;
                         chg_tgl  <= ~chg_tgl;
@@ -456,64 +478,51 @@ module fdd_src (
     reg [7:0]  rc_ol   = 8'd0;
 
     // events and crossings
+    // The FDI window and the dispatcher's decisions come first, because the
+    // pending mask below already reads them.
+    // The store addresses a drive with 21 bits, so an FDI byte past that
+    // window has nowhere to go. The constant is under a switch so a simulation
+    // can put the window where a run can reach it:
+    // sim/run_tb_fdd_dlwin.sh compiles the download path with the small one.
+`ifdef FDD_DL_SMALL
+    localparam [22:0] DL_MAX = 23'h01000;      // 4 KiB, for the window test
+`else
+    localparam [22:0] DL_MAX = 23'h200000;     // 2 MiB, the store's window
+`endif
+
+    // ---- the engine's state the decisions read, declared before them ----
     // drives waiting for their config, and among them the ones whose *image*
     // changed (a drain must stop trusting its copy only for those)
     reg [1:0]  chg_pend = 2'b00;
     reg [1:0]  chg_new  = 2'b00;
-    // the bit leaves only on the clock the dispatcher really takes it: the
-    // pending mask is read from E_IDLE, and clearing it anywhere else would
-    // swallow a mount that lands while a fill or a drain is running
-    wire [1:0] chg_clr  = (fl_go && st == E_IDLE) ? (2'b01 << chg_d) : 2'b00;
+    // A fill a download displaced. Its bit goes back into the pending mask, so
+    // the drive is rebuilt on its own once the file is over. One writer: the
+    // merge in the engine sets it where a claimed download ends a running
+    // fill, and it clears when that pending work has nothing left to build -
+    // the dispatch that takes it, a crossing that replaces the image under it,
+    // or the config of the FDI that has become this drive's image.
+    reg [1:0]  fl_again = 2'b00;
     reg [1:0]  gen      = 2'b00;
     reg        drn_evt  = 1'b0;
     // a drain whose block the store has presented and the module is copying
     reg        dn_act   = 1'b0;
-    // whether the presented block may go back to the host at all
-    wire       dn_ok    = mnt_lvl[dr_pay[11]] && !mnt_ro[dr_pay[11]] &&
-                          !chg_pend[dr_pay[11]];
     reg [11:0] dr_pay   = 12'd0;
     reg        fa_s1 = 1'b0, fa_s2 = 1'b0, fa_seen = 1'b0;
     reg        dr_s1 = 1'b0, dr_s2 = 1'b0, dr_seen = 1'b0;
     reg        cg_s1 = 1'b0, cg_s2 = 1'b0, cg_seen = 1'b0;
     wire       cg_new = (cg_s2 != cg_seen);
-
-    // a fill the download displaced: its bit goes back into chg_pend when the
-    // download ends, so the drive is refilled on its own
-    reg [1:0] fl_again = 2'b00;
     // the mount event whose config is on its way: the image behind the drive
     // changes when the store *takes* that config, not when the host wrote the
     // size, so the generation flips at the config's ack
-    reg       gen_set  = 1'b0;
-    reg       gen_drv  = 1'b0;
-    // the download's write-protect request, consumed by the settle block
-    reg       wp_tgl   = 1'b0;
-    reg       wp_drvv  = 1'b0;
-    reg       wp_valv  = 1'b0;
-
-    wire       dl_sel  = ioctl_download &&
-                         (ioctl_index == 16'd1 || ioctl_index == 16'd2);
-    wire       dl_win  = ioctl_download && (ioctl_index == dl_widx);
-    wire       dl_rise = dl_sel && !dl_prev;
-
-    // the drive of a pending event: the event's bit index, drive B first when
-    // a burst carried both (drive A is then the next dispatch)
-    wire       chg_d    = chg_pend[1];
-    wire       chg_free = (!fl_act || fl_drv == chg_d) &&
-                          (!dl_act || dl_drv == chg_d);
-    wire       fl_go    = (|chg_pend) && chg_free;
-    // The download starts as soon as it is claimed, the way every other core
-    // takes a window: waiting here for the other drive's fill would hold
-    // ioctl_wait while that fill needs the host, and the host is the thing the
-    // wait stops. A fill displaced by a download is re-run afterwards (the
-    // fl_again mask), so the drive is refilled rather than left empty.
-    wire       dl_go    = dl_req && !dl_act;
+    reg        gen_set = 1'b0;
+    reg        gen_drv = 1'b0;
 
     // the header fields, straight out of the collected bytes
     wire [7:0]  h_cyl   = {hdr[5], hdr[4]};
     wire [15:0] h_offd  = {hdr[11], hdr[10]};
     wire        h_ok    = (hdr[0] == 8'h46) && (hdr[1] == 8'h44) &&
                           (hdr[2] == 8'h49) &&                  // "FDI"
-                          // hdr[3] is not a version: it is the file's
+                          // hdr[3] is not a version: it is the file's own
                           (hdr[5] == 8'h00) &&
                           (h_cyl >= 8'd1) && (h_cyl <= 8'd84) && // the cap
                           (hdr[7] == 8'h00) &&                  // u16 sides
@@ -522,6 +531,91 @@ module fdd_src (
     // a one-side file holds cyl blocks, a two-side one cyl*2 (the store
     // indexes them track*2+side regardless)
     wire [8:0]  h_nblk  = hdr[6][0] ? {2'd0, h_cyl} : {1'b0, h_cyl, 1'b0};
+
+    // ---- what the dispatcher may do right now ----
+    // A pending re-fill of a drive whose image is an FDI builds nothing: the
+    // file that took the byte port *is* this drive's image now, and rebuilding
+    // it from the disk slot would lay some other image's bytes over it. A
+    // crossing always dispatches - the same clock clears fl_again for it.
+    wire [1:0] chg_run  = chg_pend & ~(fl_again & fdi);
+    // the drive of a pending event: the event's bit index, drive B first when
+    // a burst carried both (drive A is then the next dispatch)
+    wire       chg_d    = chg_run[1];
+    wire       chg_free = (!fl_act || fl_drv == chg_d) &&
+                          (!dl_act || dl_drv == chg_d);
+    // A window the host has opened owns the host: while one stands this module
+    // may not ask for a sector at all (sd_allow), so dispatching a fill behind
+    // it would only build a request that can never be served - and a fill
+    // displaced by the window would then be re-dispatched, re-pushed and
+    // yielded again for ever, the download never getting its turn. The claim is
+    // therefore never outranked by a pending event, for this drive (whose
+    // claim a fill dispatch used to cancel, dropping the file) or for the
+    // other one. Once the window closes the pending event is taken as usual.
+    wire       fl_go    = (|chg_run) && chg_free && !dl_own;
+    // The download starts as soon as it is claimed, the way every other core
+    // takes a window: waiting here for the other drive's fill would hold
+    // ioctl_wait while that fill needs the host, and the host is the thing the
+    // wait stops. A fill displaced by a download is re-run afterwards (the
+    // fl_again mask), so the drive is refilled rather than left empty.
+    wire       dl_go    = dl_req && !dl_act;
+    // A download the host has handed a file to, but whose byte port the engine
+    // has not taken yet: the moment a fill or a drain has to stop. Once the
+    // download is streaming (dl_act) the engine is inside its own states and
+    // pushes the download's words through the very same E_P_* states, so
+    // yielding on dl_own there would abandon a word of the download itself
+    // mid-handshake - which is why the yields ask dl_takes and not dl_own.
+    wire       dl_takes = dl_req && !dl_act;
+    // Whether this module may ask the host for an SD transfer at all right
+    // now, from the clock a download is claimed until its window closes.
+    //
+    // The host is one thread (sys/hps_io.sv: one ioctl state machine for the
+    // disk slots and the download windows, and HPS_BUS[37] - this module's
+    // ioctl_wait - is the single line that stops it). Two rules follow, and
+    // they are one rule seen from either side:
+    //   * while the wait is held for a download, no disk request of ours can
+    //     be served - so a request raised into a window waits for an ack that
+    //     cannot come until the window closes;
+    //   * the window cannot close either, because the engine that has to
+    //     stream it away is the engine sitting in that fill's ack wait.
+    // So a claimed download ends every SD business of this module at once:
+    // nothing is raised while one stands (sd_allow), a request the host has
+    // not picked up is withdrawn, and a copy that is half done is left behind
+    // to be redone - which costs bytes and nothing else, because fdd_store's
+    // fill words carry their own address and a dirty block stays dirty in the
+    // store until it is acked.
+    wire       sd_allow = !dl_own;
+    // the bit leaves chg_pend only on the clock the dispatcher really takes
+    // it: the mask is read from E_IDLE, and clearing it anywhere else would
+    // swallow a mount that lands while a fill or a drain is running
+    wire [1:0] chg_clr  = (fl_go && st == E_IDLE) ? (2'b01 << chg_d) : 2'b00;
+    wire [1:0] fl_clr   = ((st == E_IDLE && fl_go) ? (2'b01 << chg_d) : 2'b00) |
+                          // A mount crossing is the only end of the promise
+                          // "this fill has to run again": it is what brings
+                          // the image the drive is filled from, and it is the
+                          // same clock that clears fdi. A download the store
+                          // accepted must leave the bit set - with fdi up that
+                          // bit is precisely what keeps the mounted image out
+                          // of a drive whose image is a file now, and a file
+                          // that is refused before its config has no fdi, so
+                          // its interrupted fill runs again on its own.
+                          (cg_new ? chg_ev : 2'b00);
+    // the states in which a claimed download ends a fill that was running
+    wire       fl_broke = fl_act &&
+                          ((st == E_IDLE && dl_go) ||
+                           (st == E_P_ACK && dl_takes && p_ret != E_F_DONE) ||
+                           (st == E_F_SET && dl_takes) ||
+                           ((st == E_F_ACK) && dl_own));
+    wire [1:0] fl_set   = fl_broke ? (2'b01 << fl_drv) : 2'b00;
+    // whether the presented block may go back to the host at all
+    wire       dn_ok    = mnt_lvl[dr_pay[11]] && !drv_ro[dr_pay[11]] &&
+                          !chg_pend[dr_pay[11]];
+
+    wire       dl_sel  = ioctl_download &&
+                         (ioctl_index == 16'd1 || ioctl_index == 16'd2);
+    wire       dl_win  = ioctl_download && (ioctl_index == dl_widx);
+    wire       dl_rise = dl_sel && !dl_prev;
+
+    // (the header fields moved up, next to the decisions that read them)
 
     // the data area offset of the byte being streamed
     wire [23:0] dat_pos = t_pos - {8'd0, off_data};
@@ -547,7 +641,7 @@ module fdd_src (
     wire [22:0] rc_base = (|blk_doff[31:21]) ? 23'h7FFFFF
                                              : {2'd0, blk_doff[20:0]};
     wire [22:0] rc_end  = rc_base + {6'd0, dl_b, rc_ol} + (23'd128 << rc_N);
-    wire        rc_bad  = (rc_end > 23'h200000);
+    wire        rc_bad  = (rc_end > DL_MAX);
 
     // (no loop variable here: the image generation now flips at the config's
     // acknowledge, in the engine, not in a loop over the drives)
@@ -560,13 +654,17 @@ module fdd_src (
         // download brings only the re-fill, because the image behind it is the
         // same one. The dispatched bit leaves both.
         chg_pend <= (chg_pend | (cg_new ? chg_ev : 2'b00) | fl_again) & ~chg_clr;
+        fl_again <= (fl_again | fl_set) & ~fl_clr;
         chg_new  <= (chg_new  | (cg_new ? chg_ev : 2'b00)) & ~chg_clr;
 
         // ---- the crossings from the store's gs_clk domain ----
         fa_s1 <= fill_ack_tgl;  fa_s2 <= fa_s1;
         dr_s1 <= drn_tgl;       dr_s2 <= dr_s1;
         cg_s1 <= chg_tgl;       cg_s2 <= cg_s1;
-        if (cg_new) cg_seen <= cg_s2;
+        if (cg_new) begin
+            cg_seen <= cg_s2;
+            fdi     <= fdi & ~chg_ev;   // a mount replaces an FDI image
+        end
         if (dr_s2 != dr_seen) begin
             dr_seen <= dr_s2;
             dr_pay  <= drn_info;
@@ -602,7 +700,7 @@ module fdd_src (
             chg_pend <= 2'b00; chg_new <= 2'b00; gen <= 2'b00;
             drn_evt <= 1'b0; dn_act <= 1'b0; dr_pay <= 12'd0;
             fl_again <= 2'b00; gen_set <= 1'b0; gen_drv <= 1'b0;
-            wp_tgl <= 1'b0; wp_drvv <= 1'b0; wp_valv <= 1'b0;
+            fdi <= 2'b00;
             fa_s1 <= 1'b0; fa_s2 <= 1'b0; fa_seen <= 1'b0;
             dr_s1 <= 1'b0; dr_s2 <= 1'b0; dr_seen <= 1'b0;
             cg_s1 <= 1'b0; cg_s2 <= 1'b0; cg_seen <= 1'b0;
@@ -624,7 +722,8 @@ module fdd_src (
             // stand while the module is waiting for something the host has to
             // serve, so a download starts within one fill byte of its claim
             // (see E_P_ACK) and never behind another drive's fill.
-            if (dl_own && (dl_req || dl_act || dl_have)) ioctl_wait <= 1'b1;
+            if (dl_own && (dl_req || dl_act || dl_have))
+                ioctl_wait <= 1'b1;
             if (!dl_own) ioctl_wait <= 1'b0;
             if (st == E_L_WT && dl_act && dl_win && !dl_have)
                 ioctl_wait <= 1'b0;
@@ -639,9 +738,8 @@ module fdd_src (
             // ==================== the dispatcher ====================
             E_IDLE: begin
                 if (fl_go) begin
-                    fl_act <= 1'b0;
-                    if (fl_again[chg_d])
-                        fl_again[chg_d] <= 1'b0;     // this dispatch is it
+                    fl_act <= 1'b0;    // (fl_again for this drive clears with
+                                       //  the dispatch: fl_clr's first term)
                     // the image behind the drive changes only for a mount: the
                     // store takes the config this clock pushes, and from then
                     // on the drain must not trust the old image. A re-fill of
@@ -673,13 +771,15 @@ module fdd_src (
                 else if (dl_go) begin
                     dl_req   <= 1'b0;
                     dl_act   <= 1'b1;
-                    // a fill cannot hold the byte port while the host waits to
-                    // hand over a file: the download takes the port at once and
-                    // the displaced drive is refilled when it is over
-                    if (fl_act && fl_drv != dl_drv) begin
-                        fl_again[fl_drv] <= 1'b1;
-                        fl_act           <= 1'b0;
-                    end
+                    // A fill cannot hold the byte port while the host waits to
+                    // hand over a file, so the download takes it at once. The
+                    // fill it displaces - whichever drive's it was - is put
+                    // back by fl_set: for the other drive it has to run again
+                    // when the window is over, and for this one it is cleared
+                    // by the header the store accepts, because from there the
+                    // file *is* this drive's image and the disk slot behind it
+                    // holds somebody else's.
+                    fl_act <= 1'b0;
                     jb       <= 1'b1;
                     // dl_b/dl_have keep whatever the claim clock took: that
                     // byte is the header's first one, not something to discard
@@ -725,14 +825,14 @@ module fdd_src (
                     gen_set      <= 1'b0;
                     gen[gen_drv] <= ~gen[gen_drv];
                 end
-                // A download that is waiting for the byte port takes it here.
-                // Its wait must not outlive one fill byte: the host it blocks
-                // is the host the fill still has to ask. A drive whose fill is
-                // displaced by the download's own file is left to the download
-                // (the FDI is that drive's image now); the other one is filled
-                // again when the download is over.
-                if (dl_req && !dl_act && fl_act) begin
-                    if (fl_drv != dl_drv) fl_again[fl_drv] <= 1'b1;
+                // A download whose window is claimed takes the byte port at
+                // the first word boundary it can reach, and this is the
+                // earliest of them. The one push it must not break is the
+                // fill's ready word: the image is complete in the store by
+                // then, and E_F_DONE is what clears fl_act and jb - skipping
+                // it would leave the drive waiting for a ready that was
+                // already delivered, and busy forever after.
+                if (dl_takes && fl_act && p_ret != E_F_DONE) begin
                     fl_act <= 1'b0;
                     st     <= E_IDLE;
                 end
@@ -750,19 +850,27 @@ module fdd_src (
             // request lines only between transfers: a request raised while the
             // slot is still busy is invisible to the host, and the ack that
             // belongs to the other transfer would be taken for one's own.
-            E_F_SET: if (dl_req && !dl_act) begin   // the download is next:
-                if (fl_drv != dl_drv)               // raising sd_rd now would
-                    fl_again[fl_drv] <= 1'b1;       // ask the host that the
-                fl_act           <= 1'b0;           // download is holding
-                st               <= E_IDLE;
+            E_F_SET: if (dl_takes) begin              // the download is next:
+                fl_act <= 1'b0;                       // the download is
+                st     <= E_IDLE;                     // holding
             end
-            else if (!sd_ack[fl_drv]) begin
+            else if (sd_allow && !sd_ack[fl_drv]) begin
                 sd_lba        <= {21'd0, f_sec};
                 sd_rd[fl_drv] <= 1'b1;
                 rd_gate       <= 1'b1;
                 st            <= E_F_ACK;
             end
-            E_F_ACK: if (sd_ack[fl_drv]) begin
+            // The download's claim also withdraws a request the host has not
+            // taken yet: held any longer it would wait for an ack the
+            // download prevents (see sd_allow), and the engine it needs to
+            // stream the download is this engine.
+            E_F_ACK: if (dl_own) begin
+                sd_rd[fl_drv] <= 1'b0;
+                rd_gate       <= 1'b0;
+                fl_act        <= 1'b0;
+                st            <= E_IDLE;
+            end
+            else if (sd_ack[fl_drv]) begin
                 sd_rd[fl_drv] <= 1'b0;
                 st            <= E_F_END;
             end
@@ -825,22 +933,35 @@ module fdd_src (
             end
             E_D_CHK:
                 // the image behind this block may have been replaced while it
-                // was copied: its bytes then belong to a file that is gone,
-                // and a mount that has crossed but not reached the store yet
-                // means the same thing one step earlier
+                // was copied: its bytes then belong to a file that is gone.
+                // The generation says so once the new image has reached the
+                // store; chg_new says it one step earlier, for a mount that
+                // has crossed but not been dispatched yet. Not chg_pend: that
+                // mask also holds the re-fill of the very same image, and a
+                // dirty block of an image that has not changed still belongs
+                // to the file it came from.
                 st <= (gen[dn_drv] != dn_snap || !mnt_lvl[dn_drv] ||
-                       mnt_ro[dn_drv] || chg_pend[dn_drv])
+                       drv_ro[dn_drv] || chg_new[dn_drv])
                         ? E_D_ACKS : E_D_REQ;
-            // the write-back never asks the host while a download is waiting
-            // with the host's thread stopped: the copy waits instead
-            E_D_REQ: if (dl_req && !dl_act)
+            // The write-back never asks the host while a download is waiting
+            // with that thread stopped; the copy waits instead (dn_act stays,
+            // so the block is picked up again after the download).
+            E_D_REQ: if (dl_takes)
                 st <= E_IDLE;
-            else if (!sd_ack[dn_drv]) begin
+            else if (sd_allow && !sd_ack[dn_drv]) begin
                 sd_lba        <= {21'd0, dn_blk};
                 sd_wr[dn_drv] <= 1'b1;
                 st            <= E_D_ACK;
             end
-            E_D_ACK: if (sd_ack[dn_drv]) begin
+            // Same as the fill's: a write-back never sits in the host's queue
+            // behind a download. dn_act stays, so the block is presented to
+            // the host again after the window - and the store still counts it
+            // dirty until it is acked, so nothing is lost.
+            E_D_ACK: if (dl_own) begin
+                sd_wr[dn_drv] <= 1'b0;
+                st            <= E_IDLE;
+            end
+            else if (sd_ack[dn_drv]) begin
                 sd_wr[dn_drv] <= 1'b0;
                 st            <= E_D_END;
             end
@@ -854,8 +975,8 @@ module fdd_src (
 
             // ==================== the FDI download ====================
             E_L_WT: begin
-                if (chg_pend[dl_drv]) begin        // remounted: drop it and
-                    dl_own  <= 1'b0;               // leave the event to the
+                if (chg_new[dl_drv]) begin         // remounted: drop it and
+                    dl_own  <= 1'b0;               // leave the mount to the
                     dl_act  <= 1'b0;               // dispatcher. The byte that
                     dl_have <= 1'b0;               // may already be in hand
                     dl_req  <= 1'b0;               // goes with the window: it
@@ -876,11 +997,15 @@ module fdd_src (
             // the header is complete: validate it, then mount the FDI
             E_L_HDR: begin
                 if (!h_ok) begin
-                    dl_own <= 1'b0;
+                    dl_own  <= 1'b0;
                     dl_have <= 1'b0;
-                    dl_act <= 1'b0;
-                    jb     <= 1'b0;
-                    st     <= E_IDLE;              // the drive keeps its image
+                    dl_act  <= 1'b0;
+                    jb      <= 1'b0;
+                    // The drive keeps whatever image it had: a re-fill the
+                    // claim interrupted stays queued in fl_again, so a half
+                    // written sector is rebuilt, and a drive that had no fill
+                    // running is left exactly as it was.
+                    st      <= E_IDLE;              // the drive keeps its image
                 end
                 else begin
                     off_data <= h_offd;
@@ -891,12 +1016,14 @@ module fdd_src (
                     t_nblk   <= h_nblk;
                     t_walk   <= 1'b1;
                     dl_phase <= P_TBL;
-                    // hdr[3] is the file's write-protect flag, not a version:
-                    // it decides whether this drive may write at all, and the
-                    // settle block is the one that owns wprt
-                    wp_tgl   <= ~wp_tgl;
-                    wp_drvv  <= dl_drv;
-                    wp_valv  <= hdr[3][0];
+                    // The drive is now an FDI: protected, and its blocks are
+                    // never sent back to the disk slot. Taken here, at the
+                    // header the store accepts, so a download that is killed
+                    // half-way still leaves the drive write-protected rather
+                    // than letting a write land in a TRD that is not the
+                    // drive's image any more. (hdr[3], the file's own
+                    // write-protect flag, is then always satisfied.)
+                    fdi[dl_drv] <= 1'b1;
                     p_word   <= {2'd0, dl_drv, K_FDI, h_cyl[6:0],
                                  ~hdr[6][0], 19'd0};
                     p_ret    <= E_L_WT;
@@ -957,13 +1084,19 @@ module fdd_src (
                 else begin                                  // the data area
                     t_pos  <= t_pos + 24'd1;
                     // the store addresses a drive with 21 bits: a byte past
-                    // 2 MiB has nowhere to go, and wrapping it would rewrite
-                    // the start of the same drive with the end of the file
-                    if (dat_pos <= 23'h1FFFFF) begin
+                    // the window has nowhere to go, and wrapping it would
+                    // rewrite the start of the drive with the end of the file.
+                    // Skipping it is not the end of the file: the byte is
+                    // dropped and the download runs on to its end, where the
+                    // store is told the drive is ready like after any other
+                    // (short) file.
+                    if (dat_pos < DL_MAX) begin
                         p_word <= {2'd1, 1'b0, dat_pos[20:0], dl_b};
                         p_ret  <= E_L_WT;
                         st     <= E_P_SET;
                     end
+                    else
+                        st <= E_L_WT;
                 end
             end
 
