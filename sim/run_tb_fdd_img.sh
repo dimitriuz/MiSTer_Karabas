@@ -81,6 +81,41 @@ bad[2] = ord("X")
 big = bytearray(img[:32])
 struct.pack_into("<H", big, 4, 200)
 (out / "dlbig").write_bytes(bytes(big))
+# Two more shapes the downloader has to read off the file itself. Byte 3 of
+# the header is the file's write-protect flag (mk_disk writes 0 there, which
+# is also the format's "version 0"), so one fixture carries 1 in it: that file
+# must arrive as a drive the FDC cannot write. And a block header whose sector
+# count is 33: the store's record table has 32 slots, so counting records into
+# it would wrap onto slot 0 - such a file must be refused.
+wp = bytearray(img)
+wp[3] = 1
+(out / "dlwp.fdi").write_bytes(bytes(wp))
+c33 = bytearray(img)
+c33[0x0E + 6] = 33
+(out / "dlc33.fdi").write_bytes(bytes(c33))
+# And a block that really carries 33 records. The count is a byte in the
+# format, so nothing stops a file asking for more records than the store's
+# table has slots (32); counting them would wrap record 33 onto slot 0 and
+# hand out a track built out of the next block's header.
+def fdi33(path):
+    recs = bytearray()
+    for r in range(33):
+        recs += bytes([0, 0, r + 1, 0, 0]) + struct.pack("<H", 128 * r)
+    table = struct.pack("<IHB", 0, 0, 33) + recs
+    off = 0x0E + len(table)
+    head = bytearray(14)
+    head[0:3] = b"FDI"
+    struct.pack_into("<H", head, 4, 1)             # cylinders
+    struct.pack_into("<H", head, 6, 1)             # sides
+    struct.pack_into("<H", head, 8, off)           # off_text (never read)
+    struct.pack_into("<H", head, 10, off)          # off_data
+    data = bytearray()
+    for r in range(33):
+        data += bytes([(r * 7 + b) & 0xFF for b in range(128)])
+    Path(path).write_bytes(bytes(head) + table + bytes(data))
+
+
+fdi33(out / "dl33.fdi")
 PY
     python3 tools/mk_disk.py trd "$OUT/trdh.trd" --tracks 2
     python3 tools/mk_disk.py cpm "$OUT/cpmh.cpm" --tracks 1
@@ -105,7 +140,9 @@ for name, dst in (("test.trd", "trd.hex"), ("test.cpm", "cpm.hex"),
                   ("trdh.trd", "trdh.hex"), ("cpmh.cpm", "cpmh.hex"),
                   ("dl.fdi", "dl.hex"), ("dlw.fdi", "dlw.hex"),
                   ("dl1.fdi", "dl1.hex"), ("dlcut", "dlcut.hex"),
-                  ("dlbad", "dlbad.hex"), ("dlbig", "dlbig.hex")):
+                  ("dlbad", "dlbad.hex"), ("dlbig", "dlbig.hex"),
+                  ("dlwp.fdi", "dlwp.hex"), ("dlc33.fdi", "dlc33.hex"),
+                  ("dl33.fdi", "dl33.hex")):
     data = (out / name).read_bytes()
     (out / dst).write_text("".join("%02X\n" % b for b in data))
 PY
@@ -117,7 +154,7 @@ fi
 
 for f in trd.hex cpm.hex fdi.prog wide.prog ref_trd_t0s0 ref_wide_t0s0.sync \
          trdh.hex cpmh.hex dl.hex dlw.hex dl1.hex dlcut.hex dlbad.hex \
-         dlbig.hex ref_dl1_t1s0.sync; do
+         dlbig.hex ref_dl1_t1s0.sync dlwp.hex dlc33.hex dl33.hex; do
     if [ ! -f "$OUT/$f" ]; then
         echo "run_tb_fdd_img: no $OUT/$f; run this script once on the host" >&2
         echo "tb_fdd_img: FAIL no fixtures"

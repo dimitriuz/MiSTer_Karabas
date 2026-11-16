@@ -55,9 +55,12 @@
 // module's clk_sys) stands for here. The new cases:
 //   geometry_auto         the size -> geometry table: 655360 TRD-80, 819200
 //                         CP/M-80 (100 tracks do not fit TRD), 409600 TRD-50,
-//                         10240 CP/M-1, 688128 TRD-84, 12345 no image.
+//                         10240 CP/M-1, 688128 TRD-84, 12345 no image, and
+//                         the cap over the whole sector count (1474560 and
+//                         1056768 no image, 696320 CP/M-68).
 //   geometry_override     status[35:34]: 2 forces CP/M (409600 -> 40), 1
-//                         forces TRD (819200 -> no image), 3 behaves as auto.
+//                         forces TRD (819200 -> no image), 1 over the cap
+//                         (696320 -> no image), 3 behaves as auto.
 //   mount_order           the whole fill stream of a mount: the config first,
 //                         then image bytes 0..size-1 in order, every byte the
 //                         model's own byte, one sd_rd per sector, ready last.
@@ -80,6 +83,32 @@
 //                         being copied: the block is dropped (those bytes
 //                         belong to the image that is gone), the new image
 //                         fills and builds exact.
+//   host_mount_b          drive B is the other hps slot: its own config, its
+//                         own track, its own write-back (slot b, drive A's
+//                         file not one byte moved), and hs_wprt per drive.
+//   fdi_wprotect          byte 3 of the FDI header is the file's write-protect
+//                         flag: it locks its own drive and leaves the other
+//                         one, and the file still fills exact; a block whose
+//                         sector count is over the store's 32 record slots
+//                         gets its config and never its ready.
+//   download_after_aborted  a download that stops mid-stream (a header that
+//                         ends the file, a refused magic) lets go of the byte
+//                         it holds, so the next file's first byte is there.
+//   download_over_fill    a download while the other drive is filling: the
+//                         store's port changes hands at the next push (the
+//                         download's ready goes out with that fill still
+//                         short of its last sector) and the fill runs again
+//                         afterwards and comes up.
+//   download_then_mount   a mount of the drive whose file is streaming ends
+//                         the download, byte in hand included; the mounted
+//                         image wins, and the next file of that index lands
+//                         from its first byte.
+//   fdi_overlong_block    a block that really carries 33 records is refused:
+//                         its config reaches the store, its ready never does,
+//                         and the drive stays not-ready.
+//   drain_under_download  a dirty block of drive A and a file for drive B at
+//                         once: the write-back waits for the host instead of
+//                         asking the host the download holds, and both land.
 //
 // Every wait is bounded by an edge count, never by a $time difference, and
 // the last line printed is `tb_fdd_img: PASS` or `tb_fdd_img: FAIL <reason>`;
@@ -301,6 +330,15 @@ module tb_fdd_img;
 
     task automatic case_end(input [8*40-1:0] cs);
         begin
+            // every Part B case ends on the host-ownership invariant: no disk
+            // slot request was standing while the module held the download's
+            // ioctl_wait (a handful of clocks is an already running transfer,
+            // which the host finishes before it looks at the wait again)
+            if (host_en && mon_stall > 64) begin
+                $display("FAIL %0s: a slot request stood %0d clocks behind the download's wait",
+                         cs, mon_stall);
+                errors = errors + 1;
+            end
             if (errors == case_errors) $display("PASS %0s", cs);
             else $display("FAIL %0s (%0d checks failed)",
                           cs, errors - case_errors);
@@ -1065,9 +1103,18 @@ module tb_fdd_img;
     assign st_drn_ack_tgl = host_en ? hs_drn_ack_tgl : drn_ack_tgl;
     assign st_drn_addr_b  = host_en ? hs_drn_addr_b  : drn_addr_b;
 
+    // The host that feeds the ioctl download channel is the host that serves
+    // the disk slots: one thread, so while it sits in a download's wait loop
+    // no *new* slot request reaches it. A transfer already under way is left
+    // alone - the gate closes only between transfers, which is where hps_io
+    // decides whether it is busy.
+    wire       host_here = (io_wait === 1'b1) && (hs_sd_ack == 2'b00);
+    wire [1:0] mdl_rd    = hs_sd_rd & ~{2{host_here}};
+    wire [1:0] mdl_wr    = hs_sd_wr & ~{2{host_here}};
+
     hps_disk_model #(.LAT_CLKS(10)) hps (
         .clk(bclk), .img_size(hs_size),
-        .rd(hs_sd_rd), .wr(hs_sd_wr),
+        .rd(mdl_rd), .wr(mdl_wr),
         .lba_a(hs_sd_lba), .lba_b(hs_sd_lba),
         .ack(hs_sd_ack),
         .buff_addr(hs_buff_addr), .buff_dout(hs_buff_dout),
@@ -1121,7 +1168,7 @@ module tb_fdd_img;
             mon_bytes = 0; mon_seqbad = 0; mon_databad = 0;
             mon_maxa = -1; mon_seq = 0; mon_memchk = -1;
             mon_sdrd = 0; mon_sdwr = 0; mon_drn = 0; mon_cfgw = 32'd0;
-            mon_dlm = 0; mon_dlbase = 0; mon_badaddr = -1;
+            mon_dlm = 0; mon_dlbase = 0; mon_badaddr = -1; mon_stall = 0;
         end
     endtask
 
@@ -1146,8 +1193,16 @@ module tb_fdd_img;
                     k = k + 1;
             end
             hps.past_end = 2'b00;             // sticky inside the model
-            // and each case owns a pristine pair of images: the write-backs
-            // of an earlier case must not be read as this case's own bytes
+            // each case owns a pristine pair of images: an earlier case's
+            // write-back must never be read as this case's own byte. Behind
+            // the fixture lies a marker that is neither the fixture's byte nor
+            // a write pattern's, so a comparison that runs past the end of a
+            // small fixture says "not the file's byte" instead of passing on
+            // whatever the memory happened to hold
+            for (k = 0; k < 65536; k = k + 1) begin
+                hps.mem[0][k] = 8'h5A;
+                hps.mem[1][k] = 8'h5A;
+            end
             for (k = 0; k < 16384; k = k + 1) hps.mem[0][k] = himg[k];
             for (k = 0; k < 10240; k = k + 1) hps.mem[1][k] = hpmg[k];
             case_start();
@@ -1168,8 +1223,12 @@ module tb_fdd_img;
                 mon_cfgw = hs_fill_word;
                 if (mon_cfg_at < 0) mon_cfg_at = mon_n;
             end
-            else if (hs_fill_word[31:30] == 2'd2)
+            else if (hs_fill_word[31:30] == 2'd2) begin
                 mon_rdy = mon_rdy + 1;
+                // how far the drive's own fill had come when this ready went
+                // out: the proof that a download did not wait for a fill
+                mon_at_rdy = mon_sdrd1;
+            end
             else if (!hs_fill_word[29]) begin          // an image byte
                 mon_bytes = mon_bytes + 1;
                 if (hs_fill_word[29:8] !== mon_seq[21:0])
@@ -1191,10 +1250,33 @@ module tb_fdd_img;
     end
 
     always @(hs_fill_tgl) mon_tgl = mon_tgl + 1;
+    // sector reads of drive B alone (a download streams no sector read, so
+    // this counts one fill), and the read count a ready was sent at
+    integer mon_sdrd1 = 0;
+    integer mon_at_rdy = 0;
+    always @(posedge hs_sd_rd[1]) if (mon_on) mon_sdrd1 = mon_sdrd1 + 1;
+    // clocks on which the module held a disk slot request while its download
+    // held ioctl_wait: that request asks the host the download has stopped,
+    // which is the deadlock the review's rule is about
+    integer mon_stall = 0;
+    always @(posedge bclk)
+        if (!hs_rst && mon_on && (io_wait === 1'b1) &&
+            ((hs_sd_rd !== 2'b00) || (hs_sd_wr !== 2'b00)))
+            mon_stall = mon_stall + 1;
     always @(drn_tgl) if (mon_on) mon_drn = mon_drn + 1;
 
     always @(posedge hs_sd_rd[0] or posedge hs_sd_rd[1])
         if (mon_on) mon_sdrd = mon_sdrd + 1;
+    // the review's rule, measured on the wire: while the module holds the
+    // download's ioctl_wait it must not have a disk slot request standing -
+    // the host it would be asking is the host waiting for the download
+    integer mon_blockwait = 0;
+    always @(posedge bclk)
+        if (!hs_rst && mon_on && (io_wait === 1'b1) &&
+            ((hs_sd_rd !== 2'b00) || (hs_sd_wr !== 2'b00)))
+            mon_blockwait = mon_blockwait + 1;
+
+    // sector writes, either drive (did a write-back reach the host)
     always @(posedge hs_sd_wr[0] or posedge hs_sd_wr[1])
         if (mon_on) mon_sdwr = mon_sdwr + 1;
 
@@ -1318,7 +1400,10 @@ module tb_fdd_img;
                 2: $readmemh("build/sim/fdd_img/dl1.hex",   dl_mem);
                 3: $readmemh("build/sim/fdd_img/dlcut.hex", dl_mem);
                 4: $readmemh("build/sim/fdd_img/dlbad.hex", dl_mem);
-                default: $readmemh("build/sim/fdd_img/dlbig.hex", dl_mem);
+                5: $readmemh("build/sim/fdd_img/dlbig.hex", dl_mem);
+                6: $readmemh("build/sim/fdd_img/dlwp.hex",  dl_mem);
+                7: $readmemh("build/sim/fdd_img/dlc33.hex", dl_mem);
+                default: $readmemh("build/sim/fdd_img/dl33.hex", dl_mem);
             endcase
             dl_n = 0;
             while (dl_n < 65536 && dl_mem[dl_n] !== 8'hxx)
@@ -1559,6 +1644,7 @@ module tb_fdd_img;
     reg        rdy;
     reg [20:0] foff;
     integer drn0, wr0;                  // a drain count, an sd_wr count
+    integer cf0, rf0;                   // a config / ready baseline
     integer e0;                         // an expected byte
     reg [31:0] hw;                      // a config word as it arrived
 
@@ -1907,6 +1993,25 @@ module tb_fdd_img;
         mon_reset();
         host_mount(2'b01, 64'd688128, 1'b0);      // 84 tracks: the cap
         expect_cfg("auto 688128", 1'b0, KIND_TRD, 7'd84, 1'b1);
+        // The cap has to be checked on the whole sector count: 1474560 is the
+        // TRD image of 180 tracks, whose 16-bit count still fits in 8 bits -
+        // a count kept in 7 bits folds 180 onto 52 and the module streams a
+        // 52-track drive out of a file three times too big. Both geometries
+        // are over the cap here, so: an empty drive and no ready.
+        mon_reset();
+        host_mount(2'b01, 64'd1474560, 1'b0);
+        expect_cfg("auto 1474560", 1'b0, KIND_TRD, 7'd0, 1'b0);
+        quiet("auto 1474560", 0, 1, 4000);
+        mon_reset();
+        host_mount(2'b01, 64'd1056768, 1'b0);     // 20480 sectors, both over
+        expect_cfg("auto 1056768", 1'b0, KIND_TRD, 7'd0, 1'b0);
+        quiet("auto 1056768", 0, 1, 4000);
+        // 696320 bytes is TRD-85: over the cap, and the geometry below the
+        // cap is CP/M-68. The next mount lands on this fill, so only the
+        // geometry is proven here, not the stream.
+        mon_reset();
+        host_mount(2'b01, 64'd696320, 1'b0);
+        expect_cfg("auto 696320", 1'b0, KIND_CPM, 7'd68, 1'b1);
         // a size that fits neither geometry: an empty drive, and no ready
         mon_reset();
         host_mount(2'b01, 64'd12345, 1'b0);
@@ -1929,6 +2034,16 @@ module tb_fdd_img;
         hs_status[35]   = 1'b1;                   // force CP/M
         host_mount(2'b01, 64'd409600, 1'b0);
         expect_cfg("force CPM 409600", 1'b0, KIND_CPM, 7'd40, 1'b1);
+        mon_reset();
+        // A forced geometry over the cap is refused as well: with TRD forced,
+        // 696320 is TRD-85, and behind a selection the user made there is no
+        // fallthrough to a smaller geometry.
+        mon_reset();
+        hs_status       = 128'd0;
+        hs_status[34]   = 1'b1;                   // force TRD
+        host_mount(2'b01, 64'd696320, 1'b0);
+        expect_cfg("force TRD 696320", 1'b0, KIND_TRD, 7'd0, 1'b0);
+        quiet("force TRD 696320", 0, 1, 4000);
         mon_reset();
         hs_status       = 128'd0;
         hs_status[35:34] = 2'd3;                  // not a selection: auto
@@ -2245,6 +2360,309 @@ module tb_fdd_img;
             end
         case_end("remount_mid_drain_host");
 
+        // ---------------- host_mount_b ----------------
+        // Drive B is not drive A with another config bit: its image is the
+        // other hps slot, its config says d=1, its lock is hs_wprt[1], and
+        // its write-back has to land in that other slot's bytes. Drive A
+        // carries an image of its own all the way through and must not move.
+        host_case_start();
+        mon_memchk = -1;
+        host_mount(2'b01, 64'd16384, 1'b0);
+        expect_cfg("host_mount_b A", 1'b0, KIND_TRD, 7'd2, 1'b1);
+        wait_rdy("host_mount_b A");
+        host_mount(2'b10, 64'd10240, 1'b0);
+        expect_cfg("host_mount_b B", 1'b1, KIND_CPM, 7'd1, 1'b1);
+        wait_rdy("host_mount_b B");
+        if (hs_wprt !== 2'b00)
+            bad("host_mount_b: two writable images are not both writable");
+        ref_load(2);                          // ref_cpmh_t0s0, the slot b image
+        req_track(1'b1, 1'b0, 7'd0, rdy);
+        if (!rdy) bad("host_mount_b: drive B's track is not ready");
+        check_bh("host_mount_b B t0s0");
+        // A write to B comes back in slot b: sector R=2 of a 1024-byte
+        // geometry is the file's 1024..1279, which is its block 2, LBA 2.
+        wr0 = mon_sdwr;
+        wr_sector(1'b1, 1'b0, 7'd0, 8'd0, 8'd0, 8'd2, 3'd3, 256, 1, 8'd0);
+        k = 0;
+        while (mon_sdwr < wr0 + 1 && k < FILL_ALL) begin
+            @(posedge bclk);
+            k = k + 1;
+        end
+        if (mon_sdwr < wr0 + 1)
+            tfail("host_mount_b: B's dirty block never reached the host");
+        wait_write_done("host_mount_b");
+        e0 = 0;
+        for (k = 0; k < 256; k = k + 1)
+            if (hps.mem[1][1024 + k] !== pat(1, k, 8'd0)) e0 = e0 + 1;
+        if (e0 != 0) begin
+            $display("FAIL host_mount_b: %0d bytes of B's block missed slot b", e0);
+            errors = errors + 1;
+        end
+        e0 = 0;
+        for (k = 0; k < 1024; k = k + 1)
+            if (hps.mem[0][k] !== himg[k]) e0 = e0 + 1;
+        if (e0 != 0) begin
+            $display("FAIL host_mount_b: %0d of A's file's bytes moved", e0);
+            errors = errors + 1;
+        end
+        // a read-only image locks its own drive and leaves the other one free
+        host_mount(2'b10, 64'd0, 1'b0);
+        wait_cfg("the eject of B", hw);
+        host_mount(2'b10, 64'd10240, 1'b1);
+        expect_cfg("host_mount_b B read-only", 1'b1, KIND_CPM, 7'd1, 1'b1);
+        if (hs_wprt !== 2'b10)
+            bad("host_mount_b: hs_wprt is not 10 for a writable A and a locked B");
+        case_end("host_mount_b");
+
+        // ---------------- fdi_wprotect ----------------
+        // An FDI carries a write-protect flag of its own in byte 3 of its
+        // header (the field mk_disk leaves as the format's version 0). There
+        // is no mount burst behind a download, so that flag is the only thing
+        // that can say whether the drive may be written - and the only writer
+        // of hs_wprt is the mount settle, which is where a download therefore
+        // has to hand the flag over.
+        host_case_start();
+        mon_memchk = -1;
+        dl_load(0);                               // dl.fdi: the flag is clear
+        host_download(16'd1, 1);
+        if (mon_rdy !== 1) bad("fdi_wprotect: the plain file never arrived");
+        if (hs_wprt[0] !== 1'b0)
+            bad("fdi_wprotect: a plain file left drive A locked");
+        mon_reset();
+        dl_load(6);                               // dlwp.fdi: byte 3 is 1
+        host_download(16'd1, 1);
+        if (mon_rdy !== 1) begin
+            $display("FAIL fdi_wprotect: the file with its flag set sent %0d readies",
+                     mon_rdy);
+            errors = errors + 1;
+        end
+        if (hs_wprt[0] !== 1'b1)
+            bad("fdi_wprotect: the file's lock flag never reached the drive");
+        ref_load(3);                              // and the image is the file's
+        req_track(1'b0, 1'b1, 7'd0, rdy);
+        if (!rdy) bad("fdi_wprotect: the downloaded track is not ready");
+        check_bh("fdi_wprotect dl t0s1");
+        // the other drive keeps its own state: B's file is plain, so B is
+        // writable while A stays locked by its own file
+        mon_reset();
+        dl_load(0);
+        host_download(16'd2, 1);
+        if (hs_wprt !== 2'b01)
+            bad("fdi_wprotect: B's plain file did not open B (A keeps its lock)");
+        // A block whose sector count is over the store's 32 record slots must
+        // not be counted into the table at all (it would wrap onto slot 0 and
+        // build a track out of the following block's header). The config is
+        // already out when the count is read, so the refusal is a drive that
+        // never gets its ready.
+        mon_reset();
+        dl_load(7);                               // dlc33.fdi: 33 records
+        host_download(16'd1, 2);
+        quiet("the 33-record block", 0, 1, 4000);
+        if (mon_cfg !== 1)
+            bad("the 33-record block: its header never reached the store");
+        case_end("fdi_wprotect");
+
+        // ---------------- download_after_aborted ----------------
+        // hps_io holds no byte of its own: every byte is a strobe the core
+        // either takes or loses. A download that stops in the middle of the
+        // stream - a file that ends inside its header, a header refused for
+        // its magic - therefore has to let go of the byte it is holding, or
+        // the wait stays up and the next download begins with a byte missing:
+        // a file whose magic is three bytes short.
+        host_case_start();
+        mon_memchk = -1;
+        dl_load(3);                               // eight bytes: no header
+        host_download(16'd1, 2);
+        quiet("the truncated file", 0, 1, 2000);
+        mon_reset();
+        dl_load(0);
+        host_download(16'd1, 1);
+        if (mon_cfg !== 1 || mon_rdy !== 1) begin
+            $display("FAIL download_after_aborted: %0d configs, %0d readies",
+                     mon_cfg, mon_rdy);
+            errors = errors + 1;
+        end
+        if (mon_cfgw !== {2'd0, 1'b0, KIND_FDI, 7'd1, 1'b1, 19'd0})
+            bad("download_after_aborted: the second file's header is not the config");
+        ref_load(3);
+        req_track(1'b0, 1'b1, 7'd0, rdy);
+        if (!rdy) bad("download_after_aborted: the drive is not ready");
+        check_bh("download_after_aborted after the truncated file");
+        // the same after a header that was read and refused
+        mon_reset();
+        dl_load(4);                               // a wrong magic
+        host_download(16'd1, 2);
+        quiet("the bad magic", 0, 1, 2000);
+        mon_reset();
+        dl_load(0);
+        host_download(16'd1, 1);
+        if (mon_rdy !== 1)
+            bad("download_after_aborted: nothing landed after the bad magic");
+        check_bh("download_after_aborted after the bad magic");
+        case_end("download_after_aborted");
+
+        // ---------------- download_then_mount ----------------
+        // hps_io keeps nothing of its own: while a file is streaming, every
+        // byte is a strobe the core took or lost. A mount of that drive ends
+        // the download - the file the OSD just picked is the drive's image
+        // now - and the window goes with it, the byte in hand included. A
+        // module that still counts itself as holding that byte never takes
+        // the first byte of the next file either, and the next download is a
+        // file whose magic is one byte short.
+        host_case_start();
+        mon_memchk = -1;
+        dl_load(0);
+        cf0 = mon_cfg;
+        rf0 = mon_rdy;
+        fork
+            host_download(16'd1, 2);
+            begin
+                repeat (60) @(posedge bclk);
+                host_mount(2'b01, 64'd16384, 1'b0);
+            end
+        join
+        // The mount's config and ready cannot be waited for from here: the
+        // source is only let go once, and the mount settles, dispatches and
+        // fills while it is still streaming. Both are read from the counters.
+        if (mon_cfg <= cf0)
+            bad("download_then_mount: the mount never sent a config");
+        if (mon_cfgw !== {2'd0, 1'b0, KIND_TRD, 7'd2, 1'b1, 19'd0})
+            bad("download_then_mount: the drive's config is not the mount's TRD image");
+        k = 0;
+        while (mon_rdy <= rf0 && k < FILL_ALL) begin
+            @(posedge bclk);
+            k = k + 1;
+        end
+        if (mon_rdy <= rf0) tfail("download_then_mount: the mount never sent ready");
+        ref_load(0);                              // the mount's own file won
+        req_track(1'b0, 1'b0, 7'd0, rdy);
+        if (!rdy) bad("download_then_mount: the mounted image is not ready");
+        check_bh("download_then_mount the mount won the download");
+        // and a fresh window of the same index works from its first byte
+        mon_reset();
+        dl_load(0);
+        host_download(16'd1, 1);
+        if (mon_cfg !== 1 || mon_rdy !== 1) begin
+            $display("FAIL download_then_mount: %0d configs, %0d readies after the mount",
+                     mon_cfg, mon_rdy);
+            errors = errors + 1;
+        end
+        ref_load(3);
+        req_track(1'b0, 1'b1, 7'd0, rdy);
+        if (!rdy) bad("download_then_mount: the second download never built a track");
+        check_bh("download_then_mount the second download");
+        case_end("download_then_mount");
+
+
+        // ---------------- download_over_fill ----------------
+        // The host is one thread: while it is inside a download's wait loop
+        // it is not listening to the disk slots, so a fill that keeps asking
+        // for sectors makes a download behind it wait forever. The store's
+        // port therefore changes hands at the next store push, and the fill
+        // that was in the way runs again afterwards.
+        host_case_start();
+        mon_memchk = -1;
+        hs_status      = 128'd0;
+        hs_status[34]  = 1'b1;                    // TRD forced: a fill at all
+        host_mount(2'b10, 64'd16384, 1'b0);
+        expect_cfg("download_over_fill B", 1'b1, KIND_TRD, 7'd2, 1'b1);
+        mon_sdrd1  = 0;
+        mon_at_rdy = 999;
+        wait_push(2000);                          // well inside the fill
+        dl_load(0);
+        host_download(16'd1, 1);
+        // the download is in the store while B's fill still has sectors left:
+        // 16384 bytes is 32 sector reads, so a download that had to wait for
+        // the fill to finish would report all 32 reads already done
+        if (mon_cfg !== 2 || mon_rdy !== 1) begin
+            $display("FAIL download_over_fill: %0d configs, %0d readies",
+                     mon_cfg, mon_rdy);
+            errors = errors + 1;
+        end
+        if (mon_at_rdy >= 32) begin
+            $display("FAIL download_over_fill: the download waited for %0d of B's 32 sectors",
+                     mon_at_rdy);
+            errors = errors + 1;
+        end
+        // (no byte-by-byte check here: the fill of B and the download's data
+        // area address the store's window in the same range, so the running
+        // byte monitor cannot tell the two streams apart - what the download
+        // put in the store is proven by the track below instead)
+        ref_load(3);
+        req_track(1'b0, 1'b1, 7'd0, rdy);
+        if (!rdy) bad("download_over_fill: the downloaded drive is not ready");
+        check_bh("download_over_fill dl t0s1");
+        // and drive B, whose fill was put aside, fills again and comes up
+        hs_status = 128'd0;
+        wait_rdy("download_over_fill the fill of B after the download");
+        req_track(1'b1, 1'b0, 7'd0, rdy);
+        if (!rdy) bad("download_over_fill: drive B never came up after the download");
+        case_end("download_over_fill");
+        // ---------------- fdi_overlong_block ----------------
+        // A block header's sector count is one byte, so nothing in the format
+        // stops a file asking for more records than the store's table has
+        // slots (32). Counting them would put record 33 where record 1 lives
+        // and hand out a track whose first sector is the next block's header.
+        // The count is read after the config went out, so the refusal is a
+        // drive with a config that never becomes ready.
+        host_case_start();
+        mon_memchk = -1;
+        dl_load(8);                               // dl33.fdi: 33 records
+        host_download(16'd1, 2);
+        quiet("the 33-record block", 0, 1, 6000);
+        if (mon_cfg !== 1)
+            bad("fdi_overlong_block: the header never reached the store");
+        // what the refusal has to look like on the wire: the config went out
+        // with the header, and not one byte of the file's data area may
+        // follow it. Counting past the table's slots streams on to the data
+        // area and calls the drive ready.
+        if (mon_bytes != 0) begin
+            $display("FAIL fdi_overlong_block: %0d bytes of a refused file streamed on",
+                     mon_bytes);
+            errors = errors + 1;
+        end
+        req_track(1'b0, 1'b0, 7'd0, rdy);
+        if (rdy) bad("fdi_overlong_block: a refused file left a ready drive");
+        case_end("fdi_overlong_block");
+
+        // ---------------- drain_under_download ----------------
+        // One host, two customers again: a dirty block of drive A goes back
+        // over the same interface that drive B's download owns. The block
+        // waits, it does not ask the host the download stopped; both arrive.
+        host_case_start();
+        mon_memchk = -1;
+        host_mount(2'b01, 64'd16384, 1'b0);
+        expect_cfg("drain_under_download A", 1'b0, KIND_TRD, 7'd2, 1'b1);
+        wait_rdy("drain_under_download A");
+        req_track(1'b0, 1'b0, 7'd0, rdy);
+        if (!rdy) bad("drain_under_download: track 0/0 is not ready");
+        drn0 = mon_drn;
+        wr_sector(1'b0, 1'b0, 7'd0, 8'd0, 8'd0, 8'd3, 3'd1, 256, 1, 8'd0);
+        k = 0;
+        while (mon_drn == drn0 && k < DN_BUDGET) begin
+            @(posedge bclk);
+            k = k + 1;
+        end
+        if (mon_drn == drn0) tfail("drain_under_download: no block was presented");
+        // the copy out of the store is running when the window opens
+        mon_reset();
+        dl_load(1);
+        host_download(16'd2, 1);
+        if (mon_rdy !== 1)
+            bad("drain_under_download: the file behind the write-back never arrived");
+        if (mon_cfgw !== {2'd0, 1'b1, KIND_FDI, 7'd1, 1'b1, 19'd0})
+            bad("drain_under_download: the download is not drive B's own config");
+        wait_write_done("drain_under_download");
+        if (mon_sdwr < 1)
+            bad("drain_under_download: A's dirty block never reached the host");
+        e0 = 0;
+        for (k = 0; k < 256; k = k + 1)
+            if (hps.mem[0][512 + k] !== pat(1, k, 8'd0)) e0 = e0 + 1;
+        if (e0 != 0) begin
+            $display("FAIL drain_under_download: %0d of A's block's bytes missed the file", e0);
+            errors = errors + 1;
+        end
+        case_end("drain_under_download");
 
         // ---------------- verdict ----------------
         $display("tb_fdd_img: %0d errors", errors);
