@@ -212,8 +212,15 @@ def to_trdos(r, settle=5.0):
     *left*, and the caller reads /tmp/zx-trdos.png for what came up.
     """
     time.sleep(settle)
+    for _ in range(MENU_TO_TRDOS_128):
+        r.pad("down")
+        time.sleep(0.45)
+    time.sleep(0.2)
+    # The baseline is taken after the Down presses (the highlight has already
+    # moved) and before Enter, so a dropped Enter cannot look like "left".
     before = r.screen(shot("trdos-before"))
-    pad_enter(r, MENU_TO_TRDOS_128)
+    r.press("KEY_ENTER")
+    time.sleep(0.5)
     t0 = time.time()
     while time.time() - t0 < 30.0:
         time.sleep(2.0)

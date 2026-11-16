@@ -165,9 +165,11 @@ header drives the EAR input; the USER LED lights while the tape is playing.
 
 Five more MiSTer disk slots sit behind the machine's own disk interfaces;
 each is mounted with its OSD item (`S1` `SD Card`, `S2` `IDE 0`, `S3`
-`IDE 1`, `S4` `Floppy A`, `S5` `Floppy B`), right below the tape. All five
-are read-write: a sector the
-machine writes goes back through hps_io into the mounted file.
+`IDE 1`, `S4` `Floppy A`, `S5` `Floppy B`), right below the tape. Slots 1-3
+are read-write: a sector the machine writes goes back through hps_io into
+the mounted file. Slots 4/5 write back only for `.trd` and `.img` files
+(`.scl` mounts are read-only); the FDI entries (`F1`/`F2`) are downloads,
+not disk slots, and are read-only.
 
 - **SD card (slot 1, `SD Card`)**: the Z-Controller's SPI bus at the Profi
   boundary (`SD_CS_N`/`SD_CLK`/`SD_DI`/`SD_DO`, `zc_spi` on the Z80 side)
