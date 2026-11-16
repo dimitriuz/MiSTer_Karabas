@@ -18,7 +18,8 @@
 // power-up, before hps_io had mounted anything: on the board that is the
 // boot that stops on the Drive line, about one time in three (the mount
 // lands after the probe has begun), and holding until a mount actually
-// arrives is what removes it. Only the disk slots count; the tape is not
+// arrives is what removes it. Only the disk slots count (bits [5:1]: the
+// SD card, the IDE files and the floppy images); the tape is not
 // one the ROM probes.
 module mount_settle #(
     parameter integer SETTLE_CLKS = 26'h3FFFFFF,   // 1.34 s at 50 MHz
@@ -26,7 +27,7 @@ module mount_settle #(
 ) (
     input  wire clk,
     input  wire reset,          // power-on reset only
-    input  wire [3:0] mounted,  // hps_io img_mounted, one bit per slot
+    input  wire [5:0] mounted,  // hps_io img_mounted, one bit per slot
     output wire settled
 );
 
@@ -39,9 +40,9 @@ localparam integer SW = $clog2(BUDGET_CLKS + 2);
 // stays black, so only the rising edge reloads it (board, 2026-11-11: the
 // core came up with no picture at all until the OSD was opened).
 reg [SW-1:0] wait_cnt = BUDGET_CLKS[SW-1:0];
-reg  [3:0]   prev_mounted = 4'h0;
+reg  [5:0]   prev_mounted = 6'h00;
 
-wire disk_mount = |(mounted[3:1] & ~prev_mounted[3:1]);
+wire disk_mount = |(mounted[5:1] & ~prev_mounted[5:1]);
 
 always @(posedge clk) begin
     prev_mounted <= mounted;

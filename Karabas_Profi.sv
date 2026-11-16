@@ -79,6 +79,11 @@ localparam CONF_STR = {
 	"S1,VHD,SD Card;",
 	"S2,HDFIMGVHD,IDE 0;",
 	"S3,HDFIMGVHD,IDE 1;",
+	"S4,TRDIMGSCL,Floppy A;",
+	"S5,TRDIMGSCL,Floppy B;",
+	"F1,FDI,Floppy A FDI;",
+	"F2,FDI,Floppy B FDI;",
+	"O[35:34],Disk layout,Auto,TR-DOS,CP/M;",
 	"T[31],Tape play/pause;",
 	"T[32],Tape previous block;",
 	"T[33],Tape next block;",
@@ -120,29 +125,38 @@ wire osd_reset = status[0] | buttons[1] | RESET;
 
 wire        ioctl_download;
 wire [15:0] ioctl_index;
+// The ioctl window is shared: mcu_emu raises its part while its boot.rom
+// frames go out, fdd_src while an FD image streams in (both pause Main,
+// never both at once in practice: the boot stream finishes long before the
+// first FD mount). hps_io itself never reads ioctl_wait (only the ARM
+// throttles on it), so an OR is safe.
+wire mcu_ioctl_wait;
+wire fdd_ioctl_wait;
+wire ioctl_wait = mcu_ioctl_wait | fdd_ioctl_wait;
 wire        ioctl_wr;
 wire [26:0] ioctl_addr;
 wire [7:0]  ioctl_dout;
-wire        ioctl_wait;
 
 // MiSTer disk slots: the mount handshake and the SD block interface hps_io
-// shares with the core. VDNUM=4 (four slots), BLKSZ=2 (512-byte sectors), so
+// shares with the core. VDNUM=6 (six slots), BLKSZ=2 (512-byte sectors), so
 // sd_buff_addr is [13:0] and the block readers use its low 9 bits:
 //   0  the tape file (S0, the TAPE section), rtl/tape/tape_src.sv
 //   1  the Z-Controller's SD card (S1), sys/sd_card.sv, one sector at a time
 //   2  the IDE hard disk, device 0 (S2, "IDE 0"), rtl/disk/img_src.sv slot a
 //   3  the IDE hard disk, device 1 (S3, "IDE 1"), rtl/disk/img_src.sv slot b
-// Only slots 1..3 can be written (the SD card and the IDE disks); the tape is
-// read-only, so sd_wr[0] stays 0.
-wire  [3:0]  img_mounted;
+//   4  floppy drive A: (S4, "FD A:"), rtl/disk/fdd_src.sv drive a
+//   5  floppy drive B: (S5, "FD B:"), rtl/disk/fdd_src.sv drive b
+// Only slots 1..5 can be written (the SD card, the IDE disks, the FD
+// images); the tape is read-only, so sd_wr[0] stays 0.
+wire  [5:0]  img_mounted;
 wire         img_readonly;
 wire  [63:0] img_size;
-wire  [31:0] sd_lba [4];
-wire   [5:0] sd_blk_cnt [4];
-wire   [3:0] sd_rd, sd_wr, sd_ack;
+wire  [31:0] sd_lba [6];
+wire   [5:0] sd_blk_cnt [6];
+wire   [5:0] sd_rd, sd_wr, sd_ack;
 wire  [13:0] sd_buff_addr;
 wire   [7:0] sd_buff_dout;
-wire   [7:0] sd_buff_din [4];
+wire   [7:0] sd_buff_din [6];
 wire         sd_buff_wr;
 
 // Mount settle. Main mounts an MGL's files some time after the core starts,
@@ -180,10 +194,12 @@ assign sd_blk_cnt[0] = 6'd0;
 assign sd_blk_cnt[1] = 6'd0;
 assign sd_blk_cnt[2] = 6'd0;
 assign sd_blk_cnt[3] = 6'd0;
+assign sd_blk_cnt[4] = 6'd0;   // one 512-byte sector per request (BLKSZ=2)
+assign sd_blk_cnt[5] = 6'd0;
 assign sd_wr[0]      = 1'b0;
 assign sd_buff_din[0] = 8'd0;
 
-hps_io #(.CONF_STR(CONF_STR), .VDNUM(4), .BLKSZ(2)) hps_io
+hps_io #(.CONF_STR(CONF_STR), .VDNUM(6), .BLKSZ(2)) hps_io
 (
 	.clk_sys(clk_sys),
 	.HPS_BUS(HPS_BUS),
@@ -261,7 +277,7 @@ mcu_emu u_mcu (
 	.ioctl_wr(ioctl_wr),
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_dout),
-	.ioctl_wait(ioctl_wait),
+	.ioctl_wait(mcu_ioctl_wait),
 
 	.status(status),
 	.osd_reset(osd_reset),
@@ -306,6 +322,45 @@ wire        gs_clk;            // CLK_GS 28.125 MHz: the GS CPU, gs_mem, DDRAM_C
 wire [20:0] gsm_a, gsl_a;      // GS bus out of memory.vhd / its loader bytes
 wire  [7:0] gsm_di, gsm_do, gsl_d;
 wire        gsm_rd, gsm_wr, gsm_wait_n, gsl_tgl;
+
+// ---------------- The floppy drives (stage 4c) -------------------------
+// Two drives on the VG93 FDC inside profi: rtl/disk/floppy.sv is the drive
+// model (heads, flux, index), rtl/disk/fdd_store.sv keeps the tracks in
+// DDR3 and the written sectors, rtl/disk/fdd_src.sv owns the HPS files of
+// the disk slots 4 and 5 (the images). The FDC pins live on clk_bus.
+wire [1:0] fdc_drive;            // one-hot {B,A}, motor-gated in hrdy_fdc
+wire       fdc_motor, fdc_dir, fdc_step, fdc_side_n;
+wire       fdc_wdata, fdc_wgate;
+wire       fdc_index, fdc_tr00, fdc_wprt_chip, fdc_rdata;
+wire       fdc_swap;             // profi FDC_SWAP_O: the swap cable
+wire [1:0] fdc_wprt;             // fdd_src's write-protects, clk_sys below
+
+// The drives share profi's reset, the PLL lock: during a relock the FDC is
+// stopped too, and half-stepped heads simply re-restore on the next
+// command. fdd_src and fdd_store reset at power-on only - their fill and
+// drain handshakes must not be pulled apart mid-transfer, and the mounted
+// images stay across a machine reset.
+//
+// Ruling R10: ds80 (vmode[3], a profi register on clk_bus) and the swap
+// cable go into the drive model through two flops; the write-protects of
+// fdd_src cross from clk_sys the same way.
+reg [1:0] ds80_sync = 2'b00;
+always @(posedge clk_bus) ds80_sync <= {ds80_sync[0], vmode[3]};
+wire      ds80_s = ds80_sync[1];
+
+reg [1:0] fdc_swap_sync = 2'b00;
+always @(posedge clk_bus) fdc_swap_sync <= {fdc_swap_sync[0], fdc_swap};
+
+reg [1:0] fdc_wp_s1 = 2'b00, fdc_wp_s2 = 2'b00;   // clk_sys -> clk_bus
+always @(posedge clk_bus) begin
+	fdc_wp_s1 <= fdc_wprt;
+	fdc_wp_s2 <= fdc_wp_s1;
+end
+
+// The flux-cell cadence, the same two ratios tb_floppy verified:
+// clk_bus * 4/225 = 0.5 MHz at 28.125 MHz, * 14/675 = 0.5 MHz at 24.107.
+wire [15:0] fdc_cell_num = ds80_s ? 16'd14 : 16'd4;
+wire [15:0] fdc_cell_den = ds80_s ? 16'd675 : 16'd225;
 
 // The VHDL entity binds by name; generics per the Stage-1 constraints.
 profi #(
@@ -422,17 +477,18 @@ profi #(
 	.MIDI_TX(midi_tx),
 	.MIDI_RESET_N(),
 
-	.FDC_INDEX(1'b0),             // no drives yet (stage 2)
-	.FDC_DRIVE(),
-	.FDC_MOTOR(),
-	.FDC_DIR(),
-	.FDC_STEP(),
-	.FDC_WDATA(),
-	.FDC_WGATE(),
-	.FDC_TR00(1'b0),
-	.FDC_WPRT(1'b0),
-	.FDC_RDATA(1'b0),
-	.FDC_SIDE_N()
+	.FDC_INDEX(fdc_index),
+	.FDC_DRIVE(fdc_drive),
+	.FDC_MOTOR(fdc_motor),
+	.FDC_DIR(fdc_dir),
+	.FDC_STEP(fdc_step),
+	.FDC_WDATA(fdc_wdata),
+	.FDC_WGATE(fdc_wgate),
+	.FDC_TR00(fdc_tr00),
+	.FDC_WPRT(fdc_wprt_chip),
+	.FDC_RDATA(fdc_rdata),
+	.FDC_SIDE_N(fdc_side_n),
+	.FDC_SWAP_O(fdc_swap)
 );
 
 // The General Sound's memory: 64 KB of GS RAM in BRAM and the rest of the
@@ -457,19 +513,194 @@ gs_mem u_gs_mem (
 	.ldr_d(gsl_d),
 	.ldr_tgl(gsl_tgl),
 
-	.ddr_busy(DDRAM_BUSY),
-	.ddr_burstcnt(DDRAM_BURSTCNT),
-	.ddr_addr(DDRAM_ADDR),
-	.ddr_dout(DDRAM_DOUT),
-	.ddr_dout_ready(DDRAM_DOUT_READY),
-	.ddr_rd(DDRAM_RD),
-	.ddr_din(DDRAM_DIN),
-	.ddr_be(DDRAM_BE),
-	.ddr_we(DDRAM_WE)
+	.ddr_busy(gs_busy),
+	.ddr_burstcnt(),
+	.ddr_addr(gs_addr),
+	.ddr_dout(gs_dout),
+	.ddr_dout_ready(gs_dout_ready),
+	.ddr_rd(gs_rd),
+	.ddr_din(gs_din),
+	.ddr_be(gs_be),
+	.ddr_we(gs_we)
 );
 
 assign DDRAM_CLK = gs_clk;
 
+// The shared Avalon port: gs_mem is the priority master, the floppy drive
+// store (rtl/disk/fdd_store.sv) is master 1. The two regions are disjoint
+// (the GS cache at byte 0x3000_0000, the drive store above it), so no
+// address translation is needed; the arbiter only shares busy. reset is the
+// PLL lock like gs_mem's; the store keeps its own power-on reset (below).
+wire        gs_busy;
+wire [28:0] gs_addr;
+wire [63:0] gs_din;
+wire  [7:0] gs_be;
+wire        gs_rd, gs_we;
+wire [63:0] gs_dout;
+wire        gs_dout_ready;
+
+wire        f_busy;
+wire [28:0] f_addr;
+wire [63:0] f_din, f_dout;
+wire  [7:0] f_be;
+wire        f_req, f_rd, f_we;
+wire        f_dout_ready;
+
+ddr_arb u_ddr_arb (
+	.clk(gs_clk),
+	.reset(profi_areset),
+	.g_req(gs_rd | gs_we),
+	.g_addr(gs_addr),
+	.g_din(gs_din),
+	.g_be(gs_be),
+	.g_rd(gs_rd),
+	.g_we(gs_we),
+	.g_busy(gs_busy),
+	.g_dout(gs_dout),
+	.g_dout_ready(gs_dout_ready),
+	.f_req(f_req),
+	.f_addr(f_addr),
+	.f_din(f_din),
+	.f_be(f_be),
+	.f_rd(f_rd),
+	.f_we(f_we),
+	.f_busy(f_busy),
+	.f_dout(f_dout),
+	.f_dout_ready(f_dout_ready),
+	.ddr_rd(DDRAM_RD),
+	.ddr_we(DDRAM_WE),
+	.ddr_addr(DDRAM_ADDR),
+	.ddr_din(DDRAM_DIN),
+	.ddr_be(DDRAM_BE),
+	.ddr_burstcnt(DDRAM_BURSTCNT),
+	.ddr_busy(DDRAM_BUSY),
+	.ddr_dout(DDRAM_DOUT),
+	.ddr_dout_ready(DDRAM_DOUT_READY)
+);
+
+
+// ---------------- the floppy stack (stage 4c) --------------------------
+// The three modules share toggle handshakes across their clock edges; the
+// whole path was verified together in sim/tb_fdd_img.sv (the store and the
+// image source) and sim/tb_floppy.sv (the drive against the real hrdy_fdc).
+
+// store <-> image source (the fill and the drain, toggle handshakes)
+wire        fill_tgl;
+wire [31:0] fill_word;
+wire        fill_ack_tgl;
+wire [8:0]  drn_addr_b;
+wire [7:0]  drn_q_b;
+wire        drn_tgl;
+wire [11:0] drn_info;
+wire        drn_ack_tgl;
+
+// drive <-> store (track reads and written sectors, clk_bus toggles)
+wire        trk_req_tgl;
+wire [8:0]  trk_req;
+wire        trk_ack_tgl;
+wire [9:0]  trk_ack;
+wire [12:0] trk_addr_b;
+wire [8:0]  trk_q_b;
+wire [9:0]  wr_addr;
+wire [7:0]  wr_data;
+wire        wr_we, wr_tgl, wr_ack_tgl;
+wire [35:0] wr_info;
+
+fdd_store u_fdd_store (
+	.clk(gs_clk),                 // the DDR master's clock
+	.reset(por_reset),            // power-on only: a card swap never stops
+	.clk_bus(clk_bus),            // the machine's buffers
+	.clk_sys(clk_sys),            // the drain host's side
+
+	.f_addr(f_addr), .f_din(f_din), .f_be(f_be),
+	.f_req(f_req), .f_rd(f_rd), .f_we(f_we),
+	.f_busy(f_busy), .f_dout(f_dout), .f_dout_ready(f_dout_ready),
+
+	.fill_tgl(fill_tgl), .fill_word(fill_word), .fill_ack_tgl(fill_ack_tgl),
+
+	.trk_req_tgl(trk_req_tgl), .trk_req(trk_req),
+	.trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack),
+	.trk_addr_b(trk_addr_b), .trk_q_b(trk_q_b),
+	.wr_addr(wr_addr), .wr_data(wr_data), .wr_we(wr_we),
+	.wr_info(wr_info), .wr_tgl(wr_tgl), .wr_ack_tgl(wr_ack_tgl),
+
+	.drn_addr_b(drn_addr_b), .drn_q_b(drn_q_b),
+	.drn_tgl(drn_tgl), .drn_info(drn_info), .drn_ack_tgl(drn_ack_tgl)
+);
+
+// The drives themselves: the two models answer the FDC with the flux of the
+// tracks the store keeps. The track RAMs' port A is the store's to write;
+// port A's read side is unused (tb_floppy: the model mirrors the address
+// only), so q_a reads 0.
+floppy u_floppy (
+	.clk(clk_bus),
+	.reset(profi_areset),
+	.ds80(ds80_s),
+	.swap(fdc_swap_sync[1]),
+	.cell_num(fdc_cell_num),
+	.cell_den(fdc_cell_den),
+
+	.fdc_drive(fdc_drive), .fdc_motor(fdc_motor), .fdc_step(fdc_step),
+	.fdc_dir(fdc_dir), .fdc_side_n(fdc_side_n),
+	.fdc_wgate(fdc_wgate), .fdc_wdata(fdc_wdata),
+	.fdc_rdata(fdc_rdata), .fdc_index(fdc_index),
+	.fdc_tr00(fdc_tr00), .fdc_wprt(fdc_wprt_chip),
+	.wprt(fdc_wp_s2),
+
+	.trk_req_tgl(trk_req_tgl), .trk_req(trk_req),
+	.trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack),
+	.trk_addr_a(), .trk_addr_b(trk_addr_b),
+	.trk_q_a(9'd0), .trk_q_b(trk_q_b),
+
+	.wr_tgl(wr_tgl), .wr_info(wr_info), .wr_ack_tgl(wr_ack_tgl),
+	.wr_addr(wr_addr), .wr_data(wr_data), .wr_we(wr_we)
+);
+
+// The image source: the HPS files of slots 4 and 5 (FD A:, FD B:). One
+// shared sector request, so the same lba and data byte go to both slots;
+// only the selected one ever asks (sd_ack[5:4]).
+wire [1:0] fdd_sd_rd, fdd_sd_wr;
+wire [31:0] fdd_sd_lba;
+wire [7:0] fdd_sd_din;
+assign sd_rd[4]  = fdd_sd_rd[0];
+assign sd_rd[5]  = fdd_sd_rd[1];
+assign sd_wr[4]  = fdd_sd_wr[0];
+assign sd_wr[5]  = fdd_sd_wr[1];
+assign sd_lba[4] = fdd_sd_lba;
+assign sd_lba[5] = fdd_sd_lba;
+assign sd_buff_din[4] = fdd_sd_din;
+assign sd_buff_din[5] = fdd_sd_din;
+
+fdd_src u_fdd_src (
+	.clk_sys(clk_sys),
+	.reset_sys(por_reset),
+
+	.img_mounted(img_mounted[5:4]),
+	.img_size(img_size),
+	.img_readonly(img_readonly),
+	.sd_rd(fdd_sd_rd), .sd_wr(fdd_sd_wr),
+	.sd_lba(fdd_sd_lba),
+	.sd_ack(sd_ack[5:4]),
+	.sd_buff_addr(sd_buff_addr[8:0]),
+	.sd_buff_dout(sd_buff_dout),
+	.sd_buff_din(fdd_sd_din),
+	.sd_buff_wr(sd_buff_wr),
+
+	.status(status),
+
+	.ioctl_download(ioctl_download),
+	.ioctl_index(ioctl_index),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_addr(ioctl_addr),
+	.ioctl_dout(ioctl_dout),
+	.ioctl_wait(fdd_ioctl_wait),
+
+	.wprt(fdc_wprt),
+
+	.fill_tgl(fill_tgl), .fill_word(fill_word), .fill_ack_tgl(fill_ack_tgl),
+	.drn_addr_b(drn_addr_b), .drn_q_b(drn_q_b),
+	.drn_tgl(drn_tgl), .drn_info(drn_info), .drn_ack_tgl(drn_ack_tgl)
+);
 assign {SDRAM_DQMH, SDRAM_DQML} = sdr_dqm;
 assign SDRAM_nCS = 1'b0;
 assign SDRAM_CKE = 1'b1;

@@ -9,6 +9,8 @@
 //   mount   a disk mount restarts the wait at SETTLE_CLKS, and `settled`
 //           stays low until it has run out;
 //   extend  a second mount during the window restarts it again;
+//   floppy  mounted[4] and mounted[5] (the floppy images, stage 4c)
+//           restart it like any other disk image;
 //   tape    mounted[0] (the tape) does not restart it;
 //   level   a mount bit that is left up (hps_io's img_mounted is a level and
 //           clears only on the next ioctl command) restarts the wait once,
@@ -27,7 +29,7 @@ module tb_mount_settle;
    always #10 clk = ~clk;
 
    reg        reset = 1'b1;
-   reg  [3:0] mounted = 4'd0;
+   reg  [5:0] mounted = 6'd0;
    wire       settled;
 
    mount_settle #(.SETTLE_CLKS (SETTLE), .BUDGET_CLKS (BUDGET)) dut (
@@ -75,25 +77,48 @@ module tb_mount_settle;
       repeat (3) @(posedge clk); #1;
       reset = 1'b0;
       repeat (5) @(posedge clk); #1;       // 5 clocks into the budget
-      mounted = 4'b0010;                    // slot 1, the SD card
+      mounted = 6'b000010;                // slot 1, the SD card
       @(posedge clk); #1;
-      mounted = 4'd0;
+      mounted = 6'd0;
       check("mount", "held right after the mount", settled, 0);
       count_until_settled(SETTLE + 20, n);
       check("mount", "settled a SETTLE window later", n, SETTLE);
+
+      // ---- floppy: slots 4, 5 (the drive images) restart the window ----
+      // The slots the settle used not to know (they arrive with stage 4c):
+      // left out, the machine starts onto an unsettled image.
+      reset = 1'b1;
+      repeat (3) @(posedge clk); #1;
+      reset = 1'b0;
+      repeat (2) @(posedge clk); #1;
+      mounted = 6'b010000;                // slot 4, floppy drive A
+      @(posedge clk); #1;
+      mounted = 6'd0;
+      count_until_settled(SETTLE + 20, n);
+      check("floppy", "drive A settled a SETTLE window after its mount",
+            n, SETTLE);
+      reset = 1'b1;
+      repeat (3) @(posedge clk); #1;
+      reset = 1'b0;
+      repeat (2) @(posedge clk); #1;
+      mounted = 6'b100000;                // slot 5, floppy drive B
+      @(posedge clk); #1;
+      mounted = 6'd0;
+      count_until_settled(SETTLE + 20, n);
+      check("floppy", "drive B settles too", n, SETTLE);
 
       // ---- extend: a second mount during the window ----
       reset = 1'b1;
       repeat (3) @(posedge clk); #1;
       reset = 1'b0;
       repeat (2) @(posedge clk); #1;
-      mounted = 4'b0100;                    // slot 2, IDE 0
+      mounted = 6'b000100;                // slot 2, IDE 0
       @(posedge clk); #1;
-      mounted = 4'd0;
+      mounted = 6'd0;
       repeat (4) @(posedge clk); #1;
-      mounted = 4'b1000;                    // slot 3, IDE 1
+      mounted = 6'b001000;                // slot 3, IDE 1
       @(posedge clk); #1;
-      mounted = 4'd0;
+      mounted = 6'd0;
       count_until_settled(SETTLE + 20, n);
       check("extend", "settled a SETTLE window after the last mount",
             n, SETTLE);
@@ -103,20 +128,20 @@ module tb_mount_settle;
       repeat (3) @(posedge clk); #1;
       reset = 1'b0;
       repeat (5) @(posedge clk); #1;
-      mounted = 4'b0100;                    // slot 2, and it stays up
+      mounted = 6'b000100;                // slot 2, and it stays up
       @(posedge clk); #1;
       count_until_settled(SETTLE + 20, n);
       check("level", "settled a SETTLE window after the edge", n, SETTLE);
-      mounted = 4'd0;
+      mounted = 6'd0;
 
       // ---- tape: slot 0 does not count ----
       reset = 1'b1;
       repeat (3) @(posedge clk); #1;
       reset = 1'b0;
       repeat (5) @(posedge clk); #1;
-      mounted = 4'b0001;                    // slot 0, the tape
+      mounted = 6'b000001;                // slot 0, the tape
       @(posedge clk); #1;
-      mounted = 4'd0;
+      mounted = 6'd0;
       count_until_settled(BUDGET + 20, n);
       check("tape", "the tape leaves the budget running", n, BUDGET - 6);
 

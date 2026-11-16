@@ -36,7 +36,7 @@ Traps, all measured on the board:
 
     python3 tools/board/zx.py all    <mgl>      # boot, 128menu, loader, fire
     python3 tools/board/zx.py boot   /media/fat/games/Karabas_Profi/x.mgl
-    python3 tools/board/zx.py 128menu | loader | fire | tape | basic | load
+    python3 tools/board/zx.py 128menu | loader | fire | tape | basic | load | trdos
 """
 import subprocess
 import sys
@@ -48,7 +48,19 @@ from mister import Capture, Remote, read_bar, text_cells
 SHOTS = "/tmp"
 MENU_TO_128 = 6          # gamepad `down` presses on the GO menu
 MENU_TO_BASIC = 1        # gamepad `down` presses on the 128 ROM menu
-TAPE_ROW = 10            # `Down` presses from `Video` to `Tape play/pause`
+MENU_TO_TRDOS_128 = 4    # gamepad `down` presses on the GO menu (below)
+
+# GO menu rows, top to bottom (docs/dev/stage1-shots/romain-menu-50hz.png):
+#   Loading CP/M system 0, Loading IS-DOS 1, Loading boot 2,
+#   Run TR-DOS 48K 3, Run TR-DOS 128K 4, Run Sinclair 48K 5,
+#   Run Sinclair 128K 6, Test&Tools Menu 7
+
+# `Down` presses from `Video` to `Tape play/pause`. Build 73 (stage 4c) put
+# five selectable rows before it - Floppy A, Floppy B, Floppy A FDI, Floppy
+# B FDI, Disk layout - so what was 10 on builds 54-72 is 15 now. The first
+# board run re-reads the map from a capture before trusting the count
+# (AGENTS.md rule); mister.ROWS carries the same new map.
+TAPE_ROW = 15
 
 
 def shot(name):
@@ -189,6 +201,28 @@ def to_basic(r):
     return r.screen(shot("basic"))
 
 
+def to_trdos(r, settle=5.0):
+    """GO menu -> `Run TR-DOS 128K` -> wait for its `boot` program's output.
+
+    No typing: the GO menu starts TR-DOS, and TR-DOS loads `boot` from the
+    mounted drive image on its own. Same settle rule as `to_128_menu` (a
+    press into the drive-probing window lands on another row). The walk is
+    verified by effect only - the highlight row of the GO menu is not
+    readable from the MiSTer screenshot - so this proves the menu was
+    *left*, and the caller reads /tmp/zx-trdos.png for what came up.
+    """
+    time.sleep(settle)
+    before = r.screen(shot("trdos-before"))
+    pad_enter(r, MENU_TO_TRDOS_128)
+    t0 = time.time()
+    while time.time() - t0 < 30.0:
+        time.sleep(2.0)
+        after = r.screen(shot("trdos"))
+        if changed(before, after):
+            return after
+    raise RuntimeError("still on the GO menu after 30 s - Enter did not take")
+
+
 def load(r):
     """The 128 BASIC `LOAD ""` line, verified, then Enter."""
     line = cells(r)
@@ -320,6 +354,9 @@ def main(argv):
         r.release_all()
         if what == "boot":
             print("boot:", boot(r, argv[2]))
+        if what == "trdos":               # GO menu -> Run TR-DOS 128K
+            boot(r, argv[2])
+            print("trdos:", to_trdos(r))
         if what == "all":
             for attempt in range(1, 4):
                 print("boot:", boot(r, argv[2]))

@@ -149,5 +149,53 @@ class Sequences(unittest.TestCase):
         self.assertEqual(presses, ["KEY_A", "KEY_A"])
 
 
+
+class FloppyBuild(unittest.TestCase):
+    """The build-73 OSD map and the TR-DOS walk (stage 4c)."""
+
+    def test_tape_row_is_fifteen_on_build_73(self):
+        self.assertEqual(zx.TAPE_ROW, 15)
+        self.assertEqual(mister.ROWS[zx.TAPE_ROW], "Tape play/pause")
+
+    def test_the_five_new_rows_come_before_the_tape(self):
+        for row, name in ((10, "Floppy A"), (11, "Floppy B"),
+                          (12, "Floppy A FDI"), (13, "Floppy B FDI"),
+                          (14, "Disk layout")):
+            self.assertEqual(mister.ROWS[row], name)
+
+    def test_rom_menu_to_trdos_is_four_pads_then_enter(self):
+        r = FakeRemote()
+        real_pause = zx.time.sleep
+        zx.time.sleep = lambda s: None
+        try:
+            zx.pad_enter(r, zx.MENU_TO_TRDOS_128)
+        finally:
+            zx.time.sleep = real_pause
+        self.assertEqual([n for k, n, a in r.sent if k == "pad" and a == "down"],
+                         ["down"] * 4)
+        self.assertEqual([n for k, n, a in r.sent
+                          if k == "key" and a == "down" and n == "KEY_ENTER"],
+                         ["KEY_ENTER"])
+
+    def test_trdos_walk_watches_for_the_boot_output(self):
+        r = FakeRemote()
+        seen = {"watches": 0}
+        real = (zx.time.sleep, zx.changed)
+        zx.time.sleep = lambda s: None
+
+        def fake_changed(a, b):
+            seen["watches"] += 1
+            return True
+
+        zx.changed = fake_changed
+        try:
+            zx.to_trdos(r, settle=0.0)
+        finally:
+            zx.time.sleep, zx.changed = real
+        self.assertEqual([n for k, n, a in r.sent if k == "pad" and a == "down"],
+                         ["down"] * zx.MENU_TO_TRDOS_128)
+        self.assertGreaterEqual(seen["watches"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

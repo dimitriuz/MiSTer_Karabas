@@ -307,12 +307,19 @@ def menu_visible(im):
 
 # --- OSD geometry (from the 2026-11-10 runs, see AGENTS.md) -----------
 
-#: rows of the Karabas_Profi page by number of `Down` presses from `Video`
+
+#: rows of the Karabas_Profi page by number of `Down` presses from `Video`.
+#: Build 73 (stage 4c) added the two floppy image slots and the two FDI
+#: download entries before the tape items; the AGENTS.md table for builds
+#: 54-72 (Tape play/pause on 10) is the old map. Re-read from a capture on
+#: every new CONF_STR before trusting any count.
 ROWS = {
     0: "Video", 1: "MT32-pi", 2: "ROM Bank", 3: "Turbo", 4: "PSG Mix",
     5: "Covox", 6: "Tape", 7: "SD Card", 8: "IDE 0", 9: "IDE 1",
-    10: "Tape play/pause", 11: "Tape previous block",
-    12: "Tape next block", 13: "Joystick L",
+    10: "Floppy A", 11: "Floppy B", 12: "Floppy A FDI", 13: "Floppy B FDI",
+    14: "Disk layout",
+    15: "Tape play/pause", 16: "Tape previous block",
+    17: "Tape next block", 18: "Joystick L",
 }
 
 BAR_X = 330      # a column inside the bar's left padding, 960 px wide

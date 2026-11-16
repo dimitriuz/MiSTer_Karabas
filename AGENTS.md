@@ -29,11 +29,11 @@ Instructions for agents (and humans) changing this repository. Read these with:
 
 | What | Command | Notes |
 |---|---|---|
-| Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (47 as of 2026-11-09). |
+| Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (73 as of 2026-11-16). |
 | Revert the qsf | `git checkout -- Karabas_Profi.qsf` | Quartus rewrites `LAST_QUARTUS_VERSION` on every compile. |
 | Simulations | `tools/sim.sh sim/run_tb_*.sh` | Runs in image `karabas-sim:1` (repo at `/work`). Every testbench prints exactly one final `<tb>: PASS` / `<tb>: FAIL <reason>` and exits non-zero on failure. |
-| All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 21 today, one per `sim/run_tb_*.sh`). |
-| Python tests | `python3 -m unittest discover -s tools/tests` | 104 tests. `tests/` holds only the `.bas` sources for the tape fixtures — there are no python tests there. |
+| All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 23 today, one per `sim/run_tb_*.sh`). |
+| Python tests | `python3 -m unittest discover -s tools/tests` | 117 tests. `tests/` holds only the `.bas` sources for the tape fixtures — there are no python tests there. |
 | Upstream gates | `tools/check_upstream.sh`, `tools/elab_upstream.sh` | Tripwire for files we replace, and elaboration of the rewritten upstream. |
 
 Simulation runtimes, so a long run is not mistaken for a hang:
@@ -113,17 +113,21 @@ Never "I sent it, therefore it happened".
 - OSD: the gamepad's `home` (`BTN_MODE`) toggles it; `KEY_HOME`/`KEY_F12` stopped working
   after a `cold_reboot`. The cursor starts on `Video` on a fresh core load, and `Up` on
   `Video` wraps to the bottom of the page. Count `Down` presses on the **build that is
-  loaded**: rows change with CONF_STR. Build 54+: 8 `IDE 0`, 9 `IDE 1`, 10 `Tape play/pause`,
-  11 previous block, 12 next block, 13 `Joystick L`; builds 39-47 (no storage rows): 8 `Tape
-  play/pause`. Group headers (`Video`, `MT32-pi`) are one row each and open inline; the blank
-  line between pages is not selectable. Never `Enter` a file row (`Tape`, `SD Card`, `IDE 0/1`):
+  loaded**: rows change with CONF_STR. **Build 73+ (floppy slots)**: 8 `IDE 0`, 9 `IDE 1`,
+  10 `Floppy A`, 11 `Floppy B`, 12 `Floppy A FDI`, 13 `Floppy B FDI`, 14 `Disk layout`,
+  15 `Tape play/pause`, 16 previous block, 17 next block, 18 `Joystick L`; builds 54-72:
+  10 `Tape play/pause`, 11 previous block, 12 next block, 13 `Joystick L`; builds 39-47
+  (no storage rows): 8 `Tape play/pause`. Group headers (`Video`, `MT32-pi`) are one row
+  each and open inline; the blank line between pages is not selectable. Never `Enter` a
+  file row (`Tape`, `SD Card`, `IDE 0/1`, `Floppy A/B`, the FDI entries):
   it opens the OSD's file browser and the OSD is hard to bring back to a known state.
 - A converted tape is **paused after mounting**: the loader waits forever with a flat border.
   Fire `Tape play/pause`. At turbo off the border shows the tape signal — stripes while
   playing, solid while paused, a lead-in again after a block jump — so play/pause and block
   seek are checkable without audio; at 8x a frame is too coarse to show it.
 - Parallel mounts: MGL files in `/media/fat/games/Karabas_Profi/` with absolute `<file
-  type="s" index="N" path="..."/>`, N = 0 tape, 1 SD card, 2 IDE 0, 3 IDE 1. OSD options
+  type="s" index="N" path="..."/>`, N = 0 tape, 1 SD card, 2 IDE 0, 3 IDE 1, 4 floppy A,
+  5 floppy B (stage 4c). OSD options
   without the OSD: the 16-byte little-endian `/media/fat/config/Karabas_Profi.CFG` (ROM bank,
   turbo, DivMMC), then reload the core; leave it at all zeros when done.
 

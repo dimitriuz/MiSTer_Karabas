@@ -340,6 +340,18 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "MIDI_RESET_N <= not reset;\nCLK_GS_O <= clk_gs;",
      "MIDI_RESET_N <= not reset;\nCLK_GS_O <= clk_gs;\n"
      "ENA_CPU_O <= ena_cpu;"),
+    # Task 5 (stage 4c): the VG93 FDC's drive-swap bit (port 0x28 bit 3)
+    # selects which of the two 5.25" drives answers; on MiSTer the drives
+    # live at the top (rtl/disk/floppy.sv), so profi carries the signal out.
+    ("src/rtl/profi.vhd",
+     "\tGSL_TGL : out std_logic;\n\tENA_CPU_O : out std_logic;",
+     "\tGSL_TGL : out std_logic;\n\tENA_CPU_O : out std_logic;\n"
+     "\tFDC_SWAP_O : out std_logic;"),
+    ("src/rtl/profi.vhd",
+     "MIDI_RESET_N <= not reset;\nCLK_GS_O <= clk_gs;\n"
+     "ENA_CPU_O <= ena_cpu;",
+     "MIDI_RESET_N <= not reset;\nCLK_GS_O <= clk_gs;\n"
+     "ENA_CPU_O <= ena_cpu;\nFDC_SWAP_O <= fdc_swap;"),
     # Task 4 (stage 4b): the file mounter's sector engine (img_sdc) leaves
     # profi. On the Karabas Go the MCU's file mounter served the SD card's
     # block requests and hdf_ata from inside the FPGA; on MiSTer hps_io is

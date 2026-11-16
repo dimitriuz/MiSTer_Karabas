@@ -26,6 +26,13 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/mt32_mix.sv
 # (img_sdc's place) over MiSTer disk slots 2/3, the two IDE images.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/img_src.sv
 
+# Floppy (stage 4c): the drive model, the track store (DDR3 master 1 behind
+# rtl/mem/ddr_arb.sv) and the image source for the disk slots 4/5.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/ddr_arb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/fdd_store.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/fdd_src.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/floppy.sv
+
 # Tape (stage 4a): rtl/tape/tape.sv and rtl/tape/tzxplayer.vhd are copies of
 # ZX-Spectrum_MISTer at c2c4e6f (the ZX core's player), with two deviations:
 # both data-block lead-ins are 8064 pulses instead of the ZX 3220/4031,

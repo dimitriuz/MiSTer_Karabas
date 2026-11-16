@@ -582,6 +582,27 @@ class TestPrepareUpstream(unittest.TestCase):
                       "\tsdc_byte_in_data   => SDC_BYTE_IN_DATA,"), 1)
         self.assertEqual(out.count("SDC_SLOT(2 downto 1)"), 1)
 
+    def test_profi_fdc_swap_port(self):
+        # Task 5 (stage 4c): the VG93 drive-swap line (port 0x28 bit 3,
+        # profi's own fdc_swap signal) leaves to the MiSTer top, where the
+        # two floppy drives read it. The port sits directly below ENA_CPU_O.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(
+            out.count("\tGSL_TGL : out std_logic;\n"
+                      "\tENA_CPU_O : out std_logic;\n"
+                      "\tFDC_SWAP_O : out std_logic;"), 1)
+        self.assertEqual(out.count("FDC_SWAP_O"), 2)
+
+    def test_profi_fdc_swap_assign(self):
+        # Task 5 (stage 4c): the assignment sits directly below ENA_CPU_O's,
+        # next to the CLK_GS_O one it was appended to in stage 3 and 4a.
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        self.assertEqual(
+            out.count("MIDI_RESET_N <= not reset;\nCLK_GS_O <= clk_gs;\n"
+                      "ENA_CPU_O <= ena_cpu;\nFDC_SWAP_O <= fdc_swap;"), 1)
+
     def test_profi_status_cf(self):
         # Task 4 (stage 4b): the SD card is no file-mounter slot any more
         # (hps_io's own disk slot 1 is behind it), so STATUS_CF lights only

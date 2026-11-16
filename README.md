@@ -72,6 +72,8 @@ emulated MCU SPI link - the table of indices and status bits is
 MiSTer-side: Aspect ratio and Scandoubler Fx (None, HQ2x, CRT filters) on the
 Video page; the MT32-pi page for a Pi on the USER port; `boot.rom` is loaded
 automatically at core start.
+Below `IDE 1` on the main page sit the floppy items - `Floppy A`,
+`Floppy B`, `Floppy A FDI`, `Floppy B FDI` and `Disk layout` (see Disks).
 
 `Mode` is the screen timing: Pentagon (the upstream default, 320 lines) or 48k
 (the classic 312-line frame with memory contention). It is soft-switch register
@@ -161,9 +163,10 @@ header drives the EAR input; the USER LED lights while the tape is playing.
 
 ## Disks
 
-Three more MiSTer disk slots sit behind the machine's own disk interfaces;
+Five more MiSTer disk slots sit behind the machine's own disk interfaces;
 each is mounted with its OSD item (`S1` `SD Card`, `S2` `IDE 0`, `S3`
-`IDE 1`), right below the tape. All three are read-write: a sector the
+`IDE 1`, `S4` `Floppy A`, `S5` `Floppy B`), right below the tape. All five
+are read-write: a sector the
 machine writes goes back through hps_io into the mounted file.
 
 - **SD card (slot 1, `SD Card`)**: the Z-Controller's SPI bus at the Profi
@@ -183,15 +186,37 @@ machine writes goes back through hps_io into the mounted file.
   there is no CF card on the MiSTer, so the HDF is device 0 when mounted
   and device 1 is the second slot.
 
+- **Floppy drives (slots 4 and 5, `Floppy A`/`Floppy B`)**: the VG93 FDC
+  inside the machine now drives two drive models (`rtl/disk/floppy.sv`:
+  heads, flux cells, index) over a track store in DDR3
+  (`rtl/disk/fdd_store.sv`, the second master of the GS memory arbiter).
+  A drive answers from the mounted image: `.trd` (TR-DOS, its ID header
+  decides), `.img`/`.scl` (no reliable geometry - the `Disk layout` item
+  says what they are; an `.scl` arrives as Main's converted temporary TRD,
+  read-only) or an FDI stream. The tracks live in DDR3: the image is only
+  consulted for the track the head asks for, and a track the machine
+  writes is rebuilt in place and goes back into the mounted file. The FDI
+  entries (`F1` `Floppy A FDI`, `F2` `Floppy B FDI`) stream an image in
+  over the ioctl path instead of mounting it, and are read-only - their
+  writes are volatile. `Disk layout` (Auto / TR-DOS / CP/M) overrides the
+  geometry guess for images the ID header cannot vouch for. A TR-DOS image
+  with a `boot` program starts straight from the GO menu's
+  `Run TR-DOS 128K`. `profi.vhd` grows two exports for this: `ENA_CPU_O`
+  and `FDC_SWAP_O` (the drive-swap cable), and hps_io gains the two image
+  slots.
+
 `tools/mk_disk.py` makes the test images (a FAT16 VHD for the SD slot,
-RDSK HDFs for the IDE slots) and reads them back (`ls`, `cat`) to verify
-what the machine wrote.
+RDSK HDFs for the IDE slots, `.trd` volumes and `.fdi` streams for the
+drives) and reads them back (`ls`, `cat`) to verify what the machine wrote.
 
 ## Known limitations (stage 1)
 
 - CPU turbo runs without memory wait states (no-wait SDRAM controller).
-- Floppy images (the VG93 drives, stage 4c) are not implemented yet; the
-  FDC inputs at the Profi boundary are tied off.
+- Floppy drives (stage 4c): `Format Track` and the raw `Write Track`
+  command are not implemented; an FDI image is read-only from the file and
+  the machine's writes to it live only in DDR3 until it is re-downloaded;
+  a CP/M image needs its owner reference filled (`mk_disk.py reffrom`) to
+  boot; the store holds at most 84 tracks and 32 sectors per track.
 - 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
   112.5 MHz video clock, so the analog scandoubler may duplicate pixels;
   HDMI is unaffected.
