@@ -280,6 +280,9 @@ module tb_fdd_img;
     integer fdi_n, wd_n;                        // used words of the programs
     integer by0;                                // fill bytes at a claim clock
     reg prem_hit;                               // a case's premise, measured
+    integer m_w;                                // a hand-paced byte's wait loop
+    integer m2_b0;                              // fill bytes at the wrap poke
+    integer sdw0;                               // a write-back request baseline
 
     initial begin
         $readmemh("build/sim/fdd_img/trd.hex",   trd);
@@ -3151,6 +3154,311 @@ module tb_fdd_img;
         if (!rdy) bad("download_wins_refill: the file's track is not ready");
         check_bh("download_wins_refill the file kept its drive");
         case_end("download_wins_refill");
+
+        // ---------------- claim_at_mount_dispatch ----------------
+        // A mount's dispatch was the one clock that used to erase a window
+        // claimed on it: the dispatcher cleared dl_own/dl_req of the drive it
+        // dispatched for, after the claim had set them, and the last write
+        // won - the window was gone, ioctl_wait never rose, and the file
+        // streamed past into nothing. The dispatch may not touch a download
+        // at all: fl_go cannot fire while a window stands, and the E_L_WT
+        // drop ends a streaming file when its mount crosses, so the dispatch
+        // is never the one to clean anything up.
+        host_case_start();
+        mon_memchk = -1;
+        hs_status = 128'd0;
+        host_mount(2'b01, 64'd16384, 1'b0);
+        expect_cfg("claim_at_mount_dispatch A", 1'b0, KIND_TRD, 7'd2, 1'b1);
+        wait_rdy("claim_at_mount_dispatch A");
+        dl_load(0);
+        host_download(16'd1, 1);              // the previous download: drive A's
+        wait_rdy_n("claim_at_mount_dispatch the first file", 2);
+        mon_reset();
+        // Remount the same drive and claim a new window on that mount's
+        // dispatch clock. The armed condition below is exactly one clock
+        // before the dispatch: E_IDLE, the event pending, and nothing
+        // running to serialise the dispatch behind.
+        host_mount(2'b01, 64'd16384, 1'b0);
+        k = 0;
+        prem_hit = 1'b0;
+        while (k < MNT_BUDGET && !prem_hit) begin
+            @(posedge bclk);
+            #1;
+            if (src.st === 5'd0 && src.chg_pend[0] === 1'b1 &&
+                src.fl_act === 1'b0 && src.dl_own === 1'b0)
+                prem_hit = 1'b1;
+            k = k + 1;
+        end
+        if (!prem_hit)
+            tfail("claim_at_mount_dispatch: the mount never armed the dispatcher");
+        io_index    = 16'd1;
+        io_download = 1'b1;                   // claimed on the dispatch clock
+        @(posedge bclk);
+        #1;
+        // The premise, measured on the wire: this very clock dispatched the
+        // mount - the module is pushing its config - and the window is
+        // standing behind it. A claim one clock late would test nothing.
+        if (!(src.st === 5'd1 && src.dl_own === 1'b1 && src.dl_req === 1'b1)) begin
+            $display("FAIL claim_at_mount_dispatch: the claim did not survive the dispatch clock (st=%0d own=%b req=%b)",
+                     src.st, src.dl_own, src.dl_req);
+            errors = errors + 1;
+        end
+        host_stream(16'd1, 1);
+        // Both halves of the race land: the mount's config was pushed, the
+        // file streamed behind it and became the drive's image, and the fill
+        // it displaced stays suppressed behind the file.
+        wait_rdy_n("claim_at_mount_dispatch the file", 1);
+        if (mon_cfg !== 2 || mon_rdy !== 1) begin
+            $display("FAIL claim_at_mount_dispatch: %0d configs, %0d readies",
+                     mon_cfg, mon_rdy);
+            errors = errors + 1;
+        end
+        if (mon_cfgw !== {2'd0, 1'b0, KIND_FDI, 7'd1, 1'b1, 19'd0})
+            bad("claim_at_mount_dispatch: the drive's config is not the file's");
+        quiet("claim_at_mount_dispatch: the suppressed refill", 1, 1, 60_000);
+        if (hs_wprt[0] !== 1'b1)
+            bad("claim_at_mount_dispatch: the downloaded drive is writable");
+        ref_load(3);
+        req_track(1'b0, 1'b1, 7'd0, rdy);
+        if (!rdy) bad("claim_at_mount_dispatch: the file's track is not ready");
+        check_bh("claim_at_mount_dispatch the file won the race");
+        case_end("claim_at_mount_dispatch");
+
+        // ---------------- mount_at_header_accept ----------------
+        // A mount whose crossing lands on the very clock the FDI header is
+        // accepted used to leave the drive's fdi bit behind the new image:
+        // the crossing clears the bit and the header state writes it on that
+        // same clock, the later write. The remounted TRD then read write-
+        // protected until the next mount, and its blocks never went back to
+        // the host. The dispatch of that mount is the last word about the
+        // drive's image: it is the clock that clears the bit.
+        host_case_start();
+        mon_memchk = -1;
+        hs_status = 128'd0;
+        host_mount(2'b01, 64'd16384, 1'b0);   // drive A's, writable
+        expect_cfg("mount_at_header_accept A", 1'b0, KIND_TRD, 7'd2, 1'b1);
+        wait_rdy("mount_at_header_accept A");
+        mon_reset();   // the header and the remount, alone, from here
+        dl_load(0);
+        // The claim and the header's first thirteen bytes, one at a time:
+        // the file has to stop one byte short of the header, so that the
+        // fourteenth one completes it on the mount's own crossing clock.
+        @(posedge bclk);
+        #1;
+        io_index    = 16'd1;
+        io_download = 1'b1;
+        m_w = 0;
+        while (m_w < 8 && (io_wait !== 1'b1)) begin
+            @(posedge bclk);
+            #1;
+            m_w = m_w + 1;
+        end
+        if (io_wait !== 1'b1)
+            tfail("mount_at_header_accept: the window was never claimed");
+        for (k = 0; k < 13; k = k + 1) begin
+            m_w = 0;
+            while ((io_wait === 1'b1) && m_w < FILL_BUDGET) begin
+                @(posedge bclk);
+                #1;
+                m_w = m_w + 1;
+            end
+            if (m_w >= FILL_BUDGET)
+                tfail("mount_at_header_accept: the wait never fell");
+            io_dout = dl_mem[k];
+            io_wr   = 1'b1;
+            @(posedge bclk);                  // the strobe is sampled on this
+            #1;
+            io_wr   = 1'b0;                   // clock, and it carries the byte
+            if (io_wait !== 1'b1)
+                tfail("mount_at_header_accept: a header byte was never taken");
+        end
+        // The remount while the file holds its fourteenth byte back: the
+        // settle runs under the stall from here on.
+        host_mount(2'b01, 64'd16384, 1'b0);
+        // The fourteenth byte is strobed on the settle's last clock. A
+        // remount of the same size changes nothing about it, so the settle
+        // commits on its ev_age branch here: the post-edge ev_age reading
+        // MNT_WAIT means the commit is the next posedge, and the crossing is
+        // three clocks after it - the very clock the byte completes the
+        // header on.
+        k = 0;
+        prem_hit = 1'b0;
+        while (k < 12_288 && !prem_hit) begin
+            @(posedge bclk);
+            #1;
+            if (src.ev_age === 13'd4095) prem_hit = 1'b1;
+            k = k + 1;
+        end
+        if (!prem_hit) tfail("mount_at_header_accept: the settle clock was missed");
+        if (io_wait === 1'b1)
+            tfail("mount_at_header_accept: the engine did not wait for the byte");
+        io_dout = dl_mem[13];
+        io_wr   = 1'b1;
+        @(posedge bclk);                      // C: the commit edge takes the byte
+        #1;
+        io_wr   = 1'b0;
+        if (io_wait !== 1'b1)
+            tfail("mount_at_header_accept: byte 14 was never taken");
+        // The premise, measured: E_L_HDR, and the crossing not yet consumed
+        // - they meet on the next posedge.
+        k = 0;
+        prem_hit = 1'b0;
+        while (k < 6 && !prem_hit) begin
+            @(posedge bclk);
+            #1;
+            if (src.st === 5'd24 && (src.cg_s2 !== src.cg_seen)) prem_hit = 1'b1;
+            k = k + 1;
+        end
+        if (!prem_hit)
+            tfail("mount_at_header_accept: the crossing missed the header clock");
+        @(posedge bclk);
+        #1;
+        // The header won its own clock: the bit is up over the crossing's
+        // clear. Both the fixed and the unfixed module do this here - what
+        // parts them is what the mount's dispatch does a few clocks later.
+        if (!(src.fdi[0] === 1'b1 && src.chg_pend[0] === 1'b1))
+            tfail("mount_at_header_accept: the header and the mount did not overlap");
+        // The download lets go of the mount it finds pending, and the mount
+        // comes in over the header's config.
+        expect_cfg("mount_at_header_accept the header's config",
+                   1'b0, KIND_FDI, 7'd1, 1'b1);
+        expect_cfg("mount_at_header_accept the mount's config",
+                   1'b0, KIND_TRD, 7'd2, 1'b1);
+        wait_rdy("mount_at_header_accept the remounted image");
+        if (mon_rdy !== 1)
+            bad("mount_at_header_accept: the dropped download sent a ready");
+        io_download = 1'b0;                   // the window died with the drop
+        if (hs_wprt[0] !== 1'b0)
+            bad("mount_at_header_accept: the header left the remounted image write-protected");
+        // The fix is about the drive, not the bit: a block of the remounted
+        // TRD has to reach the host again.
+        req_track(1'b0, 1'b0, 7'd0, rdy);
+        if (!rdy) bad("mount_at_header_accept: the remounted track is not ready");
+        sdw0 = mon_sdwr;
+        wr_sector(1'b0, 1'b0, 7'd0, 8'd0, 8'd0, 8'd3, 3'd1, 256, 1, 8'd0);
+        k = 0;
+        while (mon_sdwr === sdw0 && k < 60_000) begin
+            @(posedge bclk);
+            k = k + 1;
+        end
+        if (mon_sdwr === sdw0)
+            bad("mount_at_header_accept: the remounted image never wrote a block back");
+        quiet("mount_at_header_accept: the dropped download", 0, 1, 20_000);
+        case_end("mount_at_header_accept");
+
+        // ---------------- fdi_block_past_window ----------------
+        // The record check against the store's 2 MiB window read the block's
+        // DataOffset through a 23-bit saturation: an offset at or past the
+        // window's end came back as the largest base inside it, and the sum
+        // wrapped under the comparison. The one offset that is certainly
+        // outside the window passed the check, and such a file got its
+        // ready - a drive whose records point at bytes nobody streamed.
+        host_case_start();
+        mon_memchk = -1;
+        dl_load(0);
+        dl_mem[16'h0E] = 8'h00;               // the first block's DataOffset:
+        dl_mem[16'h0F] = 8'h00;               // 0x200000, the first byte past
+        dl_mem[16'h10] = 8'h20;               // the store's window
+        dl_mem[16'h11] = 8'h00;
+        host_download(16'd1, 1);
+        // The config's clock is the header's, inside the stream, so the
+        // check is a level: one config, the file's, and the module's own
+        // flag that the record check did fire (the old module never set it
+        // for exactly this file).
+        if (mon_cfg !== 1 ||
+            mon_cfgw !== {2'd0, 1'b0, KIND_FDI, 7'd1, 1'b1, 19'd0})
+            bad("fdi_block_past_window: the file's config did not arrive");
+        if (src.max_bad !== 1'b1)
+            bad("fdi_block_past_window: a block based at 2 MiB passed the window check");
+        quiet("fdi_block_past_window: the refused file", 0, 1, 40_000);
+        if (mon_cfg !== 1 || mon_rdy !== 0) begin
+            $display("FAIL fdi_block_past_window: %0d configs, %0d readies",
+                     mon_cfg, mon_rdy);
+            errors = errors + 1;
+        end
+        if (hs_wprt[0] !== 1'b1)
+            bad("fdi_block_past_window: the refused file left the drive writable");
+        case_end("fdi_block_past_window");
+
+        // ---------------- fdi_tpos_wrap ----------------
+        // The byte cursor is 24 bits, and a file whose data area ran past
+        // 16 MiB wrapped it back to zero: dat_pos re-entered the store's
+        // window and the end of the file rewrote the start of the drive.
+        // Streaming 16 MiB is not a simulation worth running, so the case
+        // pokes the cursor to the very end of its count and hands it the
+        // rest of the file instead.
+        host_case_start();
+        mon_memchk = -1;
+        dl_load(0);
+        @(posedge bclk);
+        #1;
+        io_index    = 16'd1;
+        io_download = 1'b1;
+        m_w = 0;
+        while (m_w < 8 && (io_wait !== 1'b1)) begin
+            @(posedge bclk);
+            #1;
+            m_w = m_w + 1;
+        end
+        if (io_wait !== 1'b1) tfail("fdi_tpos_wrap: the window was never claimed");
+        // stream the header and the table until the data area begins
+        k = 0;
+        while (k < dl_n && !(src.dl_phase === 2'd2 && src.st === 5'd22)) begin
+            m_w = 0;
+            while ((io_wait === 1'b1) && m_w < FILL_BUDGET) begin
+                @(posedge bclk);
+                #1;
+                m_w = m_w + 1;
+            end
+            if (m_w >= FILL_BUDGET) tfail("fdi_tpos_wrap: the wait never fell");
+            io_dout = dl_mem[k];
+            io_wr   = 1'b1;
+            @(posedge bclk);
+            #1;
+            io_wr   = 1'b0;
+            if (io_wait !== 1'b1) tfail("fdi_tpos_wrap: a byte was never taken");
+            k = k + 1;
+        end
+        if (k >= dl_n) tfail("fdi_tpos_wrap: the data area never began");
+        // the poke: one clock left on the cursor, and the small offset
+        // the wrapped dat_pos would land on
+        src.off_data = 16'd14;
+        src.t_pos    = 24'hFF_FFFF;
+        m2_b0        = mon_bytes;
+        while (k < dl_n) begin
+            m_w = 0;
+            while ((io_wait === 1'b1) && m_w < FILL_BUDGET) begin
+                @(posedge bclk);
+                #1;
+                m_w = m_w + 1;
+            end
+            if (m_w >= FILL_BUDGET) tfail("fdi_tpos_wrap: the wait never fell");
+            io_dout = dl_mem[k];
+            io_wr   = 1'b1;
+            @(posedge bclk);
+            #1;
+            io_wr   = 1'b0;
+            if (io_wait !== 1'b1) tfail("fdi_tpos_wrap: a byte was never taken");
+            k = k + 1;
+        end
+        io_download = 1'b0;                   // the file is over: the window
+        m_w = 0;                              // ends with its ready
+        while ((io_wait === 1'b1) && m_w < 400) begin
+            @(posedge bclk);
+            #1;
+            m_w = m_w + 1;
+        end
+        wait_rdy_n("fdi_tpos_wrap: the file that ended past the wrap", 1);
+        if (mon_bytes !== m2_b0) begin
+            $display("FAIL fdi_tpos_wrap: %0d fill bytes landed after the wrapped cursor",
+                     mon_bytes - m2_b0);
+            errors = errors + 1;
+        end
+        if (src.t_pos !== 24'hFF_FFFF)
+            bad("fdi_tpos_wrap: the cursor wrapped instead of saturating");
+        if (mon_cfg !== 1)
+            bad("fdi_tpos_wrap: the wrapped file sent more than its config");
+        case_end("fdi_tpos_wrap");
 
         // ---------------- verdict ----------------
         $display("tb_fdd_img: %0d errors", errors);

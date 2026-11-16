@@ -640,8 +640,13 @@ module fdd_src (
     wire [2:0]  rc_N    = (rc_n[2:0] > 3'd3) ? 3'd3 : rc_n[2:0];
     wire [22:0] rc_base = (|blk_doff[31:21]) ? 23'h7FFFFF
                                              : {2'd0, blk_doff[20:0]};
-    wire [22:0] rc_end  = rc_base + {6'd0, dl_b, rc_ol} + (23'd128 << rc_N);
-    wire        rc_bad  = (rc_end > DL_MAX);
+    // rc_end is a bit wider than the window: a base already at 2 MiB plus a
+    // full record would otherwise wrap back under the comparison in 23 bits,
+    // and the one offset certainly outside the window passed the check
+    // (round 3, I2). The explicit blk_doff term says so even more plainly.
+    wire [23:0] rc_end  = {1'b0, rc_base} + {7'd0, dl_b, rc_ol} +
+                          (24'd128 << rc_N);
+    wire        rc_bad  = (|blk_doff[31:21]) || (rc_end > DL_MAX);
 
     // (no loop variable here: the image generation now flips at the config's
     // acknowledge, in the engine, not in a loop over the drives)
@@ -746,11 +751,12 @@ module fdd_src (
                     // the same image changes nothing the drain may rely on.
                     gen_set <= chg_new[chg_d];
                     gen_drv <= chg_d;
-                    if (dl_drv == chg_d) begin   // a remount ends its download
-                        dl_act <= 1'b0;          // (only that drive's: another
-                        dl_own <= 1'b0;          // drive keeps its window)
-                        dl_req <= 1'b0;
-                    end
+                    // The mount is the drive's image from this clock on, so
+                    // the dispatch is the last word about the FDI flag: a
+                    // header accepted on the crossing's own clock wrote fdi
+                    // over its clear (round 3, m1), and nothing else ever
+                    // took that bit back off the remounted image.
+                    if (chg_new[chg_d]) fdi[chg_d] <= 1'b0;
                     jb     <= 1'b1;
                     if (mnt_lvl[chg_d] && mnt_valid[chg_d]) begin
                         fl_act <= 1'b1;
@@ -1033,13 +1039,18 @@ module fdd_src (
 
             // one file byte: a header byte, a table byte, or a data byte
             E_L_B: begin
+                // The cursor saturates at its top: stuck there, dat_pos
+                // stays past the window for every further byte, so a file
+                // longer than the 16 MiB the 24-bit cursor counts is
+                // dropped at its end instead of re-entering the store's
+                // window under the comparison and rewriting the drive's own
+                // start (round 3, m2).
+                if (t_pos != 24'hFF_FFFF) t_pos <= t_pos + 24'd1;
                 if (dl_phase == P_HDR) begin
                     hdr[t_pos[3:0]] <= dl_b;
-                    t_pos           <= t_pos + 24'd1;
                     st              <= (t_pos == 24'd13) ? E_L_HDR : E_L_WT;
                 end
                 else if (dl_phase == P_TBL) begin
-                    t_pos <= t_pos + 24'd1;
                     // t_idx (the byte's slot inside the 7-byte group) is
                     // counted by E_L_ADV: the index of the byte being streamed
                     // is what the store's slot means, and only the state after
@@ -1082,7 +1093,6 @@ module fdd_src (
                     end
                 end
                 else begin                                  // the data area
-                    t_pos  <= t_pos + 24'd1;
                     // the store addresses a drive with 21 bits: a byte past
                     // the window has nowhere to go, and wrapping it would
                     // rewrite the start of the drive with the end of the file.
