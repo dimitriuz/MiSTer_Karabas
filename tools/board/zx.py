@@ -14,7 +14,7 @@ re-derived (2026-11-09/10 runs, `docs/dev/stage4a-results.md`,
                mounted through an MGL needs **no typing at all**. (`basic`
                steps one down into `128 BASIC` instead, and `load` types
                `LOAD ""` there for the case where that is wanted.)
-  4. `fire`  - `Tape play/pause` blind (Home, 10 x gamepad Down, keyboard
+  4. `fire`  - `Tape play/pause` blind (Home, `TAPE_ROW` x gamepad Down,
                Enter, Home) and verified by the machine's screen changing:
                the loader prints `Program: <name>`. `tape` is the same walk
                with the OSD bar read off the capture card, which is only

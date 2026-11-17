@@ -72,6 +72,8 @@ emulated MCU SPI link - the table of indices and status bits is
 MiSTer-side: Aspect ratio and Scandoubler Fx (None, HQ2x, CRT filters) on the
 Video page; the MT32-pi page for a Pi on the USER port; `boot.rom` is loaded
 automatically at core start.
+The `Serial channel` item on the main page (after the tape items) picks which
+of the machine's serial channels owns the HPS UART - see Serial below.
 Below `IDE 1` on the main page sit the floppy items - `Floppy A`,
 `Floppy B`, `Floppy A FDI`, `Floppy B FDI` and `Disk layout` (see Disks).
 
@@ -122,12 +124,62 @@ two routes:
 
 - **MidiLink (HPS UART)**: set the OSD `UART mode` to `MIDI` (31250 baud),
   then pick the target in MiSTer's MidiLink menu - a remote mt32-pi, MUNT,
-  FluidSynth or a USB MIDI adapter. In every other UART mode the core leaves
-  the line idle high and Linux owns the UART.
+  FluidSynth or a USB MIDI adapter. Every other UART mode hands the line to
+  the `Serial channel` item (Serial below) - that is how Linux and the machine
+  reach each other.
 - **mt32-pi on the USER port**: connect the Pi there and use the MT32-pi OSD
   page (`Use MT32-pi`, `Synth`, `Munt ROM`); its I2S audio is mixed into
   AUDIO_L/R. `Use MT32-pi: No` silences only that Pi - the MidiLink route
   keeps carrying the unmuted line.
+
+## Serial (the HPS UART)
+
+The machine's two serial channels share MiSTer's UART (`/dev/ttyS1` for
+Linux), and the OSD `Serial channel` item says which one owns the line:
+`ESP` (the default) or `USB`. `rtl/host/uart_route.sv` is the router. The item
+is MiSTer-side only - the machine never hears about it.
+
+- **ESP (the wires)**: `profi.vhd`'s `UART_TX`/`UART_RX` - the ZiFi or ZXUNO
+  port it selects internally - pass through bit by bit with no resampling, so
+  **the baud is whatever the software programmes**. MiSTer's
+  `UART mode` -> `Baud` has to carry the same speed for the bytes to mean
+  anything at the other end. `UART_CTS` is not forwarded (the core has no CTS
+  path into the tty and MiSTer ties the port's RTS/CTS low), so **flow control
+  stays a software matter**.
+- **USB (bytes)**: the ZiFi/EVO USB-RS232 path - the MCU link's `CMD_UART`
+  frames between `rtl/host/mcu_emu.sv` and the router - framed 8N1 at a fixed
+  **115200**, the standard ZiFi rate. The tty speed is still Main's, so
+  `Baud` has to say 115200.
+
+For a plain byte pipe pick any `UART mode` but `MIDI`: `Console` puts a serial
+console on the port, `None` leaves it to whatever program on the Linux side
+opens `/dev/ttyS1`. Main sets the port to the speed shown under `Baud` (and
+writes it to `/tmp/UART_SPEED`); the core only ever looks at the mode number to
+recognise `MIDI`. MIDI keeps priority over both channels and is exactly what it
+was before stage 5: it takes the line immediately, mid-byte as well, and while
+it owns it the two channels neither send nor receive.
+
+`CONF_STR` declares `UART115200:31250,MIDI`. The two numbers are what the
+`Baud` submenu offers the non-MIDI connections (115200 as the default, 31250
+for slow bit-banged software); MIDI's own speed comes from Main's MIDI list
+(31250 by default), never from that list - `user_io.cpp`'s `GetUARTbauds()`
+picks `midi_speeds` for mode 3 - so adding them leaves MIDI untouched.
+
+Limits worth knowing (the first four are cases of `sim/tb_uart_route.sv`):
+
+- a channel switch waits for a whole idle frame (~87 us at 115200) of the
+  entire port: the machine's TX wire, the HPS line, the level the core drives
+  and the deserialiser at rest. A line held low parks the switch.
+- `UART_RXD` must idle high before `/dev/ttyS1` is opened for the same
+  reason.
+- a reset or a channel flip can drop bytes for the same ~87 us, and the reset
+  empties the send queue.
+- the send queue holds 16 bytes (plus one in the shift register) and drops the
+  newest when it is full: nothing ever stalls the machine, and nobody draining
+  the line loses data silently.
+- `mcu_emu` consumes the ZiFi path's `dll`/`dlm` divisor writes and ignores
+  them, so the USB channel is always 115200. Whether ZiFi software needs a
+  honoured divisor is a board question, open with stage 5.
 
 ## Tape
 

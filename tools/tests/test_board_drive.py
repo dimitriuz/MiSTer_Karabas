@@ -5,6 +5,7 @@ transport is faked: what is pinned here is the *sequence* a script sends and
 the row the highlight bar is read as - the two things a scripted board run
 gets wrong when they drift (a dropped press, a bar read one row off).
 """
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -195,6 +196,56 @@ class FloppyBuild(unittest.TestCase):
         self.assertEqual([n for k, n, a in r.sent if k == "pad" and a == "down"],
                          ["down"] * zx.MENU_TO_TRDOS_128)
         self.assertGreaterEqual(seen["watches"], 1)
+
+
+class ConfStrRowMap(unittest.TestCase):
+    """The scripts' row map, recounted from the core's own CONF_STR.
+
+    A new OSD item moves every row below it, and a scripted walk counts the
+    rows by hand (`zx.TAPE_ROW`, `mister.ROWS`), so the count is derived here
+    from `Karabas_Profi.sv` the way MiSTer renders the main page: a
+    `P<n>,label;` page header is one row and every un-prefixed `O`/`T`/`R`/
+    `S`/`F` item is one row; the `-` separators are not rows, and an item
+    carrying a `P<n>` prefix lives inside that page, not on the main one.
+    """
+
+    TOP = HERE.parents[1] / "Karabas_Profi.sv"
+
+    def conf_str_rows(self):
+        body = self.TOP.read_text().split("localparam CONF_STR = {", 1)[1]
+        body = body.split("\n};", 1)[0]
+        fields = "".join(re.findall(r'"([^"]*)"', body)).split(";")
+        rows = []
+        for item in fields[2:]:              # 0 the core name, 1 the misc string
+            item = item.strip()
+            if not item or item == "-":
+                continue
+            page = re.match(r"^P(\d+)(.*)$", item)
+            if page:
+                if page.group(2).startswith(","):
+                    rows.append(page.group(2)[1:].split(",")[0])
+                continue
+            parts = item.split(",")
+            if item[0] in "OTR" and len(parts) > 1:
+                rows.append(parts[1])
+            elif item[0] in "SF" and len(parts) > 2:
+                rows.append(parts[2])
+        return rows
+
+    def test_the_scripts_map_matches_the_core(self):
+        rows = self.conf_str_rows()
+        for row, name in sorted(mister.ROWS.items()):
+            self.assertEqual(rows[row], name, "row %d" % row)
+
+    def test_the_tape_row_counts_from_the_core(self):
+        self.assertEqual(self.conf_str_rows().index("Tape play/pause"),
+                         zx.TAPE_ROW)
+
+    def test_the_serial_channel_row_sits_after_the_tape_items(self):
+        rows = self.conf_str_rows()
+        self.assertEqual(rows[zx.TAPE_ROW:zx.TAPE_ROW + 4],
+                         ["Tape play/pause", "Tape previous block",
+                          "Tape next block", "Serial channel"])
 
 
 if __name__ == "__main__":

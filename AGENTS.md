@@ -29,7 +29,7 @@ Instructions for agents (and humans) changing this repository. Read these with:
 
 | What | Command | Notes |
 |---|---|---|
-| Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (73 as of 2026-11-16). |
+| Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (74 as of 2026-11-17). |
 | Revert the qsf | `git checkout -- Karabas_Profi.qsf` | Quartus rewrites `LAST_QUARTUS_VERSION` on every compile. |
 | Simulations | `tools/sim.sh sim/run_tb_*.sh` | Runs in image `karabas-sim:1` (repo at `/work`). Every testbench prints exactly one final `<tb>: PASS` / `<tb>: FAIL <reason>` and exits non-zero on failure. |
 | All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 24 today, one per `sim/run_tb_*.sh`). |
@@ -113,9 +113,11 @@ Never "I sent it, therefore it happened".
 - OSD: the gamepad's `home` (`BTN_MODE`) toggles it; `KEY_HOME`/`KEY_F12` stopped working
   after a `cold_reboot`. The cursor starts on `Video` on a fresh core load, and `Up` on
   `Video` wraps to the bottom of the page. Count `Down` presses on the **build that is
-  loaded**: rows change with CONF_STR. **Build 73+ (floppy slots)**: 8 `IDE 0`, 9 `IDE 1`,
-  10 `Floppy A`, 11 `Floppy B`, 12 `Floppy A FDI`, 13 `Floppy B FDI`, 14 `Disk layout`,
-  15 `Tape play/pause`, 16 previous block, 17 next block, 18 `Joystick L`; builds 54-72:
+  loaded**: rows change with CONF_STR. **Build 74+ (serial channel)**: 8 `IDE 0`,
+  9 `IDE 1`, 10 `Floppy A`, 11 `Floppy B`, 12 `Floppy A FDI`, 13 `Floppy B FDI`,
+  14 `Disk layout`, 15 `Tape play/pause`, 16 previous block, 17 next block,
+  18 `Serial channel`, 19 `Joystick L`; build 73 (floppy slots, no serial row):
+  the same down to 18 `Joystick L`; builds 54-72:
   10 `Tape play/pause`, 11 previous block, 12 next block, 13 `Joystick L`; builds 39-47
   (no storage rows): 8 `Tape play/pause`. Group headers (`Video`, `MT32-pi`) are one row
   each and open inline; the blank line between pages is not selectable. Never `Enter` a
