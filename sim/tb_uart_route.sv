@@ -31,8 +31,10 @@
 //   esp_passthrough  channel 0: a level on esp_tx is on uart_txd exactly two
 //                    clocks later (the two-flop synchroniser, no more, no
 //                    less) and holds; a level on uart_rxd reaches esp_rx
-//                    3..6 clocks later; all transitions of a pattern arrive;
-//                    a whole frame on the line feeds no usb_rx byte.
+//                    exactly RX_DEPTH (4) clocks later - three taps into the
+//                    vote and the register that reads it - which `rxd_drive`
+//                    pins at that number, not a range; all transitions of a
+//                    pattern arrive; a whole frame on the line feeds no byte.
 //   usb_tx_byte      channel 1: silence until a strobe arrives, then one 8N1
 //                    frame - the mid-bit decode of 0x55, and the low runs of
 //                    0x00 (9 bits) and 0xFF (the start bit) pin CLKS_PER_BIT.
@@ -65,20 +67,25 @@
 //   switch_rxd_frame flipping to USB in the middle of a frame the machine is
 //                    receiving does not cut it and is not counted as a byte.
 //                    (The rule: a frame that has *started* finishes on the
-//                    line it started on, but only for a line that returns to
-//                    its idle level - a peer that holds the line low, a break
-//                    or a machine that stops mid-frame, parks the channel
-//                    switch for as long as it holds. That is deliberate: the
+//                    line it started on - for a peer at 115200 or faster,
+//                    whose nine high bits are shorter than the ten-bit switch
+//                    budget; a slower peer's high runs are longer than the
+//                    whole budget, and its frame can be cut. And a line that
+//                    never returns to its idle level - a peer holding the line
+//                    low, a break, a machine that stops mid-frame - parks the
+//                    switch for as long as it holds. Both are deliberate: the
 //                    alternative is to cut a frame in the middle.)
-//   rx_dead_start_parks_switch
-//                    a dead start bit parks the pending switch for its own
-//                    half bit only: 24 of them keep the channel from moving,
-//                    and when the line goes quiet the switch runs its budget
-//                    and lands.
+//   rxd_low_parks_switch
+//                    what parks the pending switch is the line: 24 low pulses
+//                    on uart_rxd each reset the idle counter, the latch does
+//                    not move, and the switch lands one budget after the line
+//                    stops lying. (The receiver takes no part: arming the flip
+//                    makes usb_own false, so nothing is sampled any more.)
 //   rxd_frame_parks_flip
-//                    a flip armed 1.5 bits into a frame lands neither before a
-//                    frame of quiet nor after the deserialiser finishes, and
-//                    then the machine's wire drives the line.
+//                    a flip armed inside a real 0xFE frame waits for the
+//                    deserialiser and not only for the line: that frame holds
+//                    its idle level for 3472 clocks on its own, and the latch
+//                    still moves only a frame after the stop bit.
 //   push_before_flip usb_tx_wr one clock before the OSD item moves, the port
 //                    idle-saturated: the byte is not popped onto a channel
 //                    that is losing the port, it waits, and comes out when the
@@ -1096,15 +1103,18 @@ module tb_uart_route;
         if (errors == case_errors) $display("usb_quiet_in_esp: ok");
         else $display("usb_quiet_in_esp: FAIL");
 
-        // ================= rx_dead_start_parks_switch =================
-        // A start bit that dies is traffic for its own duration and nothing
-        // more: the deserialiser rejects it at mid-bit, the port is quiet
-        // again, and the pending channel switch runs its budget from there.
-        // Without that the channel could never be moved while the line is
-        // noisy - a start bit every half frame would park the latch forever.
-        // Both halves need the deserialiser to be alive, so this runs in
-        // channel 1, where usb_own is true and a start bit is really sampled;
-        // the flip arms late and lands when the noise stops.
+        // ================= rxd_low_parks_switch =================
+        // What parks a pending channel switch is the line, not the receiver:
+        // port_idle needs rxd_f, so every clock the wire is low resets the
+        // idle counter and the latch cannot move. A machine that chatters on
+        // its TX wire therefore holds the switch off, and the switch lands one
+        // budget after the line stops lying.
+        // (The deserialiser takes no part in this case, and the comment says
+        // so: arming the flip makes chan != channel, usb_own goes false on
+        // that very clock, and from there no start bit is sampled at all. A
+        // dead start bit being *rejected at mid-bit* is rx_bad_frame's claim;
+        // here the pulses only have to be low clocks on the wire, which is
+        // what they are.)
         case_errors = errors;
         do_reset;
         set_channel(1);
@@ -1113,14 +1123,15 @@ module tb_uart_route;
         drive_frame(8'h5A, BIT_NS, 0.0, 1'b1);
         @(negedge clk);
         channel = 1'b0;                        // the OSD item moves
-        // noise: 24 dead start bits, one every three quarters of a bit - each
-        // one shorter than the switch budget, together longer than it
+        // 24 low pulses, one every three quarters of a bit: each one shorter
+        // than the switch budget, together longer than it, and each one
+        // resetting the idle counter
         for (ci = 0; ci < 24; ci = ci + 1) begin
             rxd_drv = 1'b0;  repeat (CPB / 4) tick;
             rxd_drv = 1'b1;  repeat (CPB / 2) tick;
         end
         if (dut.chan !== 1'b1)
-            bfail("rx_dead_start_parks_switch", "the flip landed through the noise",
+            bfail("rxd_low_parks_switch", "the flip landed through the low pulses",
                   dut.chan, 1'b1);
         // the line stops lying: from here a frame of quiet is owed
         rxd_drv = 1'b1;
@@ -1130,33 +1141,49 @@ module tb_uart_route;
             g = g + 1;
         end
         if (dut.chan !== 1'b0)
-            bfail("rx_dead_start_parks_switch", "the noise froze the channel",
+            bfail("rxd_low_parks_switch", "the low pulses froze the channel",
                   dut.chan, 1'b0);
         // the machine owns the port now: its wire drives the line
         esp_drive(1'b0, 1'b1, 3 * CPB);
         rxd_drv = 1'b1;
-        if (errors == case_errors) $display("rx_dead_start_parks_switch: ok");
-        else $display("rx_dead_start_parks_switch: FAIL");
+        if (errors == case_errors) $display("rxd_low_parks_switch: ok");
+        else $display("rxd_low_parks_switch: FAIL");
 
         // ================= rxd_frame_parks_flip =================
-        // A frame in flight is traffic: the flip armed in the middle of it may
-        // not land before a whole frame of quiet - and it must land after it.
-        // The direction is 1 -> 0, because a frame is only being received
-        // while the byte channel owns the port.
+        // The deserialiser is traffic on its own: it keeps sampling a frame it
+        // started (only the start of a frame needs usb_own), and while it runs
+        // rx_quiet is false, so the port is not idle even when the line is
+        // high. That term is what this case is for, and the frame is chosen to
+        // show it: 0xFE is start low, one low data bit, then seven ones and a
+        // stop - one 3472-clock high run in the middle of a legal frame. With
+        // rx_quiet the budget can only start after the stop bit; without it
+        // the counter runs inside that high run and moves the latch 3472
+        // clocks early, in the middle of a frame.
         case_errors = errors;
         do_reset;
         set_channel(1);
-        @(negedge clk);
-        rxd_drv = 1'b0;  repeat (CPB / 2) tick;    // start bit
-        rxd_drv = 1'b1;  repeat (CPB / 2) tick;    // data 1
-        rxd_drv = 1'b0;  repeat (CPB / 2) tick;    // data 0: 1.5 bits in
-        rxd_drv = 1'b1;                            // the line goes quiet, but
-        channel = 1'b0;                            // the deserialiser is busy
-        repeat (IDLE_BUDGET - CPB) tick;           // less than a frame of quiet
+        fork
+            drive_frame(8'hFE, BIT_NS, 0.0, 1'b1);
+            begin
+                repeat (2 * CPB - 100) tick;       // inside the start bit's low
+                @(negedge clk);
+                channel = 1'b0;                    // the OSD item moves now
+                if (dut.rx_state === 3'd0)         // R_IDLE: no frame, no test
+                    tfail("rxd_frame_parks_flip", "the frame was never in flight");
+            end
+        join
+        // drive_frame returns a quarter bit after the stop bit: the
+        // deserialiser has just counted the byte and the port is quiet from
+        // about here, ~1500 clocks into the quiet the latch must still wait
+        repeat (1300) tick;
         if (dut.chan !== 1'b1)
-            bfail("rxd_frame_parks_flip", "the flip landed under a frame of quiet",
+            bfail("rxd_frame_parks_flip", "the switch ran inside the frame's high tail",
                   dut.chan, 1'b1);
-        repeat (2 * CPB) tick;                     // now the frame is over
+        g = 0;
+        while ((dut.chan !== 1'b0) && (g < IDLE_BUDGET + 2 * CPB)) begin
+            tick;
+            g = g + 1;
+        end
         if (dut.chan !== 1'b0)
             bfail("rxd_frame_parks_flip", "the frame outlived its own quiet",
                   dut.chan, 1'b0);

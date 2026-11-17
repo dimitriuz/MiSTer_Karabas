@@ -23,8 +23,9 @@
 //  HPS line) are asynchronous. Each is a chain of four (rxd) / two (tx)
 //  registers, and no logic reads the first stage: the majority-of-3 filter
 //  votes over taps 2..4, so the stage that may go metastable feeds only the
-//  second register. A level crosses when two of the three voted taps agree,
-//  which costs three clk_sys clocks and rejects a one-clock glitch; a level
+//  second register. A level crosses when two of the three voted taps agree, and
+//  that costs four clk_sys clocks to esp_rx - three taps into the vote and the
+//  vote read by one more register - and rejects a one-clock glitch; a level
 //  shorter than that never reaches a channel or starts a frame. esp_rx leaves
 //  a clk_sys register toward the machine, whose own input stage is a two-flop
 //  synchroniser (uart.v rx_ff, zifi uart_rx). The usb_* byte ports are clk_sys
@@ -49,12 +50,16 @@
 //  machine's TX wire, the HPS line and our own driven level all high, with the
 //  deserialiser idle - has sat at its idle level for a full frame
 //  (10 * CLKS_PER_BIT clocks). So a byte in flight finishes on the line it
-//  started on, a frame the machine or the Pi is halfway through is never cut
-//  in half, and the switch cannot land in a high bit of a frame that is still
-//  running. The serialiser's pop is additionally gated with chan == channel,
-//  which kills the one-clock race where the OSD item changes while a byte is
-//  being loaded: from that clock on no new byte is started, and the bytes that
-//  are already queued wait for the USB channel to own the port again.
+//  started on, and a frame the machine or the Pi is halfway through is not cut
+//  in half - for a peer at CLKS_PER_BIT's rate (115200 at 50 MHz) or faster:
+//  the longest run a frame can hold at its idle level is nine of its own bits,
+//  and at that rate nine of their clocks is less than the ten of ours. A peer
+//  slower than that has high runs longer than the whole budget, so the switch
+//  can land inside its frame. The serialiser's pop is additionally gated with
+//  chan == channel, which kills the one-clock race where the OSD item changes
+//  while a byte is being loaded: from that clock on no new byte is started, and
+//  the bytes that are already queued wait for the USB channel to own the port
+//  again.
 //
 //  Who may send (the rule, also tested): a usb_tx_wr byte is queued only while
 //  the USB channel owns the port (chan = 1) and uart_mode != 3; any other byte
