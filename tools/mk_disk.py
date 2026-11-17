@@ -48,9 +48,24 @@ HDF_SIG = b"KARABAS HDF\n"
 BOOT_SRC = (
     '10 PRINT "trdos ok"\n'
     '20 FOR I=0 TO 255: POKE 25000+I,I: NEXT I\n'
-    '30 SAVE "out" CODE 25000,256\n'
+    '30 RANDOMIZE USR 15619: REM : SAVE "out" CODE 25000,256\n'
     '40 PRINT "saved"\n'
 )
+
+
+def boot_program() -> bytes:
+    """BOOT_SRC as program bytes. Line 30's command sits in a REM, where
+    TR-DOS wants *keyword tokens* (SAVE f8, CODE af); USR 15619 runs the REM command and returns to BASIC (15616 opens the shell and never returns) and plain digits, so
+    that one line is built by hand; zxtap tokenises a REM body as text. A
+    plain BASIC `SAVE` goes to the tape, not the disk."""
+    lines = [zxtap.tokenize_line(raw) for raw in BOOT_SRC.splitlines()
+             if raw[:2] != "30"]
+    body = b"\xf9\xc015619\x0e\x00\x00\x03\x3d\x00:\xea:\xf8\"out\"\xaf25000,256\r"
+    line30 = bytes([0, 30]) + struct.pack("<H", len(body)) + body
+    lines.insert(2, line30)
+    return b"".join(lines)
+
+
 DISK_NAME = b"MiSTer"
 TRD_SEC = 256
 CPM_TRACK = 2 * 5 * 1024  # one track, both sides
@@ -261,7 +276,7 @@ def trd(path, tracks=80, files=None):
     """
     path = Path(path)
     if files is None:
-        files = [("boot", "B", zxtap.tokenize_program(BOOT_SRC))]
+        files = [("boot", "B", boot_program())]
     image = bytearray(tracks * 2 * 16 * TRD_SEC)
     if len(files) > 128:
         raise ValueError(f"mk_disk: {len(files)} files do not fit the catalog")
@@ -274,10 +289,13 @@ def trd(path, tracks=80, files=None):
         entry = bytearray(16)
         entry[0:8] = name.encode("ascii").ljust(8)[:8]
         entry[8] = ord(ftype)
-        entry[9] = 1 + alloc // 16
-        entry[10] = alloc % 16
+        # real TR-DOS entry: 9-10 start/param (a B file's program length),
+        # 11-12 length, 13 sector count, 14 first sector, 15 first track
+        struct.pack_into("<H", entry, 9, len(payload) if ftype == "B" else 0)
         struct.pack_into("<H", entry, 11, len(payload))
-        struct.pack_into("<H", entry, 13, sectors)
+        entry[13] = sectors
+        entry[14] = alloc % 16
+        entry[15] = 1 + alloc // 16
         image[i * 16:(i + 1) * 16] = entry
         for k in range(sectors):
             off = (16 + alloc + k) * TRD_SEC
@@ -310,9 +328,9 @@ def _trd_entries(image):
         if e[0] == 0x01:
             continue
         size = struct.unpack_from("<H", e, 11)[0]
-        sectors = struct.unpack_from("<H", e, 13)[0]
+        sectors = e[13]
         yield (e[0:8].decode("ascii", "replace").rstrip(), chr(e[8]),
-               e[9] * 16 + e[10], size, sectors)
+               e[15] * 16 + e[14], size, sectors)
 
 
 def trd_ls(path):

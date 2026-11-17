@@ -196,16 +196,14 @@ class TrdTest(unittest.TestCase):
         e0, e1 = img[0:16], img[16:32]
         self.assertEqual(e0[0:8], b"boot    ")
         self.assertEqual(e0[8], ord("B"))
-        self.assertEqual((e0[9], e0[10]), (1, 0))
+        # real TR-DOS entry: 13 sectors, 14 first sector, 15 first track
+        self.assertEqual(struct.unpack_from("<H", e0, 9)[0], len(p1))
         self.assertEqual(struct.unpack_from("<H", e0, 11)[0], len(p1))
-        self.assertEqual(struct.unpack_from("<H", e0, 13)[0], 20)
-        self.assertEqual(e0[15], 0)
+        self.assertEqual((e0[13], e0[14], e0[15]), (20, 0, 1))
         self.assertEqual(e1[0:8], b"prog    ")
         self.assertEqual(e1[8], ord("C"))
-        self.assertEqual((e1[9], e1[10]), (2, 4))
         self.assertEqual(struct.unpack_from("<H", e1, 11)[0], len(p2))
-        self.assertEqual(struct.unpack_from("<H", e1, 13)[0], 1)
-        self.assertEqual(e1[15], 0)
+        self.assertEqual((e1[13], e1[14], e1[15]), (1, 4, 2))
         idsec = trd_sector(img, 0, 0, 9)
         used = 20 + 1
         self.assertEqual(idsec[0xE1], used % 16)
@@ -217,7 +215,7 @@ class TrdTest(unittest.TestCase):
     def test_boot_payload(self):
         mk_disk.trd(self.img)
         self.assertEqual(mk_disk.trd_read(self.img, "boot"),
-                         zxtap.tokenize_program(mk_disk.BOOT_SRC))
+                         mk_disk.boot_program())
         self.assertEqual(mk_disk.trd_ls(self.img)[0][:2], ("boot", "B"))
 
     def test_trd_read_missing(self):

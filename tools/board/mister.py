@@ -31,7 +31,8 @@ import subprocess
 import time
 import urllib.request
 
-HOST = "192.168.1.13"
+import os
+HOST = os.environ.get("MISTER_HOST", "192.168.1.15")
 PORT = 9191
 
 
