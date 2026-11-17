@@ -9,7 +9,7 @@
 **Architecture (my calls, no questions were asked; the owner can overrule any of them):**
 - **ESP channel = the wires.** `profi.vhd` already exposes `UART_TX`, `UART_CTS` (out) and `UART_RX` (in), selecting ZiFi or ZXUNO internally (`UART_TX <= zifi_uart_tx when zifi_api_enabled else zxuno_uart_tx`, `profi.vhd:1398`). The top ties `UART_RX(1'b1)` and leaves the outputs open today (`Karabas_Profi.sv:387`). The channel is a **pass-through at the wire level**: the baud rate is whatever the software programmes, and Linux's tty speed is whatever Main_MiSTer sets for the chosen UART mode. No resampling.
 - **USB channel = bytes.** `profi.vhd` hands the ZiFi USB path byte strobes (`usb_uart_tx_data/wr` out of the machine, `usb_uart_rx_data/idx` in), carried by `kg_mcu` as `CMD_UART` (`0xFC`) frames: to the MCU `00 d` (byte), `01 dll`, `02 dlm`; from the MCU `idx d` (idx is a counter, a new byte when it changes). `mcu_emu` plays the MCU, so it must (a) take the `CMD_UART` replies the machine sends (they land in `last_reply/reply_valid` today and are ignored) and (b) send received bytes as `CMD_UART` frames. A small serialiser/deserialiser (8N1, fixed divisor, my call: the tty speed of the UART mode) turns bytes into the HPS UART line and back. The `dll/dlm` writes are ignored (documented): the Linux tty speed is fixed per mode.
-- **One new module, `rtl/host/uart_route.sv`:** the channel mux (`status` bit), the `UART_RXD` synchroniser into `clk_bus`, the byte serialiser/deserialiser with a small FIFO each way, and the MidiLink priority (`uart_mode == 3` → the existing `mt32_mix` line, untouched). Pure RTL, one clock domain per side with the proven toggle/two-flop crossings only; no new FIFO IP.
+- **One new module, `rtl/host/uart_route.sv`:** the channel mux (`status` bit), the `UART_RXD` and `esp_tx` synchronisers into `clk_sys` (the whole module is one `clk_sys` domain), the byte serialiser/deserialiser with a small FIFO each way, and the MidiLink priority (`uart_mode == 3` → the existing `mt32_mix` line, untouched). Pure RTL, one clock domain per side with the proven toggle/two-flop crossings only; no new FIFO IP.
 - **Modes.** MiSTer's `UART mode` page lists what `CONF_STR` declares. Today only `UART31250,MIDI`. This stage adds a serial mode at the speed of the standard ZiFi baud (115200; the exact `CONF_STR` token syntax is taken from Main_MiSTer / another core's `CONF_STR`, then confirmed on the board through `/tmp/UART_SPEED` — Task 3). *The mode selector is MiSTer's; the channel item is ours; both are needed.*
 
 **Tech Stack:** SystemVerilog (`rtl/host/`, `Karabas_Profi.sv`, `iverilog -g2012`), VHDL rewrites through `tools/prepare_upstream.py` only if a port needs one (expected: none, the top already drives `UART_RX` and reads `UART_TX`), Quartus 17.0, Python 3 stdlib for tools/board.
@@ -32,7 +32,7 @@
 2. **No tty reader attached.** TX into a UART nobody reads, RX never arriving. Expected: the machine does not stall (the ZiFi USB path has `CPU_WAIT`, `profi.vhd:1733`), a full TX FIFO drops or back-pressures by a documented rule, never deadlocks.
 3. **Channel switch mid-byte.** Flipping the OSD item while a byte is on the line. Expected: the byte in flight finishes on the old channel or is dropped whole, never a half byte on the new one.
 4. **Baud mismatch.** The pass-through carries whatever baud the software sets; the USB path is fixed. Expected: documented in the README, not "fixed" by guessing.
-5. **Clock domains.** `UART_RXD` is asynchronous (two-flop into `clk_bus`, glitch-filtered by majority of 3 over the sample point), the MCU link is `clk_sys`. Test: the bench drives RX with a skewed clock ratio.
+5. **Clock domains.** `UART_RXD` and `esp_tx` are asynchronous (two-flop into `clk_sys`, `UART_RXD` glitch-filtered by majority of 3 over the sample point); the MCU link is `clk_sys` already; `esp_rx` leaves a `clk_sys` flop toward the machine, whose own input stage is checked in Task 1. Test: the bench drives RX with a skewed clock ratio.
 6. **The `CMD_UART` bytes `mcu_emu` ignores today.** Adding the decode must not reorder the report burst or change any `tb_mcu_emu` expectation for other commands.
 
 ---
@@ -54,8 +54,8 @@
 
 **Interfaces (proposed; the task may refine names, not behaviour):**
 ```systemverilog
-module uart_route #(parameter integer CLKS_PER_BIT = 0) (   // bit period in clk cycles; 0 = parameter error
-    input  wire       clk,              // clk_bus domain for the wire side
+module uart_route #(parameter integer CLKS_PER_BIT = 434) (   // clk_sys 50 MHz / 115200
+    input  wire       clk,              // clk_sys (50 MHz); esp_tx/esp_cts come from clk_bus and are treated as asynchronous (two-flop), esp_rx leaves registered here
     input  wire       reset,
     input  wire       channel,          // 0 ESP (wires), 1 USB (bytes): the OSD item
     input  wire [7:0] uart_mode,        // hps_io: 3 = MIDI
@@ -68,7 +68,6 @@ module uart_route #(parameter integer CLKS_PER_BIT = 0) (   // bit period in clk
     output reg  [7:0] usb_rx_data, output reg [7:0] usb_rx_idx,
     // the HPS UART
     input  wire       uart_rxd,         // async
-    output wire       uart_txd_serial,  // the line when not MIDI
     // MidiLink line from mt32_mix
     input  wire       midi_line,
     output wire       uart_txd          // UART_TXD
