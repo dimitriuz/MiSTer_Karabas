@@ -136,6 +136,8 @@ the daemon's own screenshot (the HDMI capture feed was down, see "Not run").
 |Read-only (slot 4, chmod 444)|the SAVE is refused by TR-DOS, the file's SHA-256 is unchanged|PASS: `Read Only Trk 0 sec 2`, hash unchanged|`read-only-write-error.png`|
 |FDI download (F1)|a real TR-DOS FDI (`mk_disk.py fdi --from-trd`) boots and runs; a write is refused|PASS: boot ran to line 30, the SAVE hit the forced write-protect; file on the card unchanged|`fdi-boot-write-protected.png`|
 |FDI pattern disk (F1, `test.fdi`)|the download and mount do not wedge TR-DOS|PASS: shell prompt `A>`, no `boot` (the fixture has no catalog)|`fdi-pattern-disk-shell.png`|
+|Turbo 8x (OSD `Turbo` set on the GO menu, then TR-DOS 128K)|boot, read and write as at 3.5 MHz, no wedge|PASS: `trdos ok`, `saved`, `0 OK, 40:1`; `out.C` on the card is `0..255`|`go-menu-turbo-8x.png`, `turbo8x-boot-write.png`|
+|OSD row map|`Tape play/pause` is 15 Downs below `Video`|PASS: 16 Downs land on `Tape previous block`; Floppy A 10, B 11, A FDI 12, B FDI 13, Disk layout 14|`osd-row-map.png`|
 |CP/M image (slot 4)|TR-DOS cannot use it: a clean error, no hang|PASS: `Disc Error Trk 0 sec 9`|`cpm-disc-error.png`|
 
 ### Findings (traps for the next script and the next fixture)
@@ -169,19 +171,30 @@ the daemon's own screenshot (the HDMI capture feed was down, see "Not run").
 
 ### Not run
 
-* **Turbo 8x / Pentagon vs 48k** (plan step 8), and the **OSD row map re-read** that the
-  `TAPE_ROW = 15` guess depends on: both need the capture feed to read the OSD, which was
-  down. The simulation matrix (`tb_floppy`, six combinations) remains the evidence for the
-  speed rows.
+* **Pentagon vs 48k** (the other half of plan step 8): the Video submenu walk was not
+  done. The `tb_floppy` six-combination matrix (DS80, speed, turbo) is the evidence.
 * **CP/M with `Disk layout = CP/M`** and booting CP/M itself: no owner-supplied system
-  image, and the layout item needs the OSD. `test.cpm` (819200 bytes) is unambiguous for
-  Auto, and TR-DOS gave a clean error on it.
+  image. `test.cpm` (819200 bytes) is unambiguous for Auto, and TR-DOS gave a clean error
+  on it.
 * **`.scl` mount:** no owner-supplied `.scl`; the conversion is Main's.
 * **`swap` (port `#028B` bit 3):** no TR-DOS utility sets it; the sim case `drive_b` is
   the evidence.
 * **Format Track / Write Track:** not implemented (README limitation).
 * The drive B check was by write, not by a catalog read; `CAT 1` from a program gave
   `C Nonsense in BASIC` and was not pursued.
+
+### OSD driving notes (second session, capture feed back)
+
+* Left/Right on the gamepad **switch OSD pages** (Core <-> System, which holds `Reset
+  settings` and `Save settings`); a value is cycled with `Enter` (Turbo: Off, 2x, 4x, 8x).
+  The first `home` after a core load can open the System page; close it and reopen.
+* `mister.read_bar` returns `None` on the RTSP frames (the highlight is light pink here,
+  not the old bar colour), so the row was read by eye from the shot. The row count itself
+  matches `TAPE_ROW = 15` and `mister.ROWS`.
+* After a turbo change the picture is black with speckle for a few seconds (the video
+  resync); a screenshot 10 s later is clean.
+* `mister.Capture` (direct v4l2) cannot open the card while the owner's ffmpeg publisher
+  runs; use `MiSTer_docs/tools/mister_shot.sh` for the RTSP feed.
 
 ### Gates
 
