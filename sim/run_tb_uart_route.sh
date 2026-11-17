@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Icarus run of the uart_route testbench: compiles sim/tb_uart_route.sv with
-# rtl/host/uart_route.sv (the DUT) using iverilog -g2012. No prepared upstream
-# is needed. The last line of the output is the verdict, `tb_uart_route: PASS`
-# or `tb_uart_route: FAIL <reason>`, and it exits non-zero on anything but PASS.
+# rtl/host/uart_route.sv (the DUT) and the upstream ZXUNO uart from
+# upstream/karabas-go-core-profi/src/rtl/uart/uart.v (read-only; the uart_loop
+# case drives it on an unrelated clock) using iverilog -g2012. No prepared
+# upstream is needed. The last line of the output is the verdict,
+# `tb_uart_route: PASS` or `tb_uart_route: FAIL <reason>`, and it exits
+# non-zero on anything but PASS.
 #
 # Icarus lives in the karabas-sim image: without it this script re-executes
 # itself there through tools/sim.sh:
@@ -33,7 +36,8 @@ LOG=$(mktemp)
 mkdir -p build/sim
 iverilog -g2012 -o build/sim/tb_uart_route.vvp \
     sim/tb_uart_route.sv \
-    rtl/host/uart_route.sv
+    rtl/host/uart_route.sv \
+    upstream/karabas-go-core-profi/src/rtl/uart/uart.v
 vvp build/sim/tb_uart_route.vvp > "$LOG" 2>&1 || true
 cat "$LOG"
 # The testbench prints its own verdict (see the end of its initial block);
