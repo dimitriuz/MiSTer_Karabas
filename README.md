@@ -122,11 +122,12 @@ clock from the machine PLL. `GS Reset` in the OSD restarts the GS CPU.
 The MIDI out is the TurboSound's (AY port A bit 2), as on the ZX 128. It has
 two routes:
 
-- **MidiLink (HPS UART)**: set the OSD `UART mode` to `MIDI` (31250 baud),
+- **MidiLink (HPS UART)**: set the OSD `UART mode` to `MIDI` (Main's mode 3,
+  always 31250 - Main's own `midi_speeds` list, never the `Baud` submenu),
   then pick the target in MiSTer's MidiLink menu - a remote mt32-pi, MUNT,
-  FluidSynth or a USB MIDI adapter. Every other UART mode hands the line to
-  the `Serial channel` item (Serial below) - that is how Linux and the machine
-  reach each other.
+  FluidSynth or a USB MIDI adapter. Only `None` gives the port to the
+  `Serial channel` item described below; every other mode has something of
+  MiSTer's own talking on it too (the table under Serial).
 - **mt32-pi on the USER port**: connect the Pi there and use the MT32-pi OSD
   page (`Use MT32-pi`, `Synth`, `Munt ROM`); its I2S audio is mixed into
   AUDIO_L/R. `Use MT32-pi: No` silences only that Pi - the MidiLink route
@@ -151,24 +152,37 @@ is MiSTer-side only - the machine never hears about it.
   **115200**, the standard ZiFi rate. The tty speed is still Main's, so
   `Baud` has to say 115200.
 
-The `UART mode` submenu is Main's fixed list - `config_uart_msg` in
-`menu.cpp`: `None`, `PPP`, `Console`, `MIDI`, `Modem`, and `UDP`/`SNI` only
-when one of those is already running. For a byte pipe use `None`, the one mode
-that leaves the line raw: `PPP` and `Console` give the port to a daemon
-(MiSTer's docs: "Linux OS runs PPP or Console daemon on this connection"),
-`MIDI` is this core's MidiLink, and `Modem`/`UDP`/`SNI` are MiSTer's own
-tunnels, started by Main's `uartmode` script. Main sets the port to the speed
-shown under `Baud` (and writes it to `/tmp/UART_SPEED`); the core only ever
-looks at the mode number to recognise `MIDI`. MIDI keeps priority over both
-channels and is exactly what it was before stage 5: it takes the line
-immediately, mid-byte as well, and while it owns it the two channels neither
-send nor receive.
+`UART mode` is Main's fixed list - `config_uart_msg` in `menu.cpp` - and what
+an entry does to `/dev/ttyS1` is decided by Main, not by this core:
 
-`CONF_STR` declares `UART115200:31250,MIDI`. The two numbers are what the
-`Baud` submenu offers the non-MIDI connections (115200 as the default, 31250
-for slow bit-banged software); MIDI's own speed comes from Main's MIDI list
-(31250 by default), never from that list - `user_io.cpp`'s `GetUARTbauds()`
-picks `midi_speeds` for mode 3 - so adding them leaves MIDI untouched.
+| `UART mode` (Main's number) | who else is on the port | speed comes from |
+|---|---|---|
+| `None` (0) | nobody: the line is raw - this is the byte-pipe mode | our `Baud` list |
+| `PPP` (1) | MiSTer's PPP daemon | our `Baud` list |
+| `Console` (2) | MiSTer's serial console: a login prompt on the port, which the machine's ESP wire receives as data | our `Baud` list |
+| `MIDI` (3) | this core's MidiLink (`mt32_mix`) | Main's `midi_speeds` (31250 by default) |
+| `Modem` (4) | MidiLink's Hayes modem: `user_io.cpp:1592` turns MidiLink on for mode 4 | Main's fixed `mlink_speeds` |
+| `UDP` (5), `SNI` (6) | MiSTer's UDP tunnel and `snid`; neither is selectable unless already running (`menu.cpp`) | Main's fixed `mlink_speeds` |
+
+The `Serial channel` item only chooses which of the machine's two channels the
+router hangs on the port - in `None` that is the whole of the traffic, in every
+other mode something else shares the port with it, and in `MIDI` the router
+yields the line completely. MIDI's priority is what it was before stage 5: it
+takes the line immediately, mid-byte as well, and while it owns it the two
+channels neither send nor receive.
+
+Main sets the port's speed from the list `GetUARTbauds()` picks for the mode
+(`user_io.cpp:1002`): `midi_speeds` for 3, `mlink_speeds` for anything above 3,
+and the list this core declares for 0, 1 and 2. That list is `CONF_STR`'s
+`UART115200:31250,MIDI` - 115200 as the default, 31250 for slow bit-banged
+software - so the `Baud` submenu only means something in `None`, `PPP` and
+`Console`; MIDI keeps its own 31250 and the MidiLink-family modes theirs, which
+is why adding the two numbers left them untouched.
+
+Those mode facts are read out of `Main_MiSTer` (`user_io.cpp:463-467`,
+`992-1022`, `1590-1597`, `menu.cpp`'s `config_uart_msg`) and MiSTer's docs
+("Linux OS runs PPP or Console daemon on this connection"): they are **not
+board-verified**, task 4 verifies them.
 
 Limits worth knowing (the first four are cases of `sim/tb_uart_route.sv`):
 
