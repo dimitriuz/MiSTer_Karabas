@@ -1162,7 +1162,7 @@ module tb_uart_route;
         // stop - one 3472-clock high run in the middle of a legal frame. With
         // rx_quiet the budget can only start after the stop bit; without it the
         // counter keeps running inside that high run and moves the latch 3256
-        // clocks earlier than the baseline ever can (measured by watching
+        // clocks before the baseline's stop-bit-sample reference (measured by watching
         // dut.chan with that term deleted: mutant 9893.51 us, baseline
         // 9958.63 us, and the case's own check samples chan at 9904.25 us -
         // 537 clocks after the mutant edge, 2719 before the baseline's, which

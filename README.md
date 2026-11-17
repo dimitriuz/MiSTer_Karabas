@@ -126,8 +126,8 @@ two routes:
   always 31250 - Main's own `midi_speeds` list, never the `Baud` submenu),
   then pick the target in MiSTer's MidiLink menu - a remote mt32-pi, MUNT,
   FluidSynth or a USB MIDI adapter. Only `None` gives the port to the
-  `Serial channel` item described below; every other mode has something of
-  MiSTer's own talking on it too (the table under Serial).
+  `Serial channel` item described below; the other modes have something of
+  MiSTer's own on it too (the table under Serial).
 - **mt32-pi on the USER port**: connect the Pi there and use the MT32-pi OSD
   page (`Use MT32-pi`, `Synth`, `Munt ROM`); its I2S audio is mixed into
   AUDIO_L/R. `Use MT32-pi: No` silences only that Pi - the MidiLink route
@@ -142,15 +142,16 @@ is MiSTer-side only - the machine never hears about it.
 
 - **ESP (the wires)**: `profi.vhd`'s `UART_TX`/`UART_RX` - the ZiFi or ZXUNO
   port it selects internally - pass through bit by bit with no resampling, so
-  **the baud is whatever the software programmes**. MiSTer's
-  `UART mode` -> `Baud` has to carry the same speed for the bytes to mean
-  anything at the other end. `UART_CTS` is not forwarded (the core has no CTS
+  **the baud is whatever the software programmes**. In `None`, `PPP` and
+  `Console` MiSTer's `UART mode` -> `Baud` has to carry the same speed for the
+  bytes to mean anything at the other end (in the other modes the speed is
+  Main's own, see the table). `UART_CTS` is not forwarded (the core has no CTS
   path into the tty and MiSTer ties the port's RTS/CTS low), so **flow control
   stays a software matter**.
 - **USB (bytes)**: the ZiFi/EVO USB-RS232 path - the MCU link's `CMD_UART`
   frames between `rtl/host/mcu_emu.sv` and the router - framed 8N1 at a fixed
   **115200**, the standard ZiFi rate. The tty speed is still Main's, so
-  `Baud` has to say 115200.
+  in `None`, `PPP` and `Console` `Baud` has to say 115200.
 
 `UART mode` is Main's fixed list - `config_uart_msg` in `menu.cpp` - and what
 an entry does to `/dev/ttyS1` is decided by Main, not by this core:
