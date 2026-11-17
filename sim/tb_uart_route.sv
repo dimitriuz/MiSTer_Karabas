@@ -39,8 +39,8 @@
 //                    the rest are dropped (newest lost), the line idles and a
 //                    later byte still frames (no deadlock).
 //   rx_noise         a one-clock glitch on uart_rxd, at varying phases, is
-//                    majority-of-3 filter: esp_rx never blips, no frame
-//                    starts, and the next good frame still arrives.
+//                    rejected by the majority-of-3 filter: esp_rx never blips,
+//                    no frame starts, and the next good frame still arrives.
 //   usb_quiet_in_esp bytes pushed while the ESP channel is selected produce no
 //                    frame and no usb_rx activity; they drain in order when
 //                    the USB channel is selected.
@@ -385,6 +385,8 @@ module tb_uart_route;
         case_errors = errors;
         do_reset;
         channel = 1'b1;
+        // nothing may frame before a strobe arrives
+        watch_level(1'b1, 3 * CPB, "usb_tx_byte", "silent before the strobe");
         usb_send(8'h55);
         usb_recv(ferr, got_byte);
         if (!ferr && got_byte !== 8'h55) ifail("usb_tx_byte", "0x55 mid-bit decode", got_byte, 8'h55);
