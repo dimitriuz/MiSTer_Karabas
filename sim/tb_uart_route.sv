@@ -11,6 +11,11 @@
 // unrelated 28 MHz / 24 MHz clock and loops a byte through
 // uart_tx -> esp_tx -> uart_txd -> uart_rxd -> esp_rx -> uart_rx.
 //
+// MidiLink takes the line immediately, even mid-byte. The deserialiser is not
+// reset by it: a byte it was already assembling is finished and counted when
+// the mode comes back, so a takeover in the middle of a machine->HPS frame
+// costs at most one stale byte, which is what the hardware would have seen too.
+//
 // Sampling discipline: every task that reads a DUT output does it after
 // `@(posedge clk); #1;` (the settled post-edge value) and every wait is a
 // count of clock edges - no $time arithmetic anywhere, and the global
@@ -41,7 +46,11 @@
 //   midi_priority    starts in mode 0 and flips to MIDI half a byte into a USB
 //                    frame: the line is midi_line from that instant, neither
 //                    direction reaches the machine while MIDI owns the port,
-//                    and the two bytes still queued are neither sent nor lost.
+//                    three queued bytes are neither sent nor lost, and a byte
+//                    pushed while MIDI owns the port is dropped at the input.
+//   rx_gone_in_midi  with MIDI on the line, traffic on uart_rxd feeds neither
+//                    usb_rx nor esp_rx; it stops counting the instant mode 0
+//                    comes back.
 //   idle_other_modes every mode but 3, both channels: uart_txd and esp_rx idle
 //                    high with midi_line toggling, usb_rx_idx frozen.
 //   switch_mid_byte  a byte in flight finishes on the line it started on, the
@@ -55,6 +64,25 @@
 //                    and only after the idle frame does the channel take effect.
 //   switch_rxd_frame flipping to USB in the middle of a frame the machine is
 //                    receiving does not cut it and is not counted as a byte.
+//                    (The rule: a frame that has *started* finishes on the
+//                    line it started on, but only for a line that returns to
+//                    its idle level - a peer that holds the line low, a break
+//                    or a machine that stops mid-frame, parks the channel
+//                    switch for as long as it holds. That is deliberate: the
+//                    alternative is to cut a frame in the middle.)
+//   rx_dead_start_parks_switch
+//                    a dead start bit parks the pending switch for its own
+//                    half bit only: 24 of them keep the channel from moving,
+//                    and when the line goes quiet the switch runs its budget
+//                    and lands.
+//   rxd_frame_parks_flip
+//                    a flip armed 1.5 bits into a frame lands neither before a
+//                    frame of quiet nor after the deserialiser finishes, and
+//                    then the machine's wire drives the line.
+//   push_before_flip usb_tx_wr one clock before the OSD item moves, the port
+//                    idle-saturated: the byte is not popped onto a channel
+//                    that is losing the port, it waits, and comes out when the
+//                    channel comes back.
 //   tx_backlog       40 strobes into a 16-byte FIFO: 17 bytes go out in order,
 //                    the rest are dropped (newest lost), the line idles and a
 //                    later byte still frames (no deadlock).
@@ -80,6 +108,7 @@ module tb_uart_route;
 
     localparam integer CPB = 434;                  // the module default
     localparam integer IDLE_BUDGET = 10 * CPB + 64;
+    localparam integer RX_DEPTH = 4;               // flop + vote(2..4) + flop
     localparam real BIT_NS = 8680.0;               // CPB * 20 ns = 115200 baud
 
     // ---------------- clocks ----------------
@@ -97,8 +126,10 @@ module tb_uart_route;
     // the loop plug between the HPS transmit and receive: the Pi's own TX is
     // never connected to uart_rxd, so a wire-channel exchange stays one-way
     reg         pi_loop     = 1'b0;
-    wire        esp_tx      = pi_loop ? pi_tx     : esp_tx_drv;
-    wire        uart_rxd    = pi_loop ? uart_txd  : rxd_drv;
+    reg         pi_to_rxd   = 1'b0;
+    wire        esp_tx      = pi_loop   ? pi_tx    : esp_tx_drv;
+    wire        uart_rxd    = pi_to_rxd ? pi_tx    :   // the Pi drives the HPS
+                               pi_loop ? uart_txd : rxd_drv;
 
     reg         pi_ds80     = 1'b0;
     reg  [ 7:0] pi_txdata   = 8'h00;
@@ -121,22 +152,11 @@ module tb_uart_route;
     // check that a frame from the machine arrives unchanged (channel 0).
     wire       pw_rxrecv;
     wire [7:0] pw_rxdata;
-    wire       pw_rts;
     reg        pw_read = 1'b1;
     uart_rx #(.CLK(28000000)) pi_wire_rx (
         .clk_bus(clk_pi), .ds80(pi_ds80), .enabled(1'b1),
         .rxdata(pw_rxdata), .rxrecv(pw_rxrecv), .data_read(pw_read),
-        .rx(uart_txd), .rts(pw_rts)
-    );
-
-    // a receiver on the same Pi clock, watching the line the router drives
-    wire       pi2_rxrecv;
-    wire [7:0] pi2_rxdata;
-    wire       pi2_rts;
-    uart_rx #(.CLK(28000000)) pi_rx (
-        .clk_bus(clk_pi), .ds80(pi_ds80), .enabled(1'b1),
-        .rxdata(pi2_rxdata), .rxrecv(pi2_rxrecv), .data_read(1'b1),
-        .rx(uart_txd), .rts(pi2_rts)
+        .rx(uart_txd), .rts()
     );
 
     // ---------------- DUT ----------------
@@ -170,8 +190,8 @@ module tb_uart_route;
     integer case_errors;
     // the run block's own counters, never the locals of a task
     integer ci, cj, cn;
-    integer k;                           // task-local only
-    integer g;                           // task-local only
+    integer k;                           // run-block counters
+    integer g;
     integer ferr;
     integer got_len;
     integer idx_before;
@@ -179,12 +199,15 @@ module tb_uart_route;
     reg [7:0] send_byte;
     reg [7:0] idx_expect;
     integer   e_sp;
+    integer   mn;
     reg       sp_last = 1'b1;
+    reg [7:0] got_hps;
+    integer   ferr_b;
     real      bit_now;
 
     task bfail;
         input [8*28-1:0] name;
-        input [8*32-1:0] what;
+        input [8*48-1:0] what;
         input integer got;
         input integer want;
         begin
@@ -195,7 +218,7 @@ module tb_uart_route;
 
     task ifail;
         input [8*28-1:0] name;
-        input [8*32-1:0] what;
+        input [8*48-1:0] what;
         input integer got;
         input integer want;
         begin
@@ -206,7 +229,7 @@ module tb_uart_route;
 
     task tfail;
         input [8*28-1:0] name;
-        input [8*32-1:0] what;
+        input [8*48-1:0] what;
         begin
             $display("FAIL %0s %0s", name, what);
             errors = errors + 1;
@@ -293,23 +316,30 @@ module tb_uart_route;
         end
     endtask
 
-    // Drive uart_rxd to `lvl`: esp_rx follows it 3..6 clocks later and holds.
+    // Drive uart_rxd to `lvl` and pin the depth of the receiving chain: the
+    // level is registered once (rx_s1), the vote runs over the three taps after
+    // it, and esp_rx is a register on top of the vote - four clk_sys clocks,
+    // not three (a vote over the first three taps would show up here as three),
+    // and never fewer. The count is deterministic: every stimulus change is at
+    // a negedge and the chain is pure registers.
     task rxd_drive;
         input        lvl;
         input integer hold;
         input [8*28-1:0] name;
         integer seen;
+        integer kk;
         begin
             @(negedge clk);
             rxd_drv = lvl;
             seen = 0;
-            for (k = 1; k <= 6; k = k + 1) begin
+            for (kk = 1; kk <= 6; kk = kk + 1) begin
                 tick;
-                if (esp_rx === lvl && seen == 0) seen = k;
+                if (esp_rx === lvl && seen == 0) seen = kk;
             end
-            if (seen < 3) tfail(name, "esp_rx changed too early (no synchroniser)");
             if (seen == 0) tfail(name, "esp_rx never followed uart_rxd");
-            for (k = 0; k < hold; k = k + 1) begin
+            else if (seen != RX_DEPTH)
+                ifail(name, "esp_rx synchroniser depth", seen, RX_DEPTH);
+            for (kk = 0; kk < hold; kk = kk + 1) begin
                 tick;
                 if (esp_rx !== lvl) bfail(name, "esp_rx held", esp_rx, lvl);
             end
@@ -457,24 +487,6 @@ module tb_uart_route;
     // ---- the ZXUNO uart ----
     // Empty the Pi's receiver: rxrecv must be low before a new exchange, or a
     // stale byte is taken for the answer.
-    // count the edges the router's input saw during the last drive
-    integer rx_edges = 0;
-    reg     rx_rec = 1'b0;
-    reg     rx_last = 1'b1;
-    reg [8*8-1:0] rx_name = "wire";
-    always @(uart_rxd) begin
-        if (rx_rec) begin
-            rx_edges = rx_edges + 1;
-            rx_last  = uart_rxd;
-        end
-    end
-    task rx_take;
-        begin
-            rx_edges = 0;
-            rx_rec   = 1'b1;
-        end
-    endtask
-
     task pi_clear;
         integer g;
         begin
@@ -723,12 +735,20 @@ module tb_uart_route;
         else $display("rx_bit_rate: FAIL");
 
         // ================= midi_priority =================
+        // MIDI is a mute with priority: the instant mode 3 is set the line is
+        // midi_line, mid-frame; nothing the byte channel has queued may escape
+        // while it owns the port, nothing pushed is taken. The proof is the
+        // fate of the queue after the mode goes back: three bytes come out in
+        // order, the byte pushed during MIDI never appears at all.
         case_errors = errors;
         for (ci = 0; ci < 2; ci = ci + 1) begin
             do_reset;
             set_channel(ci[0]);
-            // a byte is on its way out on the USB channel in mode 0
+            // four bytes: the first is on its way out, three are queued behind
             usb_send(8'hF0);
+            usb_send(8'h2C);
+            usb_send(8'h93);
+            usb_send(8'hD7);
             repeat (3 * CPB / 2) tick;               // a bit and a half in
             @(negedge clk);
             uart_mode = 8'd3;                        // MIDI takes over mid-byte
@@ -748,25 +768,69 @@ module tb_uart_route;
             if (uart_txd !== midi_line)
                 bfail("midi_priority", "the wire moved the line", uart_txd, midi_line);
             if (esp_rx !== 1'b1) bfail("midi_priority", "esp_rx fed by the Pi", esp_rx, 1'b1);
+            // a byte pushed while MIDI owns the port: dropped at the input,
+            // it must never appear on the line later
+            usb_send(8'h5A);
             repeat (12 * CPB) tick;
             if (usb_rx_idx !== 8'd0)
                 ifail("midi_priority", "usb_rx_idx in MIDI", usb_rx_idx, 0);
-            // MIDI owns the port.
             @(negedge clk);
-            uart_mode  = 8'd0;                       // mode 0 again
             esp_tx_drv = 1'b1;
             rxd_drv    = 1'b1;
-            repeat (12 * CPB) tick;                   // let the port settle
-            if (ci[0] == 1) begin
-                // the interrupted frame's tail drains first (up to one frame
-                // of line activity after the mode switch), then a fresh byte
-                // goes out whole
-                g = 0;
-                while ((uart_txd !== 1'b1) && (g < 2 * CPB)) begin
-                    tick;
-                    g = g + 1;
-                end
-                repeat (CPB) tick;
+            midi_line  = 1'b1;                       // a quiet MIDI line
+            repeat (4) tick;
+            if (ci[0] == 0) begin
+                // the ESP channel never owned the port: nothing was queued,
+                // and mode 0 changes nothing but the mux
+                @(negedge clk);
+                uart_mode = 8'd0;
+                repeat (12 * CPB) tick;
+                watch_level(1'b1, 4 * CPB, "midi_priority", "line idle in ESP mode 0");
+                usb_send(8'hF0);
+                repeat (12 * CPB) tick;
+                if (uart_txd !== 1'b1)
+                    bfail("midi_priority", "the ESP channel framed a byte", uart_txd, 1'b1);
+            end else begin
+                // back to mode 0 with the receiver already listening: the
+                // three queued bytes come out, the MIDI-window byte does not
+                fork
+                    begin
+                        mn = 0;
+                        for (cj = 0; cj < 4; cj = cj + 1) begin
+                            g = 0;
+                            while ((uart_txd !== 1'b0) && (g < 12 * CPB)) begin
+                                tick;
+                                g = g + 1;
+                            end
+                            if (uart_txd !== 1'b0) cj = 4;   // the queue is empty
+                            else begin
+                                usb_recv(ferr, got_byte);
+                                if (ferr)
+                                    tfail("midi_priority", "a queued byte never framed");
+                                else begin
+                                    mn = mn + 1;
+                                    case (mn)
+                                        1: send_byte = 8'h2C;
+                                        2: send_byte = 8'h93;
+                                        3: send_byte = 8'hD7;
+                                        default: send_byte = 8'h5A;   // dropped
+                                    endcase
+                                    if (got_byte !== send_byte)
+                                        ifail("midi_priority", "the byte out after MIDI",
+                                              got_byte, send_byte);
+                                end
+                            end
+                        end
+                        if (mn != 3)
+                            ifail("midi_priority", "bytes out after MIDI", mn, 3);
+                    end
+                    begin
+                        @(negedge clk);
+                        uart_mode = 8'd0;
+                    end
+                join
+                repeat (12 * CPB) tick;
+                // and the channel still works afterwards
                 usb_send(8'h7B);
                 usb_recv(ferr, got_byte);
                 if (ferr) tfail("midi_priority", "the byte after MIDI never framed");
@@ -1033,53 +1097,112 @@ module tb_uart_route;
         else $display("usb_quiet_in_esp: FAIL");
 
         // ================= rx_dead_start_parks_switch =================
-        // A frame that is being received is traffic on the port: the channel
-        // latch may not move while it runs. And a frame that the line abandons
-        // (a start bit that dies) is not traffic any more - the counter has to
-        // run again, or a noisy line would freeze the channel forever.
+        // A start bit that dies is traffic for its own duration and nothing
+        // more: the deserialiser rejects it at mid-bit, the port is quiet
+        // again, and the pending channel switch runs its budget from there.
+        // Without that the channel could never be moved while the line is
+        // noisy - a start bit every half frame would park the latch forever.
+        // Both halves need the deserialiser to be alive, so this runs in
+        // channel 1, where usb_own is true and a start bit is really sampled;
+        // the flip arms late and lands when the noise stops.
         case_errors = errors;
         do_reset;
-        set_channel(0);
-        rxd_drv = 1'b0;                    // a start bit that will die
-        repeat (CPB / 4) tick;
-        rxd_drv = 1'b1;                    // noise, not a frame
-        repeat (4 * CPB) tick;
-        if (uart_txd !== 1'b1) bfail("rx_dead_start_parks_switch", "level after noise", uart_txd, 1'b1);
-        if (errors == case_errors) $display("rx_frame_parks_switch: ok");
-        else $display("rx_frame_parks_switch: FAIL");
+        set_channel(1);
+        // a frame first: it empties the idle counter, so the flip below is
+        // armed with the budget still to run, not already saturated
+        drive_frame(8'h5A, BIT_NS, 0.0, 1'b1);
+        @(negedge clk);
+        channel = 1'b0;                        // the OSD item moves
+        // noise: 24 dead start bits, one every three quarters of a bit - each
+        // one shorter than the switch budget, together longer than it
+        for (ci = 0; ci < 24; ci = ci + 1) begin
+            rxd_drv = 1'b0;  repeat (CPB / 4) tick;
+            rxd_drv = 1'b1;  repeat (CPB / 2) tick;
+        end
+        if (dut.chan !== 1'b1)
+            bfail("rx_dead_start_parks_switch", "the flip landed through the noise",
+                  dut.chan, 1'b1);
+        // the line stops lying: from here a frame of quiet is owed
+        rxd_drv = 1'b1;
+        g = 0;
+        while ((dut.chan !== 1'b0) && (g < IDLE_BUDGET + 2 * CPB)) begin
+            tick;
+            g = g + 1;
+        end
+        if (dut.chan !== 1'b0)
+            bfail("rx_dead_start_parks_switch", "the noise froze the channel",
+                  dut.chan, 1'b0);
+        // the machine owns the port now: its wire drives the line
+        esp_drive(1'b0, 1'b1, 3 * CPB);
+        rxd_drv = 1'b1;
+        if (errors == case_errors) $display("rx_dead_start_parks_switch: ok");
+        else $display("rx_dead_start_parks_switch: FAIL");
 
         // ================= rxd_frame_parks_flip =================
-        // The channel latch may not move while the deserialiser is mid-frame:
-        // 4.5 bit times of traffic put it in a byte, a quiet line for just over
-        // a frame (less than the switch budget) must not move it, a second
-        // quiet frame (over the budget) must.
+        // A frame in flight is traffic: the flip armed in the middle of it may
+        // not land before a whole frame of quiet - and it must land after it.
+        // The direction is 1 -> 0, because a frame is only being received
+        // while the byte channel owns the port.
         case_errors = errors;
         do_reset;
-        set_channel(0);
-        rxd_drv = 1'b0;  repeat (CPB / 2) tick;
-        rxd_drv = 1'b1;  repeat (CPB / 2) tick;
-        rxd_drv = 1'b0;  repeat (CPB / 2) tick;
-        rxd_drv = 1'b1;  repeat (CPB / 2) tick;
-        rxd_drv = 1'b0;  repeat (CPB / 2) tick;
-        rxd_drv = 1'b1;  repeat (CPB / 2) tick;
-        rxd_drv = 1'b0;  repeat (CPB / 2) tick; // four bytes in, stop bit high:
-        rxd_drv = 1'b1;                        // the deserialiser is still busy
-        channel = 1'b1;
-        repeat (IDLE_BUDGET + CPB / 2) tick;   // not yet a frame of quiet
-        if (uart_txd !== 1'b1)
-            bfail("rxd_frame_parks_flip", "flipped while a frame was in flight",
-                  uart_txd, 1'b1);
+        set_channel(1);
+        @(negedge clk);
+        rxd_drv = 1'b0;  repeat (CPB / 2) tick;    // start bit
+        rxd_drv = 1'b1;  repeat (CPB / 2) tick;    // data 1
+        rxd_drv = 1'b0;  repeat (CPB / 2) tick;    // data 0: 1.5 bits in
+        rxd_drv = 1'b1;                            // the line goes quiet, but
+        channel = 1'b0;                            // the deserialiser is busy
+        repeat (IDLE_BUDGET - CPB) tick;           // less than a frame of quiet
         if (dut.chan !== 1'b1)
-            bfail("rxd_frame_parks_flip", "the frame outlived its own quiet",
+            bfail("rxd_frame_parks_flip", "the flip landed under a frame of quiet",
                   dut.chan, 1'b1);
-        // the byte channel owns the port now, and a byte goes out
-        usb_send(8'h9C);
-        usb_recv(ferr, got_byte);
-        if (ferr) tfail("rxd_frame_parks_flip", "the flip never landed");
-        else if (got_byte !== 8'h9C) ifail("rxd_frame_parks_flip", "byte", got_byte, 8'h9C);
-        set_channel(0);
+        repeat (2 * CPB) tick;                     // now the frame is over
+        if (dut.chan !== 1'b0)
+            bfail("rxd_frame_parks_flip", "the frame outlived its own quiet",
+                  dut.chan, 1'b0);
+        // the machine owns the port now: its wire drives the line
+        esp_drive(1'b0, 1'b1, 3 * CPB);
+        set_channel(1);
         if (errors == case_errors) $display("rxd_frame_parks_flip: ok");
         else $display("rxd_frame_parks_flip: FAIL");
+
+        // ================= push_before_flip =================
+        // The strobe and the OSD item one clock apart, with the port
+        // idle-saturated: `chan` is still the old channel on the flip clock,
+        // so without the `chan == channel` term in usb_own the pop would fire
+        // on that very edge and the byte would be shifted out onto the channel
+        // that has just lost the port - off the FIFO and off the wire. With the
+        // term the byte waits in the queue for the channel to come back.
+        case_errors = errors;
+        do_reset;
+        set_channel(1);                          // idle_cnt is saturated
+        // the strobe and the OSD item one clock apart, written out so that the
+        // pop decision falls on the very edge that moves `chan`
+        @(negedge clk);
+        usb_tx_data = 8'hD5;
+        usb_tx_wr   = 1'b1;
+        @(negedge clk);                          // ... the push clock is here
+        usb_tx_wr   = 1'b0;
+        channel     = 1'b0;                      // one clock later: the flip
+        repeat (12 * CPB) tick;                  // the machine has the port
+        if (uart_txd !== 1'b1)
+            bfail("push_before_flip", "the queued byte moved the wire channel",
+                  uart_txd, 1'b1);
+        if (usb_rx_idx !== 8'd0)
+            ifail("push_before_flip", "usb_rx_idx", usb_rx_idx, 0);
+        // the queue drains as soon as the channel is back and the port has
+        // idled for a frame, so the receiver has to be listening already
+        fork
+            usb_recv(ferr, got_byte);            // the byte is still queued
+            begin
+                @(negedge clk);
+                channel = 1'b1;
+            end
+        join
+        if (ferr) tfail("push_before_flip", "the byte pushed before the flip was lost");
+        else if (got_byte !== 8'hD5) ifail("push_before_flip", "byte", got_byte, 8'hD5);
+        if (errors == case_errors) $display("push_before_flip: ok");
+        else $display("push_before_flip: FAIL");
 
         // ================= uart_loop =================
         // The real ZXUNO uart (upstream/.../uart/uart.v) on its own 28 MHz and
@@ -1113,7 +1236,14 @@ module tb_uart_route;
                     default: send_byte = 8'hA5;
                 endcase
                 idx_expect = idx_expect + 8'd1;
-                drive_pi_frame(send_byte);
+                if (cj == 0) begin
+                    // the Pi's own transmitter, plugged onto the receive line:
+                    // a real frame, not a hand-rolled level picture
+                    pi_to_rxd = 1'b1;
+                    pi_send(send_byte);
+                end else begin
+                    drive_pi_frame(send_byte);
+                end
                 cn = 0;
                 while (usb_rx_idx !== idx_expect && cn < 12 * CPB) begin
                     @(negedge clk);
@@ -1124,6 +1254,7 @@ module tb_uart_route;
                           usb_rx_idx, idx_expect);
                 else if (usb_rx_data !== send_byte)
                     ifail("uart_loop", "the received byte", usb_rx_data, send_byte);
+                pi_to_rxd = 1'b0;
                 // and the pushed byte is a frame the Pi's receiver decodes
                 pw_clear();
                 fork
@@ -1134,10 +1265,22 @@ module tb_uart_route;
                 else if (got_byte !== send_byte)
                     ifail("uart_loop", "the framed byte", got_byte, send_byte);
             end
+            pi_to_rxd = 1'b0;
 
             // ---- channel 0: the Pi is the machine, on the wire ----
+            // The Pi's TX goes out as esp_tx, the router passes it to
+            // uart_txd, the loop plug brings uart_txd back to uart_rxd, and
+            // the router's synchroniser drives esp_rx - which is also the
+            // Pi's own receive pin. So the byte has to come back: edge
+            // counting alone would accept a stream with the bits corrupted,
+            // and the byte comparison is what says the levels were right.
             set_channel(0);
             pi_loop = 1'b1;                    // esp_tx is the Pi's TX
+            // the Pi's receiver latched bytes off the wire in earlier cases
+            // and nobody ever read them out: drain, or pi_recv returns a
+            // byte from three cases back and says "ok" about the wrong thing
+            pi_clear();
+            if (pi_rxrecv === 1'b1) tfail("uart_loop", "the Pi never let go of a byte");
             for (cj = 0; cj < 2; cj = cj + 1) begin
                 case (cj)
                     0: send_byte = 8'hC3;
@@ -1145,6 +1288,8 @@ module tb_uart_route;
                 endcase
                 pw_clear();
                 // its frame arrives on esp_rx as levels and is not decoded
+                got_hps = 8'h00;
+                ferr_b  = 1;
                 fork
                     begin
                         e_sp = 0;
@@ -1160,9 +1305,14 @@ module tb_uart_route;
                     begin
                         repeat (2) @(negedge clk_pi);
                         pi_send(send_byte);
+                        pi_recv(got_hps, ferr_b);   // round trip through the router
                     end
                 join
                 if (e_sp < 4) ifail("uart_loop", "esp_rx edges for a frame", e_sp, 4);
+                if (ferr_b != 0)
+                    tfail("uart_loop", "the frame never came back to the Pi");
+                else if (got_hps !== send_byte)
+                    ifail("uart_loop", "the byte back on esp_rx", got_hps, send_byte);
                 if (usb_rx_idx !== idx_expect)
                     ifail("uart_loop", "the wire channel decoded a byte",
                           usb_rx_idx, idx_expect);
