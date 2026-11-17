@@ -387,6 +387,13 @@ reg        rt_first;             // the first RTC[64] toggle still to come
 reg        is_bcd;               // register B's DM bit: 1 = BCD
 reg [7:0]  rtc_si;               // start sequence: the RTC frame index
 
+// The arbiter's decision of one clock: which frame fires, with what word, from
+// which source. Declared above the byte queue because the queue's push has to
+// see its pop, and the pop is the arbiter firing a CMD_UART frame.
+reg        fire;
+reg [23:0] fword;
+reg [4:0]  faction;
+
 // ---------------- the USB-RS232 byte queue ----------------
 
 // uart_rx_stb is one clock and the link owns the slot most of the time (a
@@ -395,15 +402,18 @@ reg [7:0]  rtc_si;               // start sequence: the RTC frame index
 // is free. Eight entries: at 115200 baud that is 0.7 ms of backlog, and a
 // frame is nine times shorter than one byte, so the queue cannot empty while
 // bytes are arriving. A byte that finds it full is DROPPED - the newest, as
-// uart_route's TX rule - and consumes no idx, so every frame that does go out
-// carries an idx different from the previous one, which is all kg_mcu_uart
-// watches.
+// uart_route's TX rule - and consumes no idx, unless a pop fires in this very
+// clock (ur_push below), so every frame that does go out carries an idx
+// different from the previous one, which is all kg_mcu_uart watches.
 reg [15:0] ur_ram [0:7];      // {idx, byte}
 reg [3:0]  ur_cnt;            // entries in the queue
 reg [2:0]  ur_wr, ur_rd;
 reg [7:0]  ur_idx;            // the idx the next accepted byte gets (1 first)
 wire       ur_full   = (ur_cnt == 4'd8);
 wire       ur_empty  = (ur_cnt == 4'd0);
+// this edge takes the head byte out of the USB queue: the frame the arbiter
+// picked is carrying it
+wire ur_pop = fire && (faction == A_UART);
 // A full queue still takes a byte when this very clock pops the head: the
 // frame being fired reads ur_ram[ur_rd] combinationally, so it carries the old
 // byte, and the write lands in the slot that just emptied (full means
@@ -420,19 +430,12 @@ integer cv, tv;                  // the arbiter's loop indices
 integer iv;                      // the clocked block's loop index
 integer sw_target, trig_target;
 
-reg        fire;
-reg [23:0] fword;
-reg [4:0]  faction;
 reg [1:0]  bank_pick;
 
 // this edge fires the mouse report's first frame: a report sampled on the
 // same edge starts from an empty accumulator, not from the deltas that are
 // already on their way
 wire ms_take = fire && faction == A_MOUSE && ms_i == 2'd0;
-
-// this edge takes the head byte out of the USB queue: the frame the arbiter
-// picked is carrying it
-wire ur_pop = fire && (faction == A_UART);
 
 always @(*) begin
     fire        = 1'b0;

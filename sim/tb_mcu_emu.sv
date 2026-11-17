@@ -1076,10 +1076,12 @@ module tb_mcu_emu;
       // after its last frame. uart_rx_in_burst shows this for the keyboard
       // source; the mouse's branch sits directly above the queue's, so this
       // is the case that proves the queue waits behind it.
-      // (idx 0x11.. were the bytes above; ps2_mouse_ext is wheel + buttons)
+      // (idx 0x11.. were the bytes above; ps2_mouse_ext[7:0] is the wheel)
       n0 = nfrm;
-      ps2_mouse     = {1'b1, 8'd0, 8'd12, 8'd5};   // one report: x 5, y 12
-      ps2_mouse_ext = 9'd1;
+      ps2_mouse     = {1'b1, 8'd0, 8'd12, 8'd5};   // toggle, Y 0, X 12,
+      ps2_mouse_ext = 9'd1;                        // buttons 5: the word is
+                                                   // [23:16] Y, [15:8] X and
+                                                   // [2:0] the buttons
       `WAIT_GT(dut.ms_go !== 1'b1, 20000, "the mouse report never started");
       rx_byte(8'hC1);
       if (dut.ms_go !== 1'b1)

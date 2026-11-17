@@ -54,8 +54,10 @@
 //  in half - for a peer at CLKS_PER_BIT's rate (115200 at 50 MHz) or faster:
 //  the longest run a frame can hold at its idle level is nine of its own bits,
 //  and at that rate nine of their clocks is less than the ten of ours. A peer
-//  slower than that has high runs longer than the whole budget, so the switch
-//  can land inside its frame. The serialiser's pop is additionally gated with
+//  more than ~11 % slower than 115200 - below 103680 baud, where nine of its
+//  bits outlast our ten - can hold the line high longer than the whole budget,
+//  and then the switch can land inside its frame: the guarantee is for a peer
+//  at 115200 or faster. The serialiser's pop is additionally gated with
 //  chan == channel, which kills the one-clock race where the OSD item changes
 //  while a byte is being loaded: from that clock on no new byte is started, and
 //  the bytes that are already queued wait for the USB channel to own the port

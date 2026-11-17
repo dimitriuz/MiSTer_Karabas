@@ -1160,16 +1160,22 @@ module tb_uart_route;
         // high. That term is what this case is for, and the frame is chosen to
         // show it: 0xFE is start low, one low data bit, then seven ones and a
         // stop - one 3472-clock high run in the middle of a legal frame. With
-        // rx_quiet the budget can only start after the stop bit; without it
-        // the counter runs inside that high run and moves the latch 3472
-        // clocks early, in the middle of a frame.
+        // rx_quiet the budget can only start after the stop bit; without it the
+        // counter keeps running inside that high run and moves the latch 3256
+        // clocks earlier than the baseline ever can (measured by watching
+        // dut.chan with that term deleted: mutant 9893.51 us, baseline
+        // 9958.63 us, and the case's own check samples chan at 9904.25 us -
+        // 537 clocks after the mutant edge, 2719 before the baseline's, which
+        // is the window this case is written for).
         case_errors = errors;
         do_reset;
         set_channel(1);
         fork
             drive_frame(8'hFE, BIT_NS, 0.0, 1'b1);
             begin
-                repeat (2 * CPB - 100) tick;       // inside the start bit's low
+                repeat (2 * CPB - 100) tick;       // inside data bit 0: 0xFE's
+                                                   // start bit and its LSB make
+                                                   // one low run of 2 bits
                 @(negedge clk);
                 channel = 1'b0;                    // the OSD item moves now
                 if (dut.rx_state === 3'd0)         // R_IDLE: no frame, no test
