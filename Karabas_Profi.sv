@@ -60,7 +60,7 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 `include "build_id.v"
 `default_nettype none
 localparam CONF_STR = {
-	"Karabas_Profi;UART31250,MIDI;",
+	"Karabas_Profi;UART115200:31250,MIDI;",
 	"-;",
 	"P1,Video;",
 	"P1O[22:21],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
@@ -87,6 +87,7 @@ localparam CONF_STR = {
 	"T[31],Tape play/pause;",
 	"T[32],Tape previous block;",
 	"T[33],Tape next block;",
+	"O[36],Serial channel,ESP,USB;",
 	"O[12:10],Joystick L,Kempston,Sinclair1,Sinclair2,Cursor,QAOPM,QAOPS;",
 	"O[15:13],Joystick R,Sinclair1,Sinclair2,Cursor,QAOPM,QAOPS,Kempston;",
 	"O[16],DivMMC,Off,On;",
@@ -268,6 +269,35 @@ wire mcu_cs_n, mcu_sck, mcu_mosi, mcu_miso;
 wire [23:0] mcu_last_reply;   // for later stages
 wire        mcu_reply_valid;
 
+// ---------------- the USB-RS232 byte channel (stage 5) ------------------
+// uart_route hands the machine's serial bytes to/from mcu_emu's MCU link. It
+// has no receive strobe, only the byte and kg_mcu_uart's counter, so the
+// strobe is made here from a change of that counter: the clock the counter
+// moves is also the clock its usb_rx_data is new (the module writes the two
+// together), and mcu_emu latches with a nonblocking assignment in that same
+// clock. The counter it sends *to* the machine is its own (first frame idx 1),
+// so nothing here has to line up with the route's.
+// uart_reset: power-on and the async board reset only, like ps2_hid next to
+// it - a core (OSD) reset must not re-initialise a module in the middle of
+// the SPI link's handshake, and the route's channel latch restarts anyway.
+wire uart_reset = por_reset | RESET;
+
+wire [7:0] route_usb_rx_data;
+wire [7:0] route_usb_rx_idx;
+reg  [7:0] route_usb_rx_idx_q = 8'd0;
+
+always @(posedge clk_sys) begin
+    if (uart_reset) route_usb_rx_idx_q <= 8'd0;
+    else            route_usb_rx_idx_q <= route_usb_rx_idx;
+end
+
+// gated with the reset so the route's counter falling back to 0 cannot be
+// read as a received byte
+wire       mcu_uart_rx_stb  = !uart_reset && (route_usb_rx_idx != route_usb_rx_idx_q);
+wire [7:0] mcu_uart_rx_data = route_usb_rx_data;
+wire [7:0] mcu_uart_tx_data;
+wire       mcu_uart_tx_stb;
+
 mcu_emu u_mcu (
 	.clk(clk_sys),
 	.reset(por_reset),
@@ -291,6 +321,12 @@ mcu_emu u_mcu (
 	.joy0(joystick_0),
 	.joy1(joystick_1),
 
+	// the machine's USB-RS232 port as bytes (stage 5, rtl/host/uart_route.sv)
+	.uart_rx_data(mcu_uart_rx_data),
+	.uart_rx_stb(mcu_uart_rx_stb),
+	.uart_tx_data(mcu_uart_tx_data),
+	.uart_tx_stb(mcu_uart_tx_stb),
+
 	.mem_ready(mem_ready),
 	.mounts_settled(mounts_settled),
 
@@ -310,6 +346,12 @@ wire ena_cpu_o;                // profi ENA_CPU: one pulse per CPU T-state
 wire profi_reset, profi_areset, profi_kb_reset;   // buffer ports, read-only
 wire [15:0] profi_audio_l, profi_audio_r;         // AU samples, AUDIO_L/R below
 wire        midi_tx;           // profi MIDI_TX (TurboSound AY port A bit 2)
+
+// the ESP wire channel (stage 5): the machine's UART pins, wired to
+// rtl/host/uart_route.sv; esp_cts arrives but is not forwarded (no CTS path
+// into the tty), and esp_rx leaves a clk_sys register into the machine's own
+// two-flop input stage.
+wire esp_tx, esp_cts, esp_rx;
 
 wire [8:0]  rgb;
 wire        rgb_hs, rgb_vs, rgb_blank, rgb_clk, vga_clk;
@@ -384,9 +426,9 @@ profi #(
 	.ARESET(profi_areset),        // the one reset of sdram_nowait (via profi)
 	.KB_RESET(profi_kb_reset),
 
-	.UART_RX(1'b1),               // no UART, SD card, CF, tape or ADC here:
-	.UART_TX(),                   // the inputs at the profi boundary carry
-	.UART_CTS(),                  // the "no drive" level (active-high)
+	.UART_RX(esp_rx),             // the HPS line as the machine's RX (stage 5)
+	.UART_TX(esp_tx),             // the machine's wire TX, to uart_route
+	.UART_CTS(esp_cts),           // accepted, deliberately unused
 	.MA(),
 	.MD(),                        // the main memory is MiSTer's SDRAM now
 	.MWR_N(),
@@ -1080,7 +1122,8 @@ wire [6:0]  mt32_user_out;
 wire [15:0] mt32_i2s_l, mt32_i2s_r;
 wire        mt32_available;
 wire        midi_tx_to_pi;
-wire        uart_txd;
+wire        midi_line;            // mt32_mix's MidiLink line, to uart_route
+wire        uart_txd;             // the driven HPS line (uart_route's output)
 wire [15:0] mix_l, mix_r;
 wire [7:0]  mt32_mode, mt32_rom, mt32_sf;
 wire        mt32_newmode, mt32_lcd_en, mt32_lcd_pix, mt32_lcd_update;
@@ -1128,11 +1171,36 @@ mt32_mix u_mt32_mix (
 	.audio_l(mix_l),
 	.audio_r(mix_r),
 	.midi_tx_to_pi(midi_tx_to_pi),
+	.uart_txd(midi_line)
+);
+
+
+///////////////////////   SERIAL: THE HPS UART   ///////////////////////////
+
+// Stage 5: the machine's two serial channels on Main_MiSTer's /dev/ttyS1.
+// The OSD `Serial channel` item (status[36], MiSTer-side only - it is not a
+// KG soft switch, so it is not in rtl/host/osd_items.svh) picks the ESP wires
+// or the ZiFi/EVO USB byte channel; UART mode MIDI (uart_mode == 3) keeps
+// priority over both and is exactly mt32_mix's line, as before.
+uart_route u_uart_route (
+	.clk(clk_sys),
+	.reset(uart_reset),
+	.channel(status[36]),
+	.uart_mode(uart_mode),
+	.esp_tx(esp_tx),
+	.esp_cts(esp_cts),
+	.esp_rx(esp_rx),
+	.usb_tx_data(mcu_uart_tx_data),
+	.usb_tx_wr(mcu_uart_tx_stb),
+	.usb_rx_data(route_usb_rx_data),
+	.usb_rx_idx(route_usb_rx_idx),
+	.uart_rxd(UART_RXD),
+	.midi_line(midi_line),
 	.uart_txd(uart_txd)
 );
 
 assign USER_OUT = mt32_user_out;  // [1] MIDI TX, [0] SDA/RX, [6:2] held high
-assign UART_TXD = uart_txd;       // MidiLink; idle high outside UART mode 3
+assign UART_TXD = uart_txd;       // MIDI, USB bytes or the ESP wires
 
 ///////////////////////   AUDIO   //////////////////////////////////////////
 

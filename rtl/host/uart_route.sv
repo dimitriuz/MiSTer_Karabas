@@ -83,11 +83,17 @@
 //  is fed - with channel = 0 the deserialiser never runs and esp_rx carries the
 //  synchronised line, with channel = 1 esp_rx idles high and no byte is
 //  delivered.
-//  CONSUMER NOTE (task 2): this module holds ONE received byte. mcu_emu must
-//  latch usb_rx_data together with usb_rx_idx into the same CMD_UART frame it
-//  sends, even while the next frame is already arriving: the byte is overwritten
-//  CLKS_PER_BIT * 10 clocks later if it is not taken. The counter is what tells
-//  the consumer that a byte was lost.
+//  CONSUMER (task 3, the top): this module has no receive strobe - the only
+//  sign of a received byte is that usb_rx_data and usb_rx_idx moved in the
+//  same clock, and Karabas_Profi.sv turns a change of the counter into the
+//  one-clock strobe mcu_emu wants, sampling the byte in that same clock. The
+//  byte is therefore never overwritten before it is taken: the next frame
+//  cannot finish before CLKS_PER_BIT * 10 clocks after this one, and the top
+//  takes it one clock after it appears. The counter is still the record of
+//  what the line delivered, so a byte mcu_emu's queue dropped (its own
+//  full-and-consume-no-idx rule) is visible here and not there. The two
+//  counters are independent otherwise: mcu_emu counts the CMD_UART frames it
+//  sends the machine with its own (first frame idx 1).
 //
 //  Every output resets to its idle level: uart_txd and esp_rx high, tx_line
 //  high, the queue empty, usb_rx_data/usb_rx_idx zero.
