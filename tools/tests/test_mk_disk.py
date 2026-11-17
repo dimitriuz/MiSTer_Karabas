@@ -267,6 +267,26 @@ class FdiTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.img = Path(self.tmp.name) / "t.fdi"
 
+    def test_fdi_from_trd(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = Path(d) / "a.trd"
+            f = Path(d) / "a.fdi"
+            mk_disk.trd(t, files=[("boot", "B", b"x" * 300)])
+            mk_disk.fdi(f, source=t)
+            img, trd = f.read_bytes(), t.read_bytes()
+            tracks, sides, off_data, blocks = mk_disk._fdi_walk(img)
+            # cylinder 3 side 1 sector 5 is logical track 7, sector 4
+            data_off, secs = blocks[3 * 2 + 1]
+            c, h, r, n, flags, off = secs[4]
+            base = off_data + data_off + off
+            self.assertEqual((c, h, r), (3, 1, 5))
+            self.assertEqual(img[base:base + 256],
+                             trd[(7 * 16 + 4) * 256:(7 * 16 + 5) * 256])
+            # sector 9 of cylinder 0 side 0 is the TR-DOS ID sector
+            data_off, secs = blocks[0]
+            base = off_data + data_off + secs[8][5]
+            self.assertEqual(img[base + 0xE7], 0x10)
+
     def test_fdi_header(self):
         mk_disk.fdi(self.img, tracks=4)
         img = self.img.read_bytes()

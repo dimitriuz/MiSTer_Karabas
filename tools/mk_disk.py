@@ -366,7 +366,7 @@ def cpm(path, tracks=80):
     _write(path, bytearray(track * tracks))
 
 
-def fdi(path, tracks=80, sides=2, layout="trd"):
+def fdi(path, tracks=80, sides=2, layout="trd", source=None):
     """write an FDI image; its sector records really carry H = side
 
     Header: "FDI", version 0, u16 cyl, u16 sides, off_text, off_data,
@@ -377,8 +377,14 @@ def fdi(path, tracks=80, sides=2, layout="trd"):
     the track's data; sector size 128 << N). The data area from
     off_data holds only the payloads, track after track; a flags 0x40
     ("no data") sector has none. `trd`: 16 x 256. `wide`: cylinder 0
-    is 8 x 512 plus one 0x40 sector, the rest 16 x 256."""
+    is 8 x 512 plus one 0x40 sector, the rest 16 x 256. With `source` (a
+    TRD path, `trd` layout, 80 x 2 tracks) the sector payloads are the TRD's
+    bytes, so the FDI is a real TR-DOS disk (cylinder t side s sector r is
+    logical track 2t+s, sector r-1)."""
     path = Path(path)
+    src = Path(source).read_bytes() if source else None
+    if src is not None and (layout != "trd" or len(src) != tracks * sides * 4096):
+        raise ValueError("mk_disk: fdi source needs a trd layout and a full TRD")
     if layout not in ("trd", "wide"):
         raise ValueError(f"mk_disk: unknown FDI layout {layout!r}")
     blocks = []
@@ -411,6 +417,10 @@ def fdi(path, tracks=80, sides=2, layout="trd"):
             if flags & 0x40:
                 continue
             base = off_data + pos + len(track_data)
+            if src is not None:
+                o = ((c * 2 + h) * 16 + r - 1) * 256
+                track_data += src[o:o + 256]
+                continue
             track_data += bytes(((base + j) * 7 + 3) & 0xFF
                                 for j in range(128 << n))
         data += track_data
@@ -609,6 +619,7 @@ def main(argv=None):
     fd = sub.add_parser("fdi", help="write an FDI image")
     fd.add_argument("path")
     fd.add_argument("--layout", choices=("trd", "wide"), default="trd")
+    fd.add_argument("--from-trd", help="fill the sectors from a full TRD")
     rt = sub.add_parser("reftrack",
                         help="write a reference track and its sync file")
     rt.add_argument("path")
@@ -647,7 +658,7 @@ def main(argv=None):
         cpm(args.path, args.tracks)
         print(args.path)
     elif args.cmd == "fdi":
-        fdi(args.path, layout=args.layout)
+        fdi(args.path, layout=args.layout, source=args.from_trd)
         print(args.path)
     elif args.cmd == "reftrack":
         reftrack(args.path, args.track, args.side,

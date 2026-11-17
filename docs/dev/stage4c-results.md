@@ -1,8 +1,7 @@
 # Stage 4c results (the VG93 floppy controller and its drive model)
 
-The board rows come with the integration task (build 71: the drive wired into
-`Karabas_Profi.sv`, then TR-DOS on a real `.trd`). What is already proven is
-simulation, and the things a future script has to know about `hrdy_fdc` - both
+The board run is the last section (build 73, 2026-11-17). Before it, what was proven
+was simulation, and the things a future script has to know about `hrdy_fdc` - both
 measured, none of them inferred from a datasheet.
 
 ## What is in the tree
@@ -117,3 +116,76 @@ to fail, because of the six-turn search above (the bench no longer walks to an i
 cannot come while the head is unloaded, which used to add 1.3 s per command). The six combinations run at the same time and take
 **73 min of wall time** together (measured 2026-11-13). `run_all` is
 its old ≈ 50 min plus the floppy bench.
+
+## Board run (build 73, 2026-11-17)
+
+Board 192.168.1.15, menu core idle at the start (`/tmp/CORENAME` = `MENU`), `menu.rbf`
+restored at the end. `Karabas_Profi_20261117a.rbf` is build 73. One MGL per check
+(`type="s"` index 4/5 for the drive slots, `type="f"` index 1 for the FDI entry), the
+walk is `tools/board/zx.py trdos <mgl>` (GO menu, 4 Down, Enter, no typing), shots are
+the daemon's own screenshot (the HDMI capture feed was down, see "Not run").
+
+### Checks
+
+|Row|Pass condition|Result|Shot|
+|---|---|---|---|
+|TR-DOS boot, auto-run (A)|`boot` prints `trdos ok`, `saved`, report `0 OK, 40:1`|PASS|`trdos-boot-write.png`|
+|Write (A)|the card's image gains `out.C`, 256 bytes equal to `0..255`; its SHA-256 differs from the PC copy|PASS (`out.C` read back with `mk_disk.py cat`)|`trdos-boot-write.png`|
+|Drive B alone|TR-DOS starts on A, A is empty: a clean error, no hang|PASS: `Disc Error Trk 0 sec 9`|`drive-b-only-disc-error.png`|
+|Drive B write|A has a boot that selects `*"B"` and saves; the file lands on B, A's image is unchanged|PASS: `outb.C` (256 bytes) on B, A still `boot.B` only|`drive-b-write.png`|
+|Read-only (slot 4, chmod 444)|the SAVE is refused by TR-DOS, the file's SHA-256 is unchanged|PASS: `Read Only Trk 0 sec 2`, hash unchanged|`read-only-write-error.png`|
+|FDI download (F1)|a real TR-DOS FDI (`mk_disk.py fdi --from-trd`) boots and runs; a write is refused|PASS: boot ran to line 30, the SAVE hit the forced write-protect; file on the card unchanged|`fdi-boot-write-protected.png`|
+|FDI pattern disk (F1, `test.fdi`)|the download and mount do not wedge TR-DOS|PASS: shell prompt `A>`, no `boot` (the fixture has no catalog)|`fdi-pattern-disk-shell.png`|
+|CP/M image (slot 4)|TR-DOS cannot use it: a clean error, no hang|PASS: `Disc Error Trk 0 sec 9`|`cpm-disc-error.png`|
+
+### Findings (traps for the next script and the next fixture)
+
+* **The catalog entry layout in the plan, and so in `mk_disk.trd`, was wrong, and the
+  simulation could not see it.** Real TR-DOS: bytes 9-10 start/param (a B file's program
+  length), 11-12 length, 13 sector count (one byte), 14 first sector, 15 first track.
+  The fixture had track at 9 and left 15 at 0, so on the first board run TR-DOS found no
+  `boot` (`first-boot-no-catalog.png`: an empty editor, image untouched). Every bench
+  agreed with the fixture because both came from the same text. Fixed in
+  `a2488b5`: the one reference that mattered was the real ROM.
+* **Plain BASIC `SAVE` goes to the tape.** A TR-DOS command from a program is
+  `RANDOMIZE USR 15619: REM : <command>` with keyword tokens (`SAVE` f8, `CODE` af,
+  `*` for a drive) and plain digits inside the REM; `USR 15616` opens the shell and does
+  not return. `mk_disk.boot_program()` builds that line by hand because `zxtap` writes a
+  REM body as text. Typing into the `A>` shell through `zx.type_text` does not work
+  (keywords are several cells), so every check is a `boot` program.
+* The plan's "boot from B alone" cannot work: TR-DOS reads A first. The B row is a boot
+  on A that selects drive B.
+* The plan's "FDI fixture's `boot`" did not exist; `mk_disk.py fdi --from-trd` builds a
+  real one (`test_fdi_from_trd`).
+* `tools/board/mister.py` pointed at the old board address; `MISTER_HOST` now overrides it
+  (default `.15`).
+* A `chmod 444` file on the card is enough for the read-only row (Main sets the drive
+  write-protect from the mode bits). Do not append to such a file as root to "test" it:
+  that is exactly what broke the first attempt (a size that is no valid geometry shows as
+  `Disc Error`).
+* The owner's ffmpeg publisher holds `/dev/video4`, so `mister.Capture` (direct v4l2)
+  fails with "Device or resource busy" while the RTSP feed is up, and the feed itself
+  answered 404 during the run. Use `mister_shot.sh` when the feed is alive.
+
+### Not run
+
+* **Turbo 8x / Pentagon vs 48k** (plan step 8), and the **OSD row map re-read** that the
+  `TAPE_ROW = 15` guess depends on: both need the capture feed to read the OSD, which was
+  down. The simulation matrix (`tb_floppy`, six combinations) remains the evidence for the
+  speed rows.
+* **CP/M with `Disk layout = CP/M`** and booting CP/M itself: no owner-supplied system
+  image, and the layout item needs the OSD. `test.cpm` (819200 bytes) is unambiguous for
+  Auto, and TR-DOS gave a clean error on it.
+* **`.scl` mount:** no owner-supplied `.scl`; the conversion is Main's.
+* **`swap` (port `#028B` bit 3):** no TR-DOS utility sets it; the sim case `drive_b` is
+  the evidence.
+* **Format Track / Write Track:** not implemented (README limitation).
+* The drive B check was by write, not by a catalog read; `CAT 1` from a program gave
+  `C Nonsense in BASIC` and was not pursued.
+
+### Gates
+
+`python3 -m unittest discover -s tools/tests`: 118 tests OK. `tb_fdd_img` PASS after the
+catalog fix. `sim/run_all.sh` (before the fixture fix, which touches no RTL): 23 passed,
+0 failed. Build 73: exit 0, `check_timing` OK, worst setup slack +0.209 ns (`pll_hdmi`),
+77 % ALM.
