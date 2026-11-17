@@ -40,13 +40,27 @@
 // register B's DM bit last said; the bytes are bcd_clock's, which loads
 // hps_io's RTC on every RTC[64] toggle and ticks it itself in between), the
 // GS Reset / NMI / Reset trigger pulses
-// (value 1, then 0 after TRIGGER_CLKS), and one
-// CMD_NOPE poll every NOP_CLKS when idle. A report burst is never reordered:
+// (value 1, then 0 after TRIGGER_CLKS), one queued byte of the machine's
+// USB-RS232 port (uart_rx_*: one CMD_UART frame each, taken after the RTC
+// burst so it can never split a report burst), and one CMD_NOPE poll every
+// NOP_CLKS when idle. A report burst is never reordered:
 // its frames keep their protocol order even when a higher-priority source
 // runs between two of them. Replies the core shifted out
 // (rx of each frame) whose command is not NOPE go to last_reply/reply_valid
 // for the later stages; an RTC reply for register B (the CPU clearing or
 // setting BCD mode) switches the time frames between BCD and binary.
+//
+// The USB-RS232 byte channel (stage 5, uart_route at the other end): a
+// CMD_UART reply (8'hFC) whose addr is 0 is a byte the machine sent, so it
+// goes out as uart_tx_data with a one-clock uart_tx_stb; addrs 01 and 02
+// (kg_mcu_uart's dll, dlm) and 03 (the tsconf rs232 mode byte) are consumed
+// and ignored, the channel runs at the tty's speed. A byte for the machine
+// (uart_rx_stb, one clock) is queued with this module's idx counter and sent
+// as one CMD_UART frame per byte, only in the run loop and never between two
+// frames of a report burst. After reset the queue is empty - a byte pending
+// at a reset is dropped with it - and the counter starts again at 1, so the
+// first frame carries idx 1: a change for kg_mcu_uart, whose uart_rx_idx
+// resets to 0.
 `default_nettype none
 
 module mcu_emu #(
@@ -99,6 +113,14 @@ module mcu_emu #(
     output wire         spi_mosi,
     input  wire         spi_miso,
 
+    // the machine's USB-RS232 byte channel (stage 5): uart_rx_* is one byte
+    // for the machine, uart_tx_* a byte the machine sent; both are one-clock
+    // strobes in clk
+    input  wire [7:0] uart_rx_data,
+    input  wire       uart_rx_stb,
+    output reg  [7:0] uart_tx_data,
+    output reg        uart_tx_stb,
+
     output reg  [23:0]  last_reply,  // for later stages
     output reg          reply_valid
 );
@@ -114,7 +136,8 @@ localparam [7:0] C_KBD     = 8'h01,
                  C_RTC     = 8'hFA,
                  C_ISTART  = 8'hFD,
                  C_IDONE   = 8'hFE,
-                 C_NOPE    = 8'hFF;
+                 C_NOPE    = 8'hFF,
+                 C_UART    = 8'hFC;   // kg_mcu_cmds.vh CMD_UART
 
 `include "osd_items.svh"
 
@@ -126,7 +149,7 @@ localparam [4:0] A_NONE = 5'd0, A_START = 5'd1, A_SEQ = 5'd2,
                  A_SW   = 5'd6, A_KB0   = 5'd7, A_KB = 5'd8,
                  A_DONE = 5'd9, A_TRIG_ON = 5'd10, A_TRIG_OFF = 5'd11,
                  A_NOP  = 5'd12, A_RTCS = 5'd13, A_MOUSE = 5'd14,
-                 A_JOY  = 5'd15, A_RTCT = 5'd16;
+                 A_JOY  = 5'd15, A_RTCT = 5'd16, A_UART = 5'd17;
 
 reg [2:0] st;
 
@@ -340,6 +363,27 @@ reg        rt_first;             // the first RTC[64] toggle still to come
 reg        is_bcd;               // register B's DM bit: 1 = BCD
 reg [7:0]  rtc_si;               // start sequence: the RTC frame index
 
+// ---------------- the USB-RS232 byte queue ----------------
+
+// uart_rx_stb is one clock and the link owns the slot most of the time (a
+// frame is ~132 clk, and a report burst holds it for seven of them), so the
+// byte is latched here with the idx it has to carry and goes out when a slot
+// is free. Eight entries: at 115200 baud that is 0.7 ms of backlog, and a
+// frame is nine times shorter than one byte, so the queue cannot empty while
+// bytes are arriving. A byte that finds it full is DROPPED - the newest, as
+// uart_route's TX rule - and consumes no idx, so every frame that does go out
+// carries an idx different from the previous one, which is all kg_mcu_uart
+// watches.
+reg [15:0] ur_ram [0:7];      // {idx, byte}
+reg [3:0]  ur_cnt;            // entries in the queue
+reg [2:0]  ur_wr, ur_rd;
+reg [7:0]  ur_idx;            // the idx the next accepted byte gets (1 first)
+wire       ur_full   = (ur_cnt == 4'd8);
+wire       ur_empty  = (ur_cnt == 4'd0);
+wire       ur_push   = uart_rx_stb && !ur_full;
+wire [7:0] ur_head   = ur_ram[ur_rd][15:8];    // the frame's idx
+wire [7:0] ur_head_d = ur_ram[ur_rd][7:0];     // the frame's byte
+
 // ---------------- the frame arbiter ----------------
 
 integer cv, tv;                  // the arbiter's loop indices
@@ -355,6 +399,10 @@ reg [1:0]  bank_pick;
 // same edge starts from an empty accumulator, not from the deltas that are
 // already on their way
 wire ms_take = fire && faction == A_MOUSE && ms_i == 2'd0;
+
+// this edge takes the head byte out of the USB queue: the frame the arbiter
+// picked is carrying it
+wire ur_pop = fire && (faction == A_UART);
 
 always @(*) begin
     fire        = 1'b0;
@@ -463,8 +511,14 @@ always @(*) begin
                                    (rt_i == 3'd0) ? rt_now[7:0]
                                                   : rt_time[rt_i * 8 +: 8]};
                         faction = A_RTCT;
+                    end else if (!ur_empty) begin
+                        // 6. a byte for the machine's USB serial port, one
+                        //    CMD_UART (cmd, idx, data) frame; it waits behind
+                        //    every report source, so it can never split one
+                        fword   = {C_UART, ur_head, ur_head_d};
+                        faction = A_UART;
                     end else begin
-                        // 6. the triggers: a pending press first, then the
+                        // 7. the triggers: a pending press first, then the
                         //    zero of a timer that expired
                         for (tv = 0; tv <= 2; tv = tv + 1)
                             if (trig_pend[tv]) trig_target = tv;
@@ -479,7 +533,7 @@ always @(*) begin
                                 fword   = {C_SW, trig_index(trig_target), 8'h00};
                                 faction = A_TRIG_OFF;
                             end else if (nop_t >= NOP_CLKS) begin
-                                // 7. a NOP poll when the link was idle
+                                // 8. a NOP poll when the link was idle
                                 fword   = {C_NOPE, 8'h00, 8'h00};
                                 faction = A_NOP;
                             end
@@ -555,11 +609,18 @@ always @(posedge clk) begin
         bank_sent[0] <= 8'hFF;
         bank_sent[1] <= 8'hFF;
         bank_sent[2] <= 8'hFF;
+        uart_tx_data <= 8'd0;
+        uart_tx_stb  <= 1'b0;
+        ur_cnt       <= 4'd0;
+        ur_wr        <= 3'd0;
+        ur_rd        <= 3'd0;
+        ur_idx       <= 8'd1;   // kg_mcu_uart's own idx starts at 0
         for (iv = 0; iv <= 15; iv = iv + 1)
             sent_val[iv] <= 8'h00;
     end else begin
         tx_start    <= 1'b0;
         reply_valid <= 1'b0;
+        uart_tx_stb <= 1'b0;
         if (rx_valid)
             waiting <= 1'b0;
 
@@ -670,6 +731,7 @@ always @(posedge clk) begin
                 end
                 A_TRIG_OFF: trig_arm[trig_target] <= 1'b0;
                 A_NOP: ;
+                A_UART:  ;   // the byte left the queue with the ur_pop edge
                 default: ;
             endcase
         end
@@ -695,6 +757,22 @@ always @(posedge clk) begin
             byte_pend  <= 1'b1;
             ioctl_wait <= 1'b1;
         end
+
+        // a byte for the machine: the byte and its idx are latched together
+        // in this clock, whatever the link is doing (a frame in flight, a
+        // report burst going out); the entry leaves the queue with the clock
+        // its frame was fired, so the head never changes under a frame
+        if (ur_push) begin
+            ur_ram[ur_wr] <= {ur_idx, uart_rx_data};
+            ur_wr         <= (ur_wr == 3'd7) ? 3'd0 : ur_wr + 3'd1;
+            ur_idx        <= ur_idx + 8'd1;
+        end
+        if (ur_pop)
+            ur_rd <= (ur_rd == 3'd7) ? 3'd0 : ur_rd + 3'd1;
+        if (ur_push && !ur_pop)
+            ur_cnt <= ur_cnt + 4'd1;
+        else if (ur_pop && !ur_push)
+            ur_cnt <= ur_cnt - 4'd1;
 
         // input sampling, after the fire block so that a kb_changed clocked
         // together with the report's last frame arms a new report, and a
@@ -757,6 +835,18 @@ always @(posedge clk) begin
             // the CPU setting register B's DM bit: 1 = binary, 0 = BCD
             if (rx_word[23:16] == C_RTC && rx_word[15:8] == 8'h0B)
                 is_bcd <= ~rx_word[2];
+            // kg_mcu_uart's reply: addr 0 is a byte the machine sent. The
+            // dll and dlm writes (01, 02) and the tsconf rs232 mode byte (03)
+            // are consumed here and dropped - the channel runs at the tty's
+            // speed, so the divisor has no user (uart_route documents the
+            // same). A CMD_UART reply updates last_reply/reply_valid exactly
+            // as every other reply does today: no tb_mcu_emu case needed
+            // them excluded (the reply-path case's word is a CMD_KBD reply),
+            // and a consumer of last_reply sees the whole frame either way.
+            if (rx_word[23:16] == C_UART && rx_word[15:8] == 8'h00) begin
+                uart_tx_stb  <= 1'b1;
+                uart_tx_data <= rx_word[7:0];
+            end
         end
     end
 end

@@ -28,7 +28,22 @@
 //   keyboard                a kb_changed report reaches KB_STATUS/KB_DAT0;
 //   reset_trigger           osd_reset pulses register 14, and the pulse
 //                           ends after TRIGGER_CLKS;
-//   and a second download repeating the whole start sequence.
+//   and a second download repeating the whole start sequence;
+//   uart_tx_reply           a CMD_UART 00 d reply raises uart_tx_stb with d;
+//                           a reply of another command still reaches
+//                           last_reply and never raises the strobe;
+//   dll_dlm_ignored         the CMD_UART replies of addrs 01/02/03 (dll, dlm
+//                           and the tsconf rs232 mode) are consumed: no
+//                           strobe, though the frames are seen on the link;
+//   uart_rx_send            every uart_rx_stb byte becomes one CMD_UART frame
+//                           carrying its own idx, and two bytes in
+//                           consecutive clocks are both delivered in order;
+//   uart_rx_in_burst        a byte arriving during a keyboard report burst
+//                           waits for it: the seven CMD_KBD frames of the
+//                           report stay contiguous and the frame follows;
+//   uart_rx_fifo_full       ten bytes in one frame time: the queue is eight
+//                           deep, the newest byte is dropped and the earlier
+//                           ones arrive in order.
 // The last line printed is `tb_mcu_emu: PASS` or `tb_mcu_emu: FAIL <reason>`;
 // run via sim/run_tb_mcu_emu.sh (iverilog -g2012).
 `timescale 1ns / 1ps
@@ -83,6 +98,23 @@ module tb_mcu_emu;
    wire [23:0]  last_reply;
    wire         reply_valid;
 
+   // the USB-RS232 byte channel (stage 5): uart_rx_* is a byte for the
+   // machine, uart_tx_* a byte the machine sent
+   reg  [7:0]  uart_rx_data = 8'h00;
+   reg         uart_rx_stb  = 1'b0;
+   wire [7:0]  uart_tx_data;
+   wire        uart_tx_stb;
+   // the same bytes on the machine's side (kg_mcu_uart's own ports)
+   reg  [7:0]  mcu_uart_tx_data = 8'h00;
+   reg         mcu_uart_tx_wr   = 1'b0;
+   reg         mcu_uart_tx_mode = 1'b0;
+   reg  [7:0]  mcu_uart_dll = 8'h00, mcu_uart_dlm = 8'h00;
+   reg         mcu_uart_dll_wr = 1'b0, mcu_uart_dlm_wr = 1'b0;
+   wire [7:0]  MCU_UART_RX_DATA, MCU_UART_RX_IDX;
+   // dut2's strobes: only a CMD_UART 00 reply may raise them
+   wire [7:0]  uart_tx2_data;
+   wire        uart_tx2_stb;
+
    mcu_emu #(
       .TRIGGER_CLKS (2000),   // 40 us at 50 MHz
       .NOP_CLKS     (200),    // 4 us
@@ -101,6 +133,8 @@ module tb_mcu_emu;
       .mounts_settled (mounts_settled),
       .spi_cs_n (spi_cs_n), .spi_sck (spi_sck), .spi_mosi (spi_mosi),
       .spi_miso (spi_miso),
+      .uart_rx_data (uart_rx_data), .uart_rx_stb (uart_rx_stb),
+      .uart_tx_data (uart_tx_data), .uart_tx_stb (uart_tx_stb),
       .last_reply (last_reply), .reply_valid (reply_valid)
    );
 
@@ -136,9 +170,11 @@ module tb_mcu_emu;
       .JOY_L (), .JOY_R (), .BTNS (),
       .RTC_A (8'h00), .RTC_DI (8'h00), .RTC_DO (), .RTC_CS (1'b1),
       .RTC_WR_N (1'b1),
-      .UART_RX_DATA (), .UART_RX_IDX (), .UART_TX_DATA (8'h00),
-      .UART_TX_WR (1'b0), .UART_TX_MODE (1'b0), .UART_DLM (8'h00),
-      .UART_DLL (8'h00), .UART_DLM_WR (1'b0), .UART_DLL_WR (1'b0),
+      .UART_RX_DATA (MCU_UART_RX_DATA), .UART_RX_IDX (MCU_UART_RX_IDX),
+      .UART_TX_DATA (mcu_uart_tx_data), .UART_TX_WR (mcu_uart_tx_wr),
+      .UART_TX_MODE (mcu_uart_tx_mode), .UART_DLM (mcu_uart_dlm),
+      .UART_DLL (mcu_uart_dll), .UART_DLM_WR (mcu_uart_dlm_wr),
+      .UART_DLL_WR (mcu_uart_dll_wr),
       .SOFTSW_COMMAND (SOFTSW_COMMAND), .OSD_COMMAND (),
       .ROMLOADER_ACTIVE (ROMLOADER_ACTIVE), .ROMLOAD_ADDR (ROMLOAD_ADDR),
       .ROMLOAD_DATA (ROMLOAD_DATA), .ROMLOAD_WR (ROMLOAD_WR),
@@ -193,6 +229,8 @@ module tb_mcu_emu;
       .mem_ready (1'b1), .mounts_settled (1'b1),
       .spi_cs_n (cs2), .spi_sck (sck2), .spi_mosi (mosi2),
       .spi_miso (miso2),
+      .uart_rx_data (8'h00), .uart_rx_stb (1'b0),
+      .uart_tx_data (uart_tx2_data), .uart_tx_stb (uart_tx2_stb),
       .last_reply (rep2_last), .reply_valid (rep2_vld)
    );
 
@@ -209,6 +247,80 @@ module tb_mcu_emu;
       rep2_get = rep2_last;
    end
    always @(posedge cs2) cs2_cnt = cs2_cnt + 1;
+
+   // ---------------- the byte-channel probes ----------------
+
+   // every byte the emulator handed out: dut is driven by the real
+   // kg_mcu_uart in front of it, dut2 only by the stub's reply words
+   reg  [7:0]  txlog [0:31];
+   integer     ntx  = 0;
+   integer     ntx2 = 0;
+   always @(posedge clk) begin
+      if (uart_tx_stb) begin
+         if (ntx >= 32) `FAIL("uart_tx log overflow")
+         txlog[ntx] = uart_tx_data;
+         ntx = ntx + 1;
+      end
+      if (uart_tx2_stb) ntx2 = ntx2 + 1;
+   end
+
+   // every non-NOPE reply dut saw: it proves a frame a case relies on really
+   // crossed the link, so a missing frame cannot pass as an ignored one
+   reg  [23:0] rplog [0:31];
+   integer     nrp = 0;
+   always @(posedge clk) begin
+      if (reply_valid) begin
+         if (nrp >= 32) `FAIL("reply log overflow")
+         rplog[nrp] = last_reply;
+         nrp = nrp + 1;
+      end
+   end
+
+   // kg_mcu_uart's received side: one entry per change of its idx, the pair
+   // {idx, byte} it latched (both of its registers move in the same clock,
+   // and this reads the values of the previous one)
+   reg  [7:0]  urq_idx = 8'h00;
+   reg  [15:0] rxlog [0:31];
+   integer     nrx = 0;
+   always @(posedge clk_bus)
+      if (MCU_UART_RX_IDX !== urq_idx) begin
+         urq_idx = MCU_UART_RX_IDX;
+         if (nrx >= 32) `FAIL("uart_rx log overflow")
+         rxlog[nrx] = {MCU_UART_RX_IDX, MCU_UART_RX_DATA};
+         nrx = nrx + 1;
+      end
+
+   // one byte for the machine, a one-clock strobe off the sampling edge
+   task rx_byte;
+      input [7:0] b;
+      begin
+         @(negedge clk);
+         uart_rx_data = b;
+         uart_rx_stb  = 1'b1;
+         @(negedge clk);
+         uart_rx_stb  = 1'b0;
+      end
+   endtask
+
+   // two bytes in two consecutive clocks, so the second one arrives while the
+   // first is still going out
+   task rx_byte_two;
+      input [7:0] b1;
+      input [7:0] b2;
+      begin
+         @(negedge clk);
+         uart_rx_data = b1;
+         uart_rx_stb  = 1'b1;
+         @(negedge clk);
+         uart_rx_data = b2;
+         @(negedge clk);
+         uart_rx_stb  = 1'b0;
+         // the premise on the wire: with the link busy the second byte had
+         // to wait in the queue, there was no free slot to fire it in
+         if (dut.waiting !== 1'b1)
+            `FAIL("the second byte arrived with the link idle, not a test of the queue")
+      end
+   endtask
 
    // ---------------- expected ROM image (fixed LFSR) ----------------
 
@@ -486,7 +598,8 @@ module tb_mcu_emu;
 
    // ---------------- main ----------------
 
-   integer i, base, n0, mseen;
+   integer i, base, n0, mseen, rp2, rpa, rpb, f0, f1;
+   reg [15:0] wexp;
 
    initial begin
       // the image (the fixed LFSR the source plays)
@@ -694,6 +807,201 @@ module tb_mcu_emu;
       if (rep2_get !== 24'h010003)
          `FAIL("the reply word did not reach last_reply uncorrupted")
       `WAIT_GT(BUSY !== 1'b0, 5000, "BUSY stuck after the second INIT_DONE");
+
+      // ============================================================
+      // the USB-RS232 byte channel (stage 5)
+      // ============================================================
+
+      // uart_tx_reply: kg_mcu_uart builds CMD_UART 00 d from a UART_TX_WR
+      // strobe of the machine, so the frame's constants here are upstream's;
+      // the emulator hands the byte out with a one-clock strobe
+      rpa = nrp;                        // the reply log never starts empty:
+                                        // the very first frame of the run is
+                                        // answered with the reply queue's
+                                        // initial word, which is no NOPE
+      @(negedge clk);
+      dl2 = 1'b0;                       // release dut2's download: its start
+                                        // sequence ends and every frame it
+                                        // then polls is answered CMD_KBD 00 03
+      @(negedge clk_bus);
+      mcu_uart_tx_data = 8'h41;
+      mcu_uart_tx_wr   = 1'b1;
+      @(negedge clk_bus);
+      mcu_uart_tx_wr   = 1'b0;
+      `WAIT_GT(ntx < 1, 5000, "a CMD_UART 00 reply never raised uart_tx_stb");
+      if (txlog[0] !== 8'h41) begin
+         $display("tb_mcu_emu: FAIL uart_tx_data is %02h expected 41", txlog[0]);
+         $finish;
+      end
+      // the frame really was CMD_UART 00 41 on the link, which is also the
+      // premise of the case below: a CMD_UART reply reaches last_reply like
+      // every other reply does
+      `WAIT_GT(nrp < rpa + 1, 5000, "the CMD_UART reply never reached mcu_emu");
+      if (rplog[rpa] !== 24'hFC0041) begin
+         $display("tb_mcu_emu: FAIL the reply frame is %6h expected fc0041", rplog[rpa]);
+         $finish;
+      end
+      // a reply of another command still reaches last_reply and never the
+      // byte channel: the ~280 frames dut2 walked to get to its run loop and
+      // the ones it polls in it are all CMD_KBD replies
+      rp2 = rep2_cnt;
+      `WAIT_GT(rep2_cnt < rp2 + 100, 20000, "a CMD_KBD reply stream stopped reaching last_reply");
+      if (ntx2 !== 0) begin
+         $display("tb_mcu_emu: FAIL uart_tx_stb fired %0d times for CMD_KBD replies", ntx2);
+         $finish;
+      end
+
+      // dll_dlm_ignored: the divisor writes (CMD_UART 01, 02) and the tsconf
+      // rs232 mode byte (03) are consumed and ignored
+      n0 = ntx;
+      rpb = nrp;
+      @(negedge clk_bus);
+      mcu_uart_dll    = 8'h07;
+      mcu_uart_dll_wr = 1'b1;
+      @(negedge clk_bus);
+      mcu_uart_dll_wr = 1'b0;
+      `WAIT_GT(nrp < rpb + 1, 5000, "the dll frame never reached mcu_emu");
+      @(negedge clk_bus);
+      mcu_uart_dlm    = 8'h12;
+      mcu_uart_dlm_wr = 1'b1;
+      @(negedge clk_bus);
+      mcu_uart_dlm_wr = 1'b0;
+      `WAIT_GT(nrp < rpb + 2, 5000, "the dlm frame never reached mcu_emu");
+      @(negedge clk_bus);
+      mcu_uart_tx_mode = 1'b1;
+      mcu_uart_tx_data = 8'h55;
+      mcu_uart_tx_wr   = 1'b1;
+      @(negedge clk_bus);
+      mcu_uart_tx_wr   = 1'b0;
+      mcu_uart_tx_mode = 1'b0;
+      `WAIT_GT(nrp < rpb + 3, 5000, "the tsconf mode frame never reached mcu_emu");
+      if (rplog[rpb] !== 24'hFC0107 || rplog[rpb + 1] !== 24'hFC0212 ||
+          rplog[rpb + 2] !== 24'hFC0355) begin
+         $display("tb_mcu_emu: FAIL the ignored frames are %6h %6h %6h, expected fc0107 fc0212 fc0355",
+                  rplog[rpb], rplog[rpb + 1], rplog[rpb + 2]);
+         $finish;
+      end
+      #20000;                           // several frame times: a strobe for
+                                        // any of the three would be logged
+      if (ntx !== n0) begin
+         $display("tb_mcu_emu: FAIL %0d of the three ignored frames raised uart_tx_stb",
+                  ntx - n0);
+         $finish;
+      end
+
+      // uart_rx_send: every byte for the machine becomes one CMD_UART frame
+      // with the emulator's own idx - kg_mcu_uart shows it, and its
+      // uart_rx_idx resets to 0, so the first byte has to carry 1 to be seen
+      rx_byte(8'hA5);
+      rx_byte(8'h3C);
+      rx_byte(8'h77);
+      `WAIT_GT(nrx < 3, 5000, "a byte for the machine never arrived");
+      if (rxlog[0] !== 16'h01A5 || rxlog[1] !== 16'h023C ||
+          rxlog[2] !== 16'h0377) begin
+         $display("tb_mcu_emu: FAIL the machine got %4h %4h %4h, expected 01a5 023c 0377",
+                  rxlog[0], rxlog[1], rxlog[2]);
+         $finish;
+      end
+      // two bytes in consecutive clocks: both are queued, both arrive, the
+      // first one first
+      rx_byte_two(8'hD7, 8'hE8);
+      `WAIT_GT(nrx < 5, 5000, "the second of two back-to-back bytes was lost");
+      if (rxlog[3] !== 16'h04D7 || rxlog[4] !== 16'h05E8) begin
+         $display("tb_mcu_emu: FAIL the pair arrived as %4h %4h, expected 04d7 05e8",
+                  rxlog[3], rxlog[4]);
+         $finish;
+      end
+
+      // uart_rx_in_burst: a byte that arrives while a keyboard report burst
+      // is going out waits for the burst
+      n0 = nfrm;
+      @(negedge clk);
+      kb_report  = {8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h08};
+      kb_changed = 1'b1;
+      @(negedge clk);
+      kb_changed = 1'b0;
+      `WAIT_GT(dut.kb_pend !== 1'b1, 5000, "the keyboard report burst never started");
+      #1000;                              // one frame into the burst
+      @(negedge clk);
+      if (dut.kb_pend !== 1'b1)
+         `FAIL("the byte did not arrive inside the keyboard report burst")
+      uart_rx_data = 8'hB1;
+      uart_rx_stb  = 1'b1;
+      @(negedge clk);
+      uart_rx_stb  = 1'b0;
+      `WAIT_GT(KB_STATUS !== 8'h08, 60000, "the keyboard report did not arrive");
+      `WAIT_GT(nrx < 6, 5000, "the byte queued during the burst never arrived");
+      if (rxlog[5] !== 16'h06B1) begin
+         $display("tb_mcu_emu: FAIL the queued byte arrived as %4h expected 06b1", rxlog[5]);
+         $finish;
+      end
+      // the burst stayed whole: seven CMD_KBD frames in a row, and the byte's
+      // CMD_UART frame only after them
+      f0 = -1;
+      f1 = -1;
+      for (i = n0; i < nfrm; i = i + 1)
+         if (flog[i][23:16] === 8'h01 && f0 < 0) f0 = i;
+      if (f0 < 0) `FAIL("no CMD_KBD frame of the report was logged")
+      for (i = f0; i < f0 + 7; i = i + 1)
+         if (flog[i][23:16] !== 8'h01) begin
+            $display("tb_mcu_emu: FAIL frame %0d of the report is %6h, the burst was split",
+                     i - f0, flog[i]);
+            $finish;
+         end
+      for (i = f0; i < nfrm; i = i + 1)
+         if (flog[i][23:16] === 8'hFC && f1 < 0) f1 = i;
+      if (f1 < 0) `FAIL("the queued byte's CMD_UART frame never went out")
+      if (f1 <= f0 + 6)
+         `FAIL("the CMD_UART frame went out inside the report burst")
+
+      // uart_rx_fifo_full: ten bytes inside one frame time. The queue is
+      // eight deep, so the tenth - the newest - is dropped and the nine
+      // earlier ones are all delivered in order: losing the oldest instead
+      // would show as a wrong first byte, a deeper queue as a tenth delivery,
+      // a one-deep latch as a single one
+      dut.nop_t = 32'd0;      // the polls must not take the first slot: the
+                              // frame the ten bytes arrive under has to be
+                              // the queue's own first byte
+      `WAIT_GT(dut.waiting === 1'b1 || dut.ur_cnt !== 4'd0, 20000,
+               "the byte queue never went idle");
+      rx_byte(8'hA0);         // this byte is the frame the rest arrive under
+      `WAIT_GT(dut.waiting !== 1'b1, 5000, "the queue's first byte never went out");
+      for (i = 1; i < 10; i = i + 1)
+         rx_byte(8'hA0 + i);
+      if (dut.waiting !== 1'b1)
+         `FAIL("the ten bytes did not arrive inside one frame time")
+      if (dut.ur_cnt !== 4'd8) begin
+         $display("tb_mcu_emu: FAIL the queue holds %0d entries, expected 8", dut.ur_cnt);
+         $finish;
+      end
+      // nine of them reach the machine: the byte in flight plus the eight
+      // queued ones, with the idx running on from the earlier cases
+      `WAIT_GT(nrx < 15, 20000, "fewer than nine of the ten bytes arrived");
+      for (i = 0; i < 9; i = i + 1) begin
+         wexp = ((7 + i) << 8) | (8'hA0 + i);
+         if (rxlog[6 + i] !== wexp) begin
+            $display("tb_mcu_emu: FAIL byte %0d arrived as %4h expected %4h",
+                     i, rxlog[6 + i], wexp);
+            $finish;
+         end
+      end
+      // and nothing else follows: the dropped byte is gone
+      `WAIT_GT(dut.waiting === 1'b1 || dut.ur_cnt !== 4'd0, 20000,
+               "the byte queue never drained");
+      #20000;
+      if (nrx !== 15) begin
+         $display("tb_mcu_emu: FAIL %0d of the ten bytes arrived, expected 9", nrx - 6);
+         $finish;
+      end
+      // the queue still works after a drop, and the dropped byte consumed no
+      // idx: the next byte carries the next one
+      rx_byte(8'hB0);
+      `WAIT_GT(nrx < 16, 5000, "the queue stopped delivering after a byte was dropped");
+      if (rxlog[15] !== 16'h10B0) begin
+         $display("tb_mcu_emu: FAIL the byte after the drop arrived as %4h expected 10b0",
+                  rxlog[15]);
+         $finish;
+      end
 
       $display("tb_mcu_emu: PASS");
       $finish;
