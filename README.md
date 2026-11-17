@@ -151,13 +151,18 @@ is MiSTer-side only - the machine never hears about it.
   **115200**, the standard ZiFi rate. The tty speed is still Main's, so
   `Baud` has to say 115200.
 
-For a plain byte pipe pick any `UART mode` but `MIDI`: `Console` puts a serial
-console on the port, `None` leaves it to whatever program on the Linux side
-opens `/dev/ttyS1`. Main sets the port to the speed shown under `Baud` (and
-writes it to `/tmp/UART_SPEED`); the core only ever looks at the mode number to
-recognise `MIDI`. MIDI keeps priority over both channels and is exactly what it
-was before stage 5: it takes the line immediately, mid-byte as well, and while
-it owns it the two channels neither send nor receive.
+The `UART mode` submenu is Main's fixed list - `config_uart_msg` in
+`menu.cpp`: `None`, `PPP`, `Console`, `MIDI`, `Modem`, and `UDP`/`SNI` only
+when one of those is already running. For a byte pipe use `None`, the one mode
+that leaves the line raw: `PPP` and `Console` give the port to a daemon
+(MiSTer's docs: "Linux OS runs PPP or Console daemon on this connection"),
+`MIDI` is this core's MidiLink, and `Modem`/`UDP`/`SNI` are MiSTer's own
+tunnels, started by Main's `uartmode` script. Main sets the port to the speed
+shown under `Baud` (and writes it to `/tmp/UART_SPEED`); the core only ever
+looks at the mode number to recognise `MIDI`. MIDI keeps priority over both
+channels and is exactly what it was before stage 5: it takes the line
+immediately, mid-byte as well, and while it owns it the two channels neither
+send nor receive.
 
 `CONF_STR` declares `UART115200:31250,MIDI`. The two numbers are what the
 `Baud` submenu offers the non-MIDI connections (115200 as the default, 31250
@@ -180,6 +185,9 @@ Limits worth knowing (the first four are cases of `sim/tb_uart_route.sv`):
 - `mcu_emu` consumes the ZiFi path's `dll`/`dlm` divisor writes and ignores
   them, so the USB channel is always 115200. Whether ZiFi software needs a
   honoured divisor is a board question, open with stage 5.
+- on the board, still unverified: the **first** byte a ZiFi program sends lands
+  in an empty queue and has to start the sender itself. `sim/tb_mcu_emu.sv`
+  covers that hand-over, the real ROM's first write has not been watched yet.
 
 ## Tape
 

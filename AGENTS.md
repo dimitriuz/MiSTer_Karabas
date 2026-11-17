@@ -29,11 +29,11 @@ Instructions for agents (and humans) changing this repository. Read these with:
 
 | What | Command | Notes |
 |---|---|---|
-| Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (74 as of 2026-11-17). |
+| Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (75 as of 2026-11-17). |
 | Revert the qsf | `git checkout -- Karabas_Profi.qsf` | Quartus rewrites `LAST_QUARTUS_VERSION` on every compile. |
 | Simulations | `tools/sim.sh sim/run_tb_*.sh` | Runs in image `karabas-sim:1` (repo at `/work`). Every testbench prints exactly one final `<tb>: PASS` / `<tb>: FAIL <reason>` and exits non-zero on failure. |
 | All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 24 today, one per `sim/run_tb_*.sh`). |
-| Python tests | `python3 -m unittest discover -s tools/tests` | 117 tests. `tests/` holds only the `.bas` sources for the tape fixtures — there are no python tests there. |
+| Python tests | `python3 -m unittest discover -s tools/tests` | 121 tests. `tests/` holds only the `.bas` sources for the tape fixtures — there are no python tests there. |
 | Upstream gates | `tools/check_upstream.sh`, `tools/elab_upstream.sh` | Tripwire for files we replace, and elaboration of the rewritten upstream. |
 
 Simulation runtimes, so a long run is not mistaken for a hang:
@@ -104,8 +104,9 @@ instead of trusting the counter.
 
 Why it is written down: the remote daemon **drops about one press in five and can deliver a
 press seconds late**, so every step holds keys 0.3 s (`Remote.press`, not `key`'s 45 ms `tap`)
-and verifies the effect — `read_bar()` for the OSD (`(top - 174)/16` on the 960×540 grid, 10
-= `Tape play/pause`), `text_cells()` for typing, a saved screenshot for everything else.
+and verifies the effect — `read_bar()` for the OSD (`(top - 174)/16` on the
+960×540 grid, and on the build that is loaded row 15 = `Tape play/pause` since
+build 74), `text_cells()` for typing, a saved screenshot for everything else.
 Never "I sent it, therefore it happened".
 
 - Menu arrows and OSD steps come from the **gamepad** (the keyboard path drops repeats above
