@@ -103,6 +103,13 @@ module tb_mcu_input;
       .mounts_settled (mounts_settled),
       .spi_cs_n (spi_cs_n), .spi_sck (spi_sck), .spi_mosi (spi_mosi),
       .spi_miso (spi_miso),
+      // the USB-RS232 byte channel of stage 5 has no byte in either direction
+      // in this bench: it drives the ROM download and the input sources, and
+      // the queue, its drop rule and the arbiter's priorities are the cases of
+      // tb_mcu_emu. Tied explicitly, so that the next port added to mcu_emu is
+      // a visible omission here rather than an implicit one
+      .uart_rx_data (8'h00), .uart_rx_stb (1'b0),
+      .uart_tx_data (), .uart_tx_stb (),
       .last_reply (last_reply), .reply_valid (reply_valid)
    );
 

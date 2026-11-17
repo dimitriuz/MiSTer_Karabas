@@ -43,7 +43,17 @@
 //                           report stay contiguous and the frame follows;
 //   uart_rx_fifo_full       ten bytes in one frame time: the queue is eight
 //                           deep, the newest byte is dropped and the earlier
-//                           ones arrive in order.
+//                           ones arrive in order;
+//   uart_interleaves_mouse_burst, uart_interleaves_joy_burst,
+//   uart_interleaves_rtc_burst
+//                           a byte arriving in the middle of a mouse,
+//                           joystick or RTC report burst waits for it: the
+//                           burst's frames stay contiguous and the CMD_UART
+//                           frame follows the last one;
+//   uart_rx_push_with_freeing_pop
+//                           a byte arriving in the clock a FULL queue gives
+//                           up its head is accepted, not dropped: the slot
+//                           is free before the next arbiter decision.
 // The last line printed is `tb_mcu_emu: PASS` or `tb_mcu_emu: FAIL <reason>`;
 // run via sim/run_tb_mcu_emu.sh (iverilog -g2012).
 `timescale 1ns / 1ps
@@ -115,6 +125,17 @@ module tb_mcu_emu;
    wire [7:0]  uart_tx2_data;
    wire        uart_tx2_stb;
 
+   // one byte presented exactly in the clock the queue frees a slot: ur_pop
+   // is the DUT's own pop strobe - combinational in the cycle that ends at
+   // the posedge where the head byte leaves - so a strobe driven from it
+   // lands in that same clock. That is the only way to put a byte into a full
+   // queue at the moment its head is taken (uart_rx_push_with_freeing_pop).
+   reg         inj_arm  = 1'b0;
+   reg  [7:0]  inj_data = 8'h00;
+   wire        inj_stb  = inj_arm && dut.ur_pop;
+   integer     inj_cnt  = 0;      // injections that happened
+   integer     inj_full = 0;      // of those, the ones on a full queue
+
    mcu_emu #(
       .TRIGGER_CLKS (2000),   // 40 us at 50 MHz
       .NOP_CLKS     (200),    // 4 us
@@ -133,10 +154,21 @@ module tb_mcu_emu;
       .mounts_settled (mounts_settled),
       .spi_cs_n (spi_cs_n), .spi_sck (spi_sck), .spi_mosi (spi_mosi),
       .spi_miso (spi_miso),
-      .uart_rx_data (uart_rx_data), .uart_rx_stb (uart_rx_stb),
+      .uart_rx_data (uart_rx_stb ? uart_rx_data : inj_data),
+      .uart_rx_stb  (uart_rx_stb | inj_stb),
       .uart_tx_data (uart_tx_data), .uart_tx_stb (uart_tx_stb),
       .last_reply (last_reply), .reply_valid (reply_valid)
    );
+
+   // the injection is one byte, and the case's premise is that it landed on a
+   // full queue: without that clock the test would only prove that a byte with
+   // free room is accepted, which uart_rx_send already shows
+   always @(posedge clk)
+      if (inj_stb) begin
+         inj_arm <= 1'b0;
+         inj_cnt = inj_cnt + 1;
+         if (dut.ur_cnt === 4'd8) inj_full = inj_full + 1;
+      end
 
    // ---------------- kg_mcu, profi.vhd U7 ----------------
 
@@ -319,6 +351,35 @@ module tb_mcu_emu;
          // to wait in the queue, there was no free slot to fire it in
          if (dut.waiting !== 1'b1)
             `FAIL("the second byte arrived with the link idle, not a test of the queue")
+      end
+   endtask
+
+   // the burst check of the three report sources: `n` frames of command `cmd`
+   // in one uninterrupted run, and the CMD_UART frame of the byte that arrived
+   // during them only after the burst's last frame. `base` is the frame index
+   // the burst was started from, so a frame of an earlier case can never be
+   // mistaken for the burst's first frame
+   task burst_after_byte;
+      input [7:0]   cmd;
+      input integer n;
+      input integer base;
+      integer k, fb, fu;
+      begin
+         fb = -1;
+         fu = -1;
+         for (k = base; k < nfrm && fb < 0; k = k + 1)
+            if (flog[k][23:16] === cmd) fb = k;
+         if (fb < 0) `FAIL("no frame of the burst was logged")
+         for (k = fb; k < fb + n; k = k + 1)
+            if (k >= nfrm)
+               `FAIL("the burst ended before all its frames went out")
+            else if (flog[k][23:16] !== cmd)
+               `FAIL("a frame of the report burst was split by another command")
+         for (k = fb; k < nfrm; k = k + 1)
+            if (flog[k][23:16] === 8'hFC && fu < 0) fu = k;
+         if (fu < 0) `FAIL("the queued byte's CMD_UART frame never went out")
+         if (fu < fb + n)
+            `FAIL("the queued byte's frame went out inside the report burst")
       end
    endtask
 
@@ -598,8 +659,9 @@ module tb_mcu_emu;
 
    // ---------------- main ----------------
 
-   integer i, base, n0, mseen, rp2, rpa, rpb, f0, f1;
+   integer i, base, n0, mseen, rp2, rpa, rpb, f0, f1, jj;
    reg [15:0] wexp;
+   reg [7:0]  bexp;
 
    initial begin
       // the image (the fixed LFSR the source plays)
@@ -959,13 +1021,18 @@ module tb_mcu_emu;
       // earlier ones are all delivered in order: losing the oldest instead
       // would show as a wrong first byte, a deeper queue as a tenth delivery,
       // a one-deep latch as a single one
-      dut.nop_t = 32'd0;      // the polls must not take the first slot: the
-                              // frame the ten bytes arrive under has to be
-                              // the queue's own first byte
       `WAIT_GT(dut.waiting === 1'b1 || dut.ur_cnt !== 4'd0, 20000,
                "the byte queue never went idle");
+      // No write into the DUT to keep the polls out of the first slot: the
+      // arbiter already puts a queued byte before a poll, so the frame whose
+      // shift register holds this byte's own word *is* the frame the rest
+      // arrive under - wait for it on the DUT's busy flag, bounded by clock
+      // edges. A poll that won the slot first only makes the wait longer.
+      // (this case's bytes carry idx 0x07.., the frames of the earlier cases
+      // used 0x01..0x06, so the first frame to watch for is FC 07 A0)
       rx_byte(8'hA0);         // this byte is the frame the rest arrive under
-      `WAIT_GT(dut.waiting !== 1'b1, 5000, "the queue's first byte never went out");
+      `WAIT_GT(!(dut.waiting === 1'b1 && dut.tx_word === 24'hFC07A0), 5000,
+               "the queue's first byte never got its frame");
       for (i = 1; i < 10; i = i + 1)
          rx_byte(8'hA0 + i);
       if (dut.waiting !== 1'b1)
@@ -1000,6 +1067,128 @@ module tb_mcu_emu;
       if (rxlog[15] !== 16'h10B0) begin
          $display("tb_mcu_emu: FAIL the byte after the drop arrived as %4h expected 10b0",
                   rxlog[15]);
+         $finish;
+      end
+
+      // --------------------------------------------------------------
+      // uart_interleaves_mouse_burst: the four-frame CMD_MOUSE report is one
+      // burst, and a byte that arrives while it is going out is delivered
+      // after its last frame. uart_rx_in_burst shows this for the keyboard
+      // source; the mouse's branch sits directly above the queue's, so this
+      // is the case that proves the queue waits behind it.
+      // (idx 0x11.. were the bytes above; ps2_mouse_ext is wheel + buttons)
+      n0 = nfrm;
+      ps2_mouse     = {1'b1, 8'd0, 8'd12, 8'd5};   // one report: x 5, y 12
+      ps2_mouse_ext = 9'd1;
+      `WAIT_GT(dut.ms_go !== 1'b1, 20000, "the mouse report never started");
+      rx_byte(8'hC1);
+      if (dut.ms_go !== 1'b1)
+         `FAIL("the byte arrived after the mouse burst, not during it")
+      `WAIT_GT(dut.ur_cnt !== 4'd0 || dut.waiting === 1'b1, 300,
+               "the byte queued during the mouse burst never went out");
+      burst_after_byte(8'h02, 4, n0);
+      if (nrx !== 17) begin
+         $display("tb_mcu_emu: FAIL the mouse case leaves %0d bytes delivered, expected 17", nrx);
+         $finish;
+      end
+      if (rxlog[16] !== 16'h11C1) begin
+         $display("tb_mcu_emu: FAIL the byte of the mouse case arrived as %4h expected 11c1", rxlog[16]);
+         $finish;
+      end
+
+      // --------------------------------------------------------------
+      // uart_interleaves_joy_burst: the same for the four-frame CMD_JOY
+      // report (the joystick branch, right below the mouse's)
+      n0 = nfrm;
+      joy0 = 17'h1FFFF;         // stick connected, every button pressed
+      `WAIT_GT(dut.jy_go !== 1'b1, 20000, "the joystick report never started");
+      rx_byte(8'hC2);
+      if (dut.jy_go !== 1'b1)
+         `FAIL("the byte arrived after the joystick burst, not during it")
+      `WAIT_GT(dut.ur_cnt !== 4'd0 || dut.waiting === 1'b1, 300,
+               "the byte queued during the joystick burst never went out");
+      burst_after_byte(8'h03, 4, n0);
+      if (nrx !== 18) begin
+         $display("tb_mcu_emu: FAIL the joystick case leaves %0d bytes delivered, expected 18", nrx);
+         $finish;
+      end
+      if (rxlog[17] !== 16'h12C2) begin
+         $display("tb_mcu_emu: FAIL the byte of the joystick case arrived as %4h expected 12c2", rxlog[17]);
+         $finish;
+      end
+
+      // --------------------------------------------------------------
+      // uart_interleaves_rtc_burst: the seven-frame CMD_RTC refresh that
+      // follows the first toggle of RTC[64] (an HPS time update). The longest
+      // burst of the three, and the branch closest above the queue's; the DUT
+      // fires it on the first toggle only, so this is the one case that uses
+      // it (the periodic one is RTC_CLKS, beyond this run)
+      n0 = nfrm;
+      rtc = {1'b1, rtc[63:0]};
+      `WAIT_GT(dut.rt_go !== 1'b1, 20000, "the RTC refresh never started");
+      rx_byte(8'hC3);
+      if (dut.rt_go !== 1'b1)
+         `FAIL("the byte arrived after the RTC burst, not during it")
+      `WAIT_GT(dut.ur_cnt !== 4'd0 || dut.waiting === 1'b1, 300,
+               "the byte queued during the RTC burst never went out");
+      burst_after_byte(8'hFA, 7, n0);
+      if (nrx !== 19) begin
+         $display("tb_mcu_emu: FAIL the RTC case leaves %0d bytes delivered, expected 19", nrx);
+         $finish;
+      end
+      if (rxlog[18] !== 16'h13C3) begin
+         $display("tb_mcu_emu: FAIL the byte of the RTC case arrived as %4h expected 13c3", rxlog[18]);
+         $finish;
+      end
+
+      // --------------------------------------------------------------
+      // uart_rx_push_with_freeing_pop: a byte that arrives in the very clock a
+      // FULL queue gives up its head has a slot waiting for it before the next
+      // arbiter decision, so it is accepted - the queue stays in order and the
+      // byte joins its tail. Filling to eight works as in uart_rx_fifo_full;
+      // the tenth byte is the injection, armed to fire on the next pop - the
+      // clock in which the frame carrying the first fill byte takes its head,
+      // with all eight slots full. With the drop-everything-while-full rule
+      // it disappears: nine of the ten arrive, and the case waits for a tenth
+      // that never comes
+      rx_byte(8'hC0);            // the byte whose frame the rest arrive under
+      // (this byte's idx is 0x14: the frames of the earlier cases used
+      // 0x01..0x13, so this is the word to see in the shift register)
+      `WAIT_GT(!(dut.waiting === 1'b1 && dut.tx_word === 24'hFC14C0), 300,
+               "the first byte of the pop case never got its frame");
+      inj_arm  = 1'b1;           // armed for the pop that ends this frame
+      inj_data = 8'hC4;
+      for (jj = 1; jj <= 8; jj = jj + 1)
+         rx_byte(8'hC0 + ((jj >= 4) ? (jj + 1) : jj));   // C1 C2 C3 C5 .. C9
+      // the premise on the wire: still inside the frame, queue full, so the
+      // armed byte can only land on the pop clock
+      if (dut.waiting !== 1'b1 || dut.ur_cnt !== 4'd8) begin
+         $display("tb_mcu_emu: FAIL before the injection the link is busy %b and the queue holds %0d entries, expected busy and 8", dut.waiting, dut.ur_cnt);
+         $finish;
+      end
+      `WAIT_GT(dut.ur_cnt !== 4'd0 || dut.waiting === 1'b1, 300,
+               "the bytes of the pop case never all went out");
+      if (inj_cnt !== 1 || inj_full !== 1) begin
+         $display("tb_mcu_emu: FAIL the injection happened %0d times (%0d on a full queue), expected 1 and 1", inj_cnt, inj_full);
+         $finish;
+      end
+      // all ten arrive, in the queue's order, the injected one last, and no
+      // idx is used twice
+      `WAIT_GT(nrx < 29, 300, "a byte of the pop case was lost");
+      for (jj = 0; jj < 10; jj = jj + 1) begin
+         if (jj == 9)              bexp = 8'hC4;   // the injected byte
+         else if (jj >= 4)         bexp = 8'hC0 + jj + 1;
+         else                      bexp = 8'hC0 + jj;
+         wexp = ((16'h14 + jj) << 8) | bexp;
+         if (rxlog[19 + jj] !== wexp) begin
+            $display("tb_mcu_emu: FAIL pop-case byte %0d arrived as %4h expected %4h",
+                     jj, rxlog[19 + jj], wexp);
+            $finish;
+         end
+      end
+      if (nrx !== 29) begin
+         $display("tb_mcu_emu: FAIL the pop case delivered %0d bytes, expected 10",
+                  nrx - 19);
          $finish;
       end
 

@@ -58,9 +58,33 @@
 // (uart_rx_stb, one clock) is queued with this module's idx counter and sent
 // as one CMD_UART frame per byte, only in the run loop and never between two
 // frames of a report burst. After reset the queue is empty - a byte pending
-// at a reset is dropped with it - and the counter starts again at 1, so the
-// first frame carries idx 1: a change for kg_mcu_uart, whose uart_rx_idx
-// resets to 0.
+// at a reset is dropped with it - and the counter starts again at 1.
+//
+// Why starting at 1 cannot be mistaken for a byte the machine already read,
+// nor skip one, across a reset (checked against upstream, which is not edited
+// here):
+//   - modules/rtl/mcu/kg_mcu_uart.v:23,39-43 - uart_rx_idx has no reset at
+//     all: an initial value of 0 and an assignment from rx_addr on a CMD_UART
+//     frame. A core reset (the machine's RESET, the OSD Reset item, a NMI)
+//     leaves it where it is.
+//   - src/rtl/uart/zifi_usb.vhd:141,254-263 - the watcher,
+//     prev_usb_uart_rx_idx, is likewise only an initial value of zero: the
+//     process that compares it is sensitive to CLK alone, and RESET - which
+//     that file's other processes do use (271, 359) - never touches it. Its RX
+//     FIFO is cleared by a CPU command (rs232_fifo_rx_clr_req), not by RESET
+//     either.
+//   So after any core reset the machine still compares against the last idx it
+//   took and this counter keeps running with it: every accepted byte carries an
+//   idx different from the previous one (a dropped byte consumes none), so it
+//   is always taken; and a byte still queued across a reset is a byte the
+//   machine never received, so delivering it afterwards is right and not a
+//   phantom. The only thing that zeroes the machine's side is the configuration
+//   of the FPGA, and this module's reset (por_reset in the top) is asserted
+//   exactly then - so the two start aligned at 0 and 1 and never drift apart.
+//   The bench proves the taking, not just the sending: its receive log watches
+//   the real upstream kg_mcu_uart's own MCU_UART_RX_IDX/RX_DATA pair, so every
+//   frame in tb_mcu_emu.sv (uart_rx_send and the four cases appended after it)
+//   is only logged once the machine's own idx comparison has accepted it.
 `default_nettype none
 
 module mcu_emu #(
@@ -380,7 +404,13 @@ reg [2:0]  ur_wr, ur_rd;
 reg [7:0]  ur_idx;            // the idx the next accepted byte gets (1 first)
 wire       ur_full   = (ur_cnt == 4'd8);
 wire       ur_empty  = (ur_cnt == 4'd0);
-wire       ur_push   = uart_rx_stb && !ur_full;
+// A full queue still takes a byte when this very clock pops the head: the
+// frame being fired reads ur_ram[ur_rd] combinationally, so it carries the old
+// byte, and the write lands in the slot that just emptied (full means
+// ur_wr == ur_rd) in time for the arbiter's next decision. Refusing the byte
+// there loses one on every full-with-pop clock of a saturated link;
+// uart_rx_push_with_freeing_pop in tb_mcu_emu.sv watches exactly that byte.
+wire       ur_push   = uart_rx_stb && (!ur_full || ur_pop);
 wire [7:0] ur_head   = ur_ram[ur_rd][15:8];    // the frame's idx
 wire [7:0] ur_head_d = ur_ram[ur_rd][7:0];     // the frame's byte
 

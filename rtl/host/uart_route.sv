@@ -79,10 +79,13 @@
 //  frame waits for the line to come back high (R_WAIT) before looking for
 //  another start bit - a break or a stream of bad frames is never counted and
 //  never re-triggers a phantom start in the middle of it. usb_rx_idx is
-//  kg_mcu_uart's counter: +1 on every byte accepted. Only the selected channel
-//  is fed - with channel = 0 the deserialiser never runs and esp_rx carries the
-//  synchronised line, with channel = 1 esp_rx idles high and no byte is
-//  delivered.
+//  kg_mcu_uart's counter: +1 on every byte accepted. Only the channel that
+//  owns the port is fed, and ownership is `usb_own` - the latched `chan`, no
+//  MidiLink, and no channel change waiting for an idle line - so while the ESP
+//  channel owns it the deserialiser never runs and esp_rx carries the
+//  synchronised line, and while the USB channel owns it esp_rx idles high and
+//  no byte is delivered; in the clocks a switch is in flight neither side is
+//  fed, which is what tb_uart_route's usb_quiet_in_esp case pins.
 //  CONSUMER (task 3, the top): this module has no receive strobe - the only
 //  sign of a received byte is that usb_rx_data and usb_rx_idx moved in the
 //  same clock, and Karabas_Profi.sv turns a change of the counter into the
@@ -96,7 +99,11 @@
 //  sends the machine with its own (first frame idx 1).
 //
 //  Every output resets to its idle level: uart_txd and esp_rx high, tx_line
-//  high, the queue empty, usb_rx_data/usb_rx_idx zero.
+//  high, the queue empty, usb_rx_data/usb_rx_idx zero. The channel latch
+//  (`chan`, see the mux below) resets to 0, so a core that has just been
+//  configured owns the line with the ESP wires; MidiLink is not part of that
+//  latch at all - `uart_mode == 3` goes straight to the mux, in the clock it
+//  appears, which is why no reset of `chan` is needed for MIDI priority.
 //
 //============================================================================
 `default_nettype none
@@ -139,7 +146,11 @@ localparam [PTR_BITS:0] DEPTH_W = DEPTH;
 
 reg esp_s1 = 1'b1, esp_s2 = 1'b1;                 // UART_TX: stage 1 -> stage 2
 reg rx_s1 = 1'b1, rx_s2 = 1'b1, rx_s3 = 1'b1, rx_s4 = 1'b1;
-// the vote is over taps 2..4 only: rx_s1 is never read by anything but rx_s2
+// the vote is over taps 2..4 only: rx_s1 is never read by anything but rx_s2,
+// so a level has to hold two synchroniser clocks to be seen at all - the filter
+// rejects a one-clock glitch (tb_uart_route's rx_noise), and anything longer
+// than two clocks does reach rxd_f: it is the mid-bit confirmation that throws
+// a short low pulse away (rx_bad_frame's fake start bit), not the vote
 wire rxd_f = (rx_s4 & rx_s3) | (rx_s4 & rx_s2) | (rx_s3 & rx_s2);
 
 always @(posedge clk) begin

@@ -96,6 +96,10 @@
 //   rx_noise         a one-clock glitch on uart_rxd, at varying phases, is
 //                    rejected by the majority-of-3 filter: esp_rx never blips,
 //                    no frame starts, and the next good frame still arrives.
+//                    One clock is all this filter rejects: a low of two
+//                    synchroniser clocks or more does reach rxd_f, and what
+//                    keeps such a pulse from becoming a byte is the mid-bit
+//                    confirmation, which rx_bad_frame tests by itself.
 //   usb_quiet_in_esp bytes pushed while the ESP channel owns the port are lost
 //                    at the input: they never frame, not even later.
 //   uart_loop        the ZXUNO uart (upstream/.../uart/uart.v) on its own
