@@ -32,7 +32,7 @@ Instructions for agents (and humans) changing this repository. Read these with:
 | Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (75 as of 2026-11-17: worst setup slack **+0.244 ns** on `clk_mem112`, 74 had +0.292). |
 | Revert the qsf | `git checkout -- Karabas_Profi.qsf` | Quartus rewrites `LAST_QUARTUS_VERSION` on every compile. |
 | Simulations | `tools/sim.sh sim/run_tb_*.sh` | Runs in image `karabas-sim:1` (repo at `/work`). Every testbench prints exactly one final `<tb>: PASS` / `<tb>: FAIL <reason>` and exits non-zero on failure. |
-| All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 24 today, one per `sim/run_tb_*.sh`). |
+| All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 25 today, one per `sim/run_tb_*.sh`). |
 | Python tests | `python3 -m unittest discover -s tools/tests` | 121 tests. `tests/` holds only the `.bas` sources for the tape fixtures — there are no python tests there. |
 | Upstream gates | `tools/check_upstream.sh`, `tools/elab_upstream.sh` | Tripwire for files we replace, and elaboration of the rewritten upstream. |
 
@@ -105,22 +105,27 @@ instead of trusting the counter.
 Why it is written down: the remote daemon **drops about one press in five and can deliver a
 press seconds late**, so every step holds keys 0.3 s (`Remote.press`, not `key`'s 45 ms `tap`)
 and verifies the effect — `read_bar()` for the OSD (`(top - 174)/16` on the
-960×540 grid, and on the build that is loaded row 15 = `Tape play/pause` since
-build 74), `text_cells()` for typing, a saved screenshot for everything else.
+960×540 grid, and on the build that is loaded row 9 = `Tape play/pause` since
+build 77, counted from the first item), `text_cells()` for typing, a saved screenshot for everything else.
 Never "I sent it, therefore it happened".
 
 - Menu arrows and OSD steps come from the **gamepad** (the keyboard path drops repeats above
   turbo 1x); activations are a keyboard `Enter`, including OSD trigger items.
 - OSD: the gamepad's `home` (`BTN_MODE`) toggles it; `KEY_HOME`/`KEY_F12` stopped working
-  after a `cold_reboot`. The cursor starts on `Video` on a fresh core load, and `Up` on
-  `Video` wraps to the bottom of the page. Count `Down` presses on the **build that is
-  loaded**: rows change with CONF_STR. **Build 74+ (serial channel)**: 8 `IDE 0`,
-  9 `IDE 1`, 10 `Floppy A`, 11 `Floppy B`, 12 `Floppy A FDI`, 13 `Floppy B FDI`,
-  14 `Disk layout`, 15 `Tape play/pause`, 16 previous block, 17 next block,
-  18 `Serial channel`, 19 `Joystick L`; build 73 (floppy slots, no serial row):
-  the same down to 18 `Joystick L`; builds 54-72:
-  10 `Tape play/pause`, 11 previous block, 12 next block, 13 `Joystick L`; builds 39-47
-  (no storage rows): 8 `Tape play/pause`. Group headers (`Video`, `MT32-pi`) are one row
+  after a `cold_reboot`. The cursor starts on the first item on a fresh core load (`IDE 0` since
+  build 77, `Video` before it), and `Up` on the first item wraps to the bottom of the page.
+  Count `Down` presses on the **build that is loaded**: rows change with CONF_STR. **Build
+  77+ (images first, then settings by type)**: 0 `IDE 0`, 1 `IDE 1`, 2 `SD Card`,
+  3 `Floppy A`, 4 `Floppy B`, 5 `Floppy A FDI`, 6 `Floppy B FDI`, 7 `Disk layout`,
+  8 `Tape`, 9 `Tape play/pause`, 10 previous block, 11 next block, 12 `ROM Bank`,
+  13 `Mode`, 14 `Turbo`, 15 `DivMMC`, 16 `Pause`, 17 `Joystick L`, 18 `Joystick R`,
+  19 `Keyboard`, 20 `PSG Mix`, 21 `Covox`, 22 `MT32-pi`, 23 `Video`, 24 `Serial channel`,
+  25 `GS Reset`, 26 `NMI`, 27 `Reset` (the pixel arithmetic `(top - 174)/16` has not been
+  re-measured on this layout: read the bar off a capture first). Builds 74-76 counted from
+  `Video`: 8 `IDE 0`, 9 `IDE 1`, 10-13 the floppies and FDI entries, 14 `Disk layout`,
+  15 `Tape play/pause`, 18 `Serial channel`, 19 `Joystick L`; build 73 had no serial row;
+  builds 54-72: 10 `Tape play/pause`, 11 previous block, 12 next block, 13 `Joystick L`;
+  builds 39-47 (no storage rows): 8 `Tape play/pause`. Group headers (`Video`, `MT32-pi`) are one row
   each and open inline; the blank line between pages is not selectable. Never `Enter` a
   file row (`Tape`, `SD Card`, `IDE 0/1`, `Floppy A/B`, the FDI entries):
   it opens the OSD's file browser and the OSD is hard to bring back to a known state.

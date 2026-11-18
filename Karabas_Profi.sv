@@ -61,39 +61,45 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 `default_nettype none
 localparam CONF_STR = {
 	"Karabas_Profi;UART115200:31250,MIDI;",
-	"-;",
-	"P1,Video;",
-	"P1O[22:21],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
-	"P1O[25:23],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
-	"P1O[7],VSync,50 Hz,60 Hz;",
-	"P2,MT32-pi;",
-	"P2O[27],Use MT32-pi,Yes,No;",
-	"P2O[28],Synth,Munt,FluidSynth;",
-	"P2O[30:29],Munt ROM,MT-32 v1,MT-32 v2,CM-32L;",
-	"-;",
-	"O[2:1],ROM Bank,ROMain,PQ-DOS,FDImage,FATALL;",
-	"O[9:8],Turbo,Off,2x,4x,8x;",
-	"O[6:4],PSG Mix,AY ACB,AY Mono,YM ABC,YM ACB,YM Mono,AY ABC;",
-	"O[3],Covox,On,Off;",
-	"S0,TAPTZXCSW,Tape;",
-	"S1,VHD,SD Card;",
 	"S2,HDFIMGVHD,IDE 0;",
 	"S3,HDFIMGVHD,IDE 1;",
+	"-;",
+	"S1,VHD,SD Card;",
+	"-;",
 	"S4,TRDIMGSCL,Floppy A;",
 	"S5,TRDIMGSCL,Floppy B;",
 	"F1,FDI,Floppy A FDI;",
 	"F2,FDI,Floppy B FDI;",
 	"O[35:34],Disk layout,Auto,TR-DOS,CP/M;",
+	"-;",
+	"S0,TAPTZXCSW,Tape;",
 	"T[31],Tape play/pause;",
 	"T[32],Tape previous block;",
 	"T[33],Tape next block;",
-	"O[36],Serial channel,ESP,USB;",
+	"-;",
+	"O[2:1],ROM Bank,ROMain,PQ-DOS,FDImage,FATALL;",
+	"O[26],Mode,Pentagon,48k;",
+	"O[9:8],Turbo,Off,2x,4x,8x;",
+	"O[16],DivMMC,Off,On;",
+	"O[18],Pause,Off,On;",
+	"-;",
 	"O[12:10],Joystick L,Kempston,Sinclair1,Sinclair2,Cursor,QAOPM,QAOPS;",
 	"O[15:13],Joystick R,Sinclair1,Sinclair2,Cursor,QAOPM,QAOPS,Kempston;",
-	"O[16],DivMMC,Off,On;",
 	"O[17],Keyboard,Profi XT,Spectrum;",
-	"O[18],Pause,Off,On;",
-	"O[26],Mode,Pentagon,48k;",
+	"-;",
+	"O[6:4],PSG Mix,AY ACB,AY Mono,YM ABC,YM ACB,YM Mono,AY ABC;",
+	"O[3],Covox,On,Off;",
+	"P2,MT32-pi;",
+	"P2O[27],Use MT32-pi,Yes,No;",
+	"P2O[28],Synth,Munt,FluidSynth;",
+	"P2O[30:29],Munt ROM,MT-32 v1,MT-32 v2,CM-32L;",
+	"-;",
+	"P1,Video;",
+	"P1O[22:21],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"P1O[25:23],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	"P1O[7],VSync,50 Hz,60 Hz;",
+	"-;",
+	"O[36],Serial channel,ESP,USB;",
 	"-;",
 	"T[19],GS Reset;",
 	"T[20],NMI;",
@@ -928,6 +934,22 @@ assign LED_USER = tape_active;
 // sim/tb_sd_spi.sv pins that polarity on the unmodified card.
 wire sd_ss_n, sd_sck, sd_mosi, sd_miso;
 
+// The card's SPI side runs on clk_bus, the clock zc_spi makes sck, mosi and
+// the sampling of miso from. Board, 2026-11-18: with clk_spi = clk_sys (50
+// MHz) the card sampled the machine's 14 MHz sck asynchronously and its
+// answers came back with bits repeated (CMD8's R7 read 0 0 0 58 175 for
+// 0 0 1 170 255; the ROM's SD probe then never finished). sim/tb_sd_zc.sv
+// pins the clocking. The card's sd_rd/sd_wr leave that domain here and
+// reach hps_io through two flops; sd_lba is stable long before sd_rd.
+wire sd_card_rd, sd_card_wr;
+reg [1:0] sd_rd_s = 2'b00, sd_wr_s = 2'b00;
+always @(posedge clk_sys) begin
+	sd_rd_s <= {sd_rd_s[0], sd_card_rd};
+	sd_wr_s <= {sd_wr_s[0], sd_card_wr};
+end
+assign sd_rd[1] = sd_rd_s[1];
+assign sd_wr[1] = sd_wr_s[1];
+
 sd_card u_sd (
 	.clk_sys(clk_sys),
 	.reset(por_reset | ~sd_media),
@@ -935,14 +957,14 @@ sd_card u_sd (
 	.img_mounted(img_mounted[1]),
 	.img_size(img_size),
 	.sd_lba(sd_lba[1]),
-	.sd_rd(sd_rd[1]),
-	.sd_wr(sd_wr[1]),
+	.sd_rd(sd_card_rd),
+	.sd_wr(sd_card_wr),
 	.sd_ack(sd_ack[1]),
 	.sd_buff_addr(sd_buff_addr[8:0]),
 	.sd_buff_dout(sd_buff_dout),
 	.sd_buff_din(sd_buff_din[1]),
 	.sd_buff_wr(sd_buff_wr),
-	.clk_spi(clk_sys),
+	.clk_spi(clk_bus),
 	.ss(sd_ss_n),
 	.sck(sd_sck),
 	.mosi(sd_mosi),
