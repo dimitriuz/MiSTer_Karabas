@@ -60,9 +60,13 @@ set_global_assignment -name ECO_OPTIMIZE_TIMING ON
 set_global_assignment -name PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
 set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
-# Seed 2: build 77 (seed 1) closed with -0.42 ns on the HDMI PLL's counter clock
-# (pll_hdmi, not our logic) and did not boot; the same sources on seed 2 pass.
-set_global_assignment -name SEED 2
+# Seed 3. Seed 1 (build 77) closed with -0.42 ns on the HDMI PLL's counter clock
+# (pll_hdmi, not our logic) and did not boot. Seed 2 booted on builds 78 and
+# passed check_timing on build 79 too, but build 79 (seed 2 with the serial
+# mouse rewrite) showed a black screen on the board, without any image; the
+# same sources on seed 3 (build 80) boot. A build that passes check_timing can
+# still not boot: boot every RBF on the board before trusting it.
+set_global_assignment -name SEED 3
 
 #set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
 
