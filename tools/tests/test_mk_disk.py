@@ -91,6 +91,104 @@ class SdVhdTest(unittest.TestCase):
         self.assertEqual(mk_disk.main(["cat", str(self.img), "NOPE"]), 1)
 
 
+class SdVhd32Test(unittest.TestCase):
+    """The FAT32 card the Karabas ROM's SD driver takes."""
+
+    BOOT = bytes((i * 7 + 1) & 0xFF for i in range(15889))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.img = Path(cls.tmp.name) / "sd32.vhd"
+        mk_disk.sd_vhd32(cls.img, size_mb=64, files=[
+            ("karabas_boot.$c", cls.BOOT), ("BOOT.BIN", b"short\n"),
+            ("empty.txt", b"")])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def read(self, offset, length):
+        with self.img.open("rb") as f:
+            f.seek(offset)
+            return f.read(length)
+
+    def test_the_partition_is_type_0c_from_sector_2048(self):
+        mbr = self.read(0, SECTOR)
+        self.assertEqual(mbr[446 + 4], 0x0C)
+        self.assertEqual(struct.unpack_from("<I", mbr, 446 + 8)[0], 2048)
+        self.assertEqual(struct.unpack_from("<I", mbr, 446 + 12)[0],
+                         64 * 2048 - 2048)
+        self.assertEqual(mbr[510:512], b"\x55\xaa")
+
+    def test_the_bpb_is_fat32(self):
+        boot = self.read(PART_START * SECTOR, SECTOR)
+        self.assertEqual(struct.unpack_from("<H", boot, 11)[0], SECTOR)
+        self.assertEqual(struct.unpack_from("<H", boot, 17)[0], 0)  # no root
+        self.assertEqual(struct.unpack_from("<H", boot, 22)[0], 0)
+        self.assertEqual(boot[82:90], b"FAT32   ")
+        self.assertEqual(struct.unpack_from("<I", boot, 44)[0], 2)
+        self.assertEqual(boot[510:512], b"\x55\xaa")
+        self.assertEqual(self.read((PART_START + 6) * SECTOR, SECTOR), boot)
+
+    def test_the_cluster_count_is_fat32(self):
+        boot = self.read(PART_START * SECTOR, SECTOR)
+        spc = boot[13]
+        reserved = struct.unpack_from("<H", boot, 14)[0]
+        fat = struct.unpack_from("<I", boot, 36)[0]
+        total = struct.unpack_from("<I", boot, 32)[0]
+        clusters = (total - reserved - boot[16] * fat) // spc
+        self.assertGreaterEqual(clusters, 65525)
+
+    def test_files_roundtrip_by_long_name(self):
+        names = [name for name, _ in mk_disk.fat_list(self.img)]
+        self.assertEqual(names, ["karabas_boot.$c", "BOOT.BIN", "empty.txt"])
+        self.assertEqual(mk_disk.fat_read(self.img, "karabas_boot.$c"),
+                         self.BOOT)
+        self.assertEqual(mk_disk.fat_read(self.img, "KARABAS_BOOT.$C"),
+                         self.BOOT)
+        self.assertEqual(mk_disk.fat_read(self.img, "BOOT.BIN"), b"short\n")
+        self.assertEqual(mk_disk.fat_read(self.img, "empty.txt"), b"")
+
+    def test_the_short_name_is_the_usual_one(self):
+        self.assertEqual(mk_disk.fat_read(self.img, "KARABA~1.$C"), self.BOOT)
+
+    def test_a_long_name_chains_its_entries_with_a_checksum(self):
+        short, lfn = mk_disk._short_name("karabas_boot.$c", set())
+        self.assertTrue(lfn)
+        entries = mk_disk._lfn_entries("karabas_boot.$c", short)
+        self.assertEqual(len(entries), 2)             # 15 chars + the end mark
+        self.assertEqual(entries[0][0], 0x42)         # the last part, first
+        self.assertEqual(entries[1][0], 0x01)
+        self.assertTrue(all(e[13] == mk_disk._lfn_checksum(short)
+                            for e in entries))
+        total = 0                      # the reference rotate-and-add
+        for b in b"KARABA~1$C ":
+            total = ((total >> 1) | ((total & 1) << 7)) + b & 0xFF
+        self.assertEqual(entries[0][13], total)
+
+    def test_an_upper_case_83_name_needs_no_long_entry(self):
+        self.assertEqual(mk_disk._short_name("BOOT.BIN", set()),
+                         ("BOOT    BIN", False))
+
+    def test_short_names_do_not_collide(self):
+        a, _ = mk_disk._short_name("karabas_one.txt", set())
+        b, _ = mk_disk._short_name("karabas_two.txt", {a})
+        self.assertNotEqual(a, b)
+
+    def test_too_small_for_fat32(self):
+        with self.assertRaises(ValueError):
+            mk_disk.sd_vhd32(Path(self.tmp.name) / "tiny.vhd", size_mb=16)
+
+    def test_cli(self):
+        src = Path(self.tmp.name) / "src.bin"
+        src.write_bytes(b"x" * 5000)
+        out = Path(self.tmp.name) / "cli.vhd"
+        self.assertEqual(mk_disk.main(["sd32", str(out), "--size-mb", "64",
+                                       "--file", f"{src}=long_name.dat"]), 0)
+        self.assertEqual(mk_disk.fat_read(out, "long_name.dat"), b"x" * 5000)
+
+
 class HdfTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

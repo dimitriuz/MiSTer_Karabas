@@ -78,6 +78,19 @@ detector (type 0x0E does not select SD), so reading the reason out of the
 binary needs a real disassembly. The three FAT16 VHDs the owner tried cannot work with this ROM whatever
 the core does; they need a FAT32 volume in a type 0x0B/0x0C partition.
 
+## Making a card the ROM takes
+
+`tools/mk_disk.py sd32` (stdlib only) writes it: MBR, one type 0x0C partition
+from sector 2048, FAT32 (32 reserved sectors, FSInfo, boot copy, two FATs),
+long file names with the usual `KARABA~1.$C` short names (the long-name
+checksum equals the one mtools writes; `fsck.fat -n` finds nothing; `mdir`
+reads it). The 256 MiB image with only `karabas_boot.$c`
+(`Karabas_Profi/sd_fat32_256mb.vhd` on the NAS) was mounted on the board
+(build 78): `Loading boot` opened the file manager, `E:ZC SDC:FAT32`,
+listing `KARABA~1.$C`. The boot file in it is the copy from `karabas.img`
+(15889 bytes, proven on the board); karabas-pro's `rom/karabas_boot.$C` has
+the same size and different bytes, and `tools/karabas_boot.$C` is 16401 bytes.
+
 ## Builds
 
 | build | what | result |

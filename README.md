@@ -262,6 +262,10 @@ not disk slots, and are read-only.
   The card's SPI side runs on the machine's bus clock (`clk_bus`), the clock
   `zc_spi` makes its sck from; on the 50 MHz system clock the card sampled
   that sck asynchronously and its answers lost bits.
+  `python3 tools/mk_disk.py sd32 OUT.vhd [--size-mb 256] [--file SRC[=NAME]]...`
+  writes such a card (pure Python, long file names included); with
+  `--file karabas_boot.$c` it is the card `Loading boot` expects, and an
+  empty one is the same command without `--file`.
 - **IDE hard disks (slots 2 and 3, `IDE 0`/`IDE 1`)**: the Profi IDE's two
   ATA devices, upstream's `hdf_ata` (CHS and LBA28, one sector per DRQ).
   Its sector engine (`img_sdc` on the Karabas Go, the MCU's file mounter)
