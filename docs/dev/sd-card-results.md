@@ -65,7 +65,17 @@ FAT32 volumes only. Changing the type byte of a FAT16 image makes the card
 show but does not make its files readable. Why the ROM's authors chose
 FAT32 only is not in the repository (the ROM is a binary; its only FAT
 string is `FAT32`): the Karabas Go uses SDHC cards, which are FAT32.
-The three FAT16 VHDs the owner tried cannot work with this ROM whatever
+More evidence: ROMain's own changelog (karabas-pro,
+`firmware/releases/profi/rom/ROMain_2A1_b02/changelog.txt`) has `2.83 - added
+FAT32 partition detection`, and nothing about FAT16. A FAT16 image with type
+0x0E (FAT16 LBA) stays on `Drive: CF` too (`Loading boot` then waits on
+`Opening karabas_boot.$c...` on the CF path). The ROM source is not public:
+karabas-pro carries ROMain only as images (`firmware/src/fpga/profi/rom/`,
+`releases/.../rom/`), and `software/profi/fatfs` is a generic ChaN FatFs
+sample for Z80 programs, not the loader's driver. A byte chain
+`cp 07/08/09/0B/0C/0E` at 0x3C6 of `ROMain_fatall_ramdisk_D.rom` is not the SD
+detector (type 0x0E does not select SD), so reading the reason out of the
+binary needs a real disassembly. The three FAT16 VHDs the owner tried cannot work with this ROM whatever
 the core does; they need a FAT32 volume in a type 0x0B/0x0C partition.
 
 ## Builds
