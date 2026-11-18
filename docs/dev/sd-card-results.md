@@ -43,14 +43,30 @@ every time, and with a FAT32 image the status line reads `Drive: SD`.
 `Loading boot` on `karabas.img` opens the file manager with `E:ZC SDC:FAT32`
 and lists `KARABA~1.$C` and `ISDOSHDD.$C` from the card.
 
-## 2. "SD card failed" on FAT16 images: the ROM wants FAT32 (not a core fault)
+## 2. "SD card failed" on FAT16 images: the ROM takes FAT32 only (not a core fault)
 
 Two 128 MB images with the same MBR layout and one file, made with
 `mkfs.fat -F 16` and `-F 32`: the FAT16 image leaves the loader on
 `Drive: CF` (and `Loading boot` says `Initialize CF... Failed`), the FAT32
 image gives `Drive: SD`. `karabas.img` (the image pico-speccy uses) is FAT32
-too. So the three FAT16 VHDs the owner tried cannot work with this ROM's SD
-driver, whatever the core does; they need a FAT32 volume.
+too. The two checks the ROM makes are separate, found by crossing the
+partition type byte with the filesystem (same image, one byte changed):
+
+| filesystem | partition type | status line | `Loading boot` with `karabas_boot.$c` on the card |
+|---|---|---|---|
+| FAT16 | 0x06 | `Drive: CF` | not reached |
+| FAT16 | 0x0C | `Drive: SD` | back to the menu, nothing loaded |
+| FAT32 | 0x06 | `Drive: CF` | not reached |
+| FAT32 | 0x0C | `Drive: SD` | file manager opens, `E:ZC SDC:FAT32`, lists both files |
+
+So the loader decides "an SD card is present" from the MBR's partition type
+(0x0B/0x0C), and its FAT driver (FATALL v0.26, labelled `SDC:FAT32`) reads
+FAT32 volumes only. Changing the type byte of a FAT16 image makes the card
+show but does not make its files readable. Why the ROM's authors chose
+FAT32 only is not in the repository (the ROM is a binary; its only FAT
+string is `FAT32`): the Karabas Go uses SDHC cards, which are FAT32.
+The three FAT16 VHDs the owner tried cannot work with this ROM whatever
+the core does; they need a FAT32 volume in a type 0x0B/0x0C partition.
 
 ## Builds
 
