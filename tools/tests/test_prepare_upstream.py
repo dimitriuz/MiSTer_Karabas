@@ -739,5 +739,43 @@ class TestPrepareUpstream(unittest.TestCase):
             self.assertEqual(elab.count(new), 0)
 
 
+    # ---- serial_mouse.vhd select (CP/M mouse; board 2026-11-18) -------------
+
+    SMOUSE = "src/rtl/mouse/serial_mouse.vhd"
+
+    def upstream_smouse(self):
+        return (UPSTREAM / self.SMOUSE).read_text(errors="replace")
+
+    def test_serial_mouse_rewrite_on_real_text(self):
+        m = load_tool_module()
+        out = m.apply_serial_mouse_rewrites(self.upstream_smouse())
+        self.assertEqual(out.count("vv51_cs      <= not A(6) or p4 or (not ds80);"), 1)
+        self.assertEqual(out.count("or ds80;"), 0)
+        # the output enable keeps its upstream form
+        self.assertEqual(
+            out.count("OE_N <= '0' when ds80 = '1' and ((vv51_cs = '0' AND RD_N = '0')"), 1)
+
+    def test_serial_mouse_rewrite_anchor_missing(self):
+        m = load_tool_module()
+        with self.assertRaises(SystemExit) as ctx:
+            m.apply_serial_mouse_rewrites("-- some other file\n")
+        self.assertIn(self.SMOUSE, str(ctx.exception))
+
+    def test_serial_mouse_rewrite_anchor_duplicated(self):
+        m = load_tool_module()
+        for _rel, old, _new in m.SERIAL_MOUSE_REWRITES:
+            text = self.upstream_smouse().replace(old, old + "\n" + old, 1)
+            with self.assertRaises(SystemExit):
+                m.apply_serial_mouse_rewrites(text)
+
+    def test_serial_mouse_rewrite_core_only(self):
+        m = load_tool_module()
+        core = (prepared("core") / self.SMOUSE).read_text(errors="replace")
+        elab = (prepared("elab") / self.SMOUSE).read_text(errors="replace")
+        for _rel, _old, new in m.SERIAL_MOUSE_REWRITES:
+            self.assertEqual(core.count(new), 1)
+            self.assertEqual(elab.count(new), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

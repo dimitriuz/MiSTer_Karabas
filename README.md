@@ -94,7 +94,13 @@ SPI link; the emulation feeds the same frames:
 - **Mouse**: the MiSTer PS/2 mouse reaches the machine the way the board's
   USB mouse does - through the Profi's Kempston-mouse ports (0A-0C) and
   upstream's serial-mouse emulation. Movement is relative (the PS/2 packet);
-  the wheel and the three buttons travel too.
+  the wheel and the three buttons travel too. The Kempston ports are
+  decoded outside CP/M only; the CP/M mouse driver (`PCMSMOUS`) reads the
+  serial-mouse emulation, an 8251-style chip at ports #D3 (data) and #F3
+  (status), which is on the bus only in the Profi video mode (`ds80`). Upstream's
+  chip select had the opposite sense to its own output enable, so the CPU could
+  never read it; `tools/prepare_upstream.py` corrects the select
+  (`SERIAL_MOUSE_REWRITES`, bench `sim/tb_serial_mouse.vhd`).
 - **Joysticks**: `J1` with A, B, C, X, Y, Z, Start and Mode; the OSD picks
   the type of each port (Kempston, Sinclair 1/2, cursor keys, QAOPM/QAOPS).
   Upstream maps Sinclair 1 to keys 1-5 and Sinclair 2 to keys 6-0 (left,

@@ -461,6 +461,23 @@ T80S_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "\tTS_O <= TState;\n\tMC_O <= MCycle;\n"),
 ]
 
+# serial_mouse.vhd rewrite (core profile only). Upstream's chip select is
+# `not A(6) or p4 or ds80`, which keeps the 8251-style serial mouse (ports #D3
+# data, #F3 status/control, the CP/M mouse driver's) deselected whenever
+# ds80 = 1, while its output enable (`OE_N <= '0' when ds80 = '1' and ...`),
+# the CPU bus mux in profi.vhd (`serial_ms_oe_n = '0' and ds80 = '1'`) and
+# hw_int.vhd all require ds80 = 1: no value of ds80 lets the CPU read the
+# chip, so a CP/M mouse driver never sees a byte. The stated aim of the ds80
+# terms is to keep the chip off the bus while General Sound is mapped
+# (ds80 = 0), so the select is the one place that has the wrong sense.
+# Board 2026-11-18; upstream master carries the same lines.
+# sim/tb_serial_mouse.vhd runs the rewritten file.
+SERIAL_MOUSE_REWRITES = [  # (out-relative file, exact old string, exact new string)
+    ("src/rtl/mouse/serial_mouse.vhd",
+     "vv51_cs      <= not A(6) or p4 or ds80;",
+     "vv51_cs      <= not A(6) or p4 or (not ds80);"),
+]
+
 
 def apply_rewrites(text, rewrites):
     """(file, old, new) rewrites over the text; every old string must occur
@@ -481,6 +498,11 @@ def apply_profi_rewrites(text):
 def apply_t80s_rewrites(text):
     """T80S_REWRITES over the text of src/rtl/t80se/T80s.vhd."""
     return apply_rewrites(text, T80S_REWRITES)
+
+
+def apply_serial_mouse_rewrites(text):
+    """SERIAL_MOUSE_REWRITES over the text of src/rtl/mouse/serial_mouse.vhd."""
+    return apply_rewrites(text, SERIAL_MOUSE_REWRITES)
 
 
 class PortParseError(ValueError):
@@ -677,6 +699,8 @@ def main():
         p.write_text(apply_profi_rewrites(p.read_text(errors="replace")))
         p = out / "src/rtl/t80se/T80s.vhd"
         p.write_text(apply_t80s_rewrites(p.read_text(errors="replace")))
+        p = out / "src/rtl/mouse/serial_mouse.vhd"
+        p.write_text(apply_serial_mouse_rewrites(p.read_text(errors="replace")))
 
     # ---- the compize_proto rewrite over the compiled (qip-kept) VHDL ----------
     vmods, vhd_ents = {}, set()
