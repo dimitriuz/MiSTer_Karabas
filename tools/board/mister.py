@@ -309,20 +309,25 @@ def menu_visible(im):
 # --- OSD geometry (from the 2026-11-10 runs, see AGENTS.md) -----------
 
 
-#: rows of the Karabas_Profi page by number of `Down` presses from `Video`.
-#: Build 73 (stage 4c) added the two floppy image slots and the two FDI
-#: download entries before the tape items; the AGENTS.md table for builds
-#: 54-72 (Tape play/pause on 10) is the old map. Build 74 (stage 5) added
-#: `Serial channel` after the tape items, so `Joystick L` and everything
-#: below it moved one row - the tape rows did not move. Re-read from a
+#: rows of the Karabas_Profi page by number of `Down` presses from the first
+#: item (`IDE 0`; the cursor starts there on a fresh core load). Build 77
+#: regrouped the page: the images first (IDE 0/1, SD Card, the floppies and
+#: their FDI entries and layout, the tape and its three controls), then the
+#: settings by type (machine, input, sound, `Video`, serial), then the
+#: buttons. The `-` separators are not rows. Earlier builds counted from
+#: `Video` with `Tape play/pause` on 10 (54-72), 15 (73-76). Re-read from a
 #: capture on every new CONF_STR before trusting any count.
 ROWS = {
-    0: "Video", 1: "MT32-pi", 2: "ROM Bank", 3: "Turbo", 4: "PSG Mix",
-    5: "Covox", 6: "Tape", 7: "SD Card", 8: "IDE 0", 9: "IDE 1",
-    10: "Floppy A", 11: "Floppy B", 12: "Floppy A FDI", 13: "Floppy B FDI",
-    14: "Disk layout",
-    15: "Tape play/pause", 16: "Tape previous block",
-    17: "Tape next block", 18: "Serial channel", 19: "Joystick L",
+    0: "IDE 0", 1: "IDE 1", 2: "SD Card",
+    3: "Floppy A", 4: "Floppy B", 5: "Floppy A FDI", 6: "Floppy B FDI",
+    7: "Disk layout",
+    8: "Tape", 9: "Tape play/pause", 10: "Tape previous block",
+    11: "Tape next block",
+    12: "ROM Bank", 13: "Mode", 14: "Turbo", 15: "DivMMC", 16: "Pause",
+    17: "Joystick L", 18: "Joystick R", 19: "Keyboard",
+    20: "PSG Mix", 21: "Covox", 22: "MT32-pi", 23: "Video",
+    24: "Serial channel",
+    25: "GS Reset", 26: "NMI", 27: "Reset",
 }
 
 BAR_X = 330      # a column inside the bar's left padding, 960 px wide

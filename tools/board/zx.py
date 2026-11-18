@@ -55,12 +55,13 @@ MENU_TO_TRDOS_128 = 4    # gamepad `down` presses on the GO menu (below)
 #   Run TR-DOS 48K 3, Run TR-DOS 128K 4, Run Sinclair 48K 5,
 #   Run Sinclair 128K 6, Test&Tools Menu 7
 
-# `Down` presses from `Video` to `Tape play/pause`. Build 73 (stage 4c) put
-# five selectable rows before it - Floppy A, Floppy B, Floppy A FDI, Floppy
-# B FDI, Disk layout - so what was 10 on builds 54-72 is 15 now. The first
-# board run re-reads the map from a capture before trusting the count
-# (AGENTS.md rule); mister.ROWS carries the same new map.
-TAPE_ROW = 15
+# `Down` presses from the first OSD item (`IDE 0`) to `Tape play/pause`.
+# Build 77 put the images first - IDE 0, IDE 1, SD Card, Floppy A/B, the two
+# FDI entries, Disk layout, Tape - so it is 9 now (it was 10 on builds
+# 54-72 and 15 on 73-76, both counted from `Video`). The first board run
+# re-reads the map from a capture before trusting the count (AGENTS.md
+# rule); mister.ROWS carries the same map.
+TAPE_ROW = 9
 
 
 def shot(name):

@@ -33,6 +33,8 @@ class BarRow(unittest.TestCase):
     def test_every_row_of_the_map(self):
         for row, name in mister.ROWS.items():
             top = mister.BAR_TOP + row * mister.ROW_H
+            if top + 15 > 540:       # the list scrolls past the capture
+                continue
             self.assertEqual(mister.bar_row(self.column(top)), row, name)
 
     def test_no_bar_is_none(self):
@@ -154,14 +156,15 @@ class Sequences(unittest.TestCase):
 class FloppyBuild(unittest.TestCase):
     """The build-73 OSD map and the TR-DOS walk (stage 4c)."""
 
-    def test_tape_row_is_fifteen_on_build_73(self):
-        self.assertEqual(zx.TAPE_ROW, 15)
+    def test_tape_row_is_nine_on_build_77(self):
+        self.assertEqual(zx.TAPE_ROW, 9)
         self.assertEqual(mister.ROWS[zx.TAPE_ROW], "Tape play/pause")
 
-    def test_the_five_new_rows_come_before_the_tape(self):
-        for row, name in ((10, "Floppy A"), (11, "Floppy B"),
-                          (12, "Floppy A FDI"), (13, "Floppy B FDI"),
-                          (14, "Disk layout")):
+    def test_the_storage_rows_come_before_the_tape(self):
+        for row, name in ((0, "IDE 0"), (1, "IDE 1"), (2, "SD Card"),
+                          (3, "Floppy A"), (4, "Floppy B"),
+                          (5, "Floppy A FDI"), (6, "Floppy B FDI"),
+                          (7, "Disk layout"), (8, "Tape")):
             self.assertEqual(mister.ROWS[row], name)
 
     def test_rom_menu_to_trdos_is_four_pads_then_enter(self):
@@ -241,11 +244,19 @@ class ConfStrRowMap(unittest.TestCase):
         self.assertEqual(self.conf_str_rows().index("Tape play/pause"),
                          zx.TAPE_ROW)
 
-    def test_the_serial_channel_row_sits_after_the_tape_items(self):
+    def test_the_images_come_first_then_the_settings_by_type(self):
         rows = self.conf_str_rows()
-        self.assertEqual(rows[zx.TAPE_ROW:zx.TAPE_ROW + 4],
+        self.assertEqual(rows[:12], [
+            "IDE 0", "IDE 1", "SD Card",
+            "Floppy A", "Floppy B", "Floppy A FDI", "Floppy B FDI",
+            "Disk layout",
+            "Tape", "Tape play/pause", "Tape previous block",
+            "Tape next block"])
+        self.assertEqual(rows[zx.TAPE_ROW:zx.TAPE_ROW + 3],
                          ["Tape play/pause", "Tape previous block",
-                          "Tape next block", "Serial channel"])
+                          "Tape next block"])
+        self.assertLess(rows.index("Tape next block"),
+                        rows.index("ROM Bank"))
 
 
 if __name__ == "__main__":

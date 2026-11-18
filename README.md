@@ -72,10 +72,13 @@ emulated MCU SPI link - the table of indices and status bits is
 MiSTer-side: Aspect ratio and Scandoubler Fx (None, HQ2x, CRT filters) on the
 Video page; the MT32-pi page for a Pi on the USER port; `boot.rom` is loaded
 automatically at core start.
-The `Serial channel` item on the main page (after the tape items) picks which
-of the machine's serial channels owns the HPS UART - see Serial below.
-Below `IDE 1` on the main page sit the floppy items - `Floppy A`,
-`Floppy B`, `Floppy A FDI`, `Floppy B FDI` and `Disk layout` (see Disks).
+The main page lists the disk images first - `IDE 0`, `IDE 1` (the CF drives),
+`SD Card`, then `Floppy A`, `Floppy B`, their FDI entries and `Disk layout`
+(see Disks), then the tape and its three controls - and the settings after
+them, grouped by type: machine (`ROM Bank`, `Mode`, `Turbo`, `DivMMC`,
+`Pause`), input (the joysticks and `Keyboard`), sound (`PSG Mix`, `Covox`,
+the MT32-pi page), the `Video` page, `Serial channel` (which of the machine's
+serial channels owns the HPS UART - see Serial below), and the reset buttons.
 
 `Mode` is the screen timing: Pentagon (the upstream default, 320 lines) or 48k
 (the classic 312-line frame with memory contention). It is soft-switch register
@@ -207,7 +210,7 @@ Limits worth knowing (the first four are cases of `sim/tb_uart_route.sv`):
 ## Tape
 
 The tape file is MiSTer disk slot 0: pick it with the OSD `Tape` item (the
-main page, right after Covox). TAP, TZX and CSW are accepted; the format is
+main page, after the floppy items). TAP, TZX and CSW are accepted; the format is
 sniffed from the file signature. The file is never loaded into memory: the
 core reads it from the SD card through a two-sector cache as the tape
 plays, so a large TZX mounts instantly. `Tape play/pause`, `Tape previous
@@ -240,7 +243,7 @@ header drives the EAR input; the USER LED lights while the tape is playing.
 
 Five more MiSTer disk slots sit behind the machine's own disk interfaces;
 each is mounted with its OSD item (`S1` `SD Card`, `S2` `IDE 0`, `S3`
-`IDE 1`, `S4` `Floppy A`, `S5` `Floppy B`), right below the tape. Slots 1-3
+`IDE 1`, `S4` `Floppy A`, `S5` `Floppy B`), in front of the tape on the main page. Slots 1-3
 are read-write: a sector the machine writes goes back through hps_io into
 the mounted file. Slots 4/5 write back only for `.trd` and `.img` files
 (`.scl` mounts are read-only); the FDI entries (`F1`/`F2`) are downloads,
@@ -251,7 +254,14 @@ not disk slots, and are read-only.
   drives `sys/sd_card.sv`, the MiSTer card model, as an SDHC card whose
   sectors come from hps_io slot 1. This is the path the Profi's DivMMC and
   its esxDOS use (`DivMMC: On`): the image is a raw sector dump (the OSD
-  item filters `.vhd`), typically a FAT16 volume.
+  item filters `.vhd`). **The volume must be FAT32** (an MBR with a type
+  0x0B/0x0C partition): the Karabas ROM's SD driver does not take a FAT16
+  card - with one mounted the loader stays on `Drive: CF` and the file
+  manager shows no SD. Two images that differ only in the filesystem were
+  booted on the board (2026-11-18): FAT16 `Drive: CF`, FAT32 `Drive: SD`.
+  The card's SPI side runs on the machine's bus clock (`clk_bus`), the clock
+  `zc_spi` makes its sck from; on the 50 MHz system clock the card sampled
+  that sck asynchronously and its answers lost bits.
 - **IDE hard disks (slots 2 and 3, `IDE 0`/`IDE 1`)**: the Profi IDE's two
   ATA devices, upstream's `hdf_ata` (CHS and LBA28, one sector per DRQ).
   Its sector engine (`img_sdc` on the Karabas Go, the MCU's file mounter)
