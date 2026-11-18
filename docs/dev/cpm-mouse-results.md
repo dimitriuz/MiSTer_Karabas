@@ -52,3 +52,12 @@ Build 79's black screen followed a source change that cannot reach the boot
 path (the chip is deselected until CP/M or DOS selects it), and build 77 (seed 1,
 the HDMI PLL's timing) was black too: the design has some placement-dependent
 failure that `check_timing` does not catch. Not investigated.
+
+## Open: Psw Soft's reboots after about three mouse events (2026-11-18)
+
+Build 80, CP/M MultiConfig item 2 (Psw Soft's): three or more mouse events reboot the machine into the 128K ROM menu; the default configuration (PCMSMOUS) is fine through 15 events.
+
+- `sim/_probe_int.vhd` / `sim/_probe_int.sh` (scratch probe, not in `run_all`): real `serial_mouse` + `hw_int` + T80 in IM2 with a handler at the vector. Six events give exactly three interrupts each, `INT_N` returns high after the reads. The chip and the CPU path are correct when a handler exists.
+- Working theory, not proven: Psw sets the #93 bit0 interrupt enable with no handler at RST 20h / the IM2 vector, so the held byte re-enters the vector forever.
+- Experiment, interrupt forced off (`INT_N <= '1'` in the chip): builds 81 (seed 3) and 82 (seed 4) both booted to a black screen, so it was never tested. Black builds without the experiment: 77 (seed 1) and 79 (seed 2). Cause unknown; `check_timing` does not catch it.
+- Next: a full-system run with the ROM, or a debug latch for "CPU took a mouse INTA", or a real-hardware comparison.
