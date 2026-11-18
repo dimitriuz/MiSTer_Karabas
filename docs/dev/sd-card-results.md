@@ -77,10 +77,14 @@ the core does; they need a FAT32 volume in a type 0x0B/0x0C partition.
 
 ## Not verified
 
-- The regrouped OSD on screen: the HDMI capture card was in use, so the new
-  row order is checked only by the `CONF_STR` parse in `test_board_drive.py`.
-  `mister.ROWS`/`zx.TAPE_ROW` (now 9) and the pixel arithmetic
-  `(top - 174)/16` have not been re-read from a capture.
+- The pixel arithmetic `(top - 174)/16` of `mister.bar_row` on the regrouped
+  page: the list scrolls (16 lines, separators count as lines), so the bar's
+  position no longer gives the row. The row *order* is verified on screen
+  (capture feed, build 78): the OSD lists IDE 0, IDE 1, SD Card, the floppies,
+  FDI entries and Disk layout, the tape and its controls, the machine,
+  input and sound settings, MT32-pi, Video, Serial channel, then GS Reset,
+  NMI; 14 `Down` presses from the first item highlight `Turbo` and 26
+  highlight `NMI`, matching `mister.ROWS`.
 - Writing to the card (CMD24) and a multi-sector read through the ROM's own
   driver beyond the file manager's listing.
 - DivMMC/esxDOS on the SD card.

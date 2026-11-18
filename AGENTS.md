@@ -120,8 +120,8 @@ Never "I sent it, therefore it happened".
   8 `Tape`, 9 `Tape play/pause`, 10 previous block, 11 next block, 12 `ROM Bank`,
   13 `Mode`, 14 `Turbo`, 15 `DivMMC`, 16 `Pause`, 17 `Joystick L`, 18 `Joystick R`,
   19 `Keyboard`, 20 `PSG Mix`, 21 `Covox`, 22 `MT32-pi`, 23 `Video`, 24 `Serial channel`,
-  25 `GS Reset`, 26 `NMI`, 27 `Reset` (the pixel arithmetic `(top - 174)/16` has not been
-  re-measured on this layout: read the bar off a capture first). Builds 74-76 counted from
+  25 `GS Reset`, 26 `NMI`, 27 `Reset` (checked on a capture, build 78: 14 `Down` = `Turbo`, 26 = `NMI`; the page scrolls, so
+  the pixel arithmetic `(top - 174)/16` no longer gives the row: count presses). Builds 74-76 counted from
   `Video`: 8 `IDE 0`, 9 `IDE 1`, 10-13 the floppies and FDI entries, 14 `Disk layout`,
   15 `Tape play/pause`, 18 `Serial channel`, 19 `Joystick L`; build 73 had no serial row;
   builds 54-72: 10 `Tape play/pause`, 11 previous block, 12 next block, 13 `Joystick L`;
