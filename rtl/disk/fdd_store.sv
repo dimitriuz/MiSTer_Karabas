@@ -104,6 +104,7 @@ module fdd_store (
     input  wire [8:0]  trk_req,             // {drive, side, track[6:0]}
     output reg         trk_ack_tgl,
     output reg  [9:0]  trk_ack,             // {ready, echo}
+    output reg  [12:0] trk_len,             // bytes of the track just answered
     input  wire [12:0] trk_addr_b,
     output wire [8:0]  trk_q_b,
     input  wire [9:0]  wr_addr,             // write buffer port A (clk_bus)
@@ -121,7 +122,7 @@ module fdd_store (
 );
 
     localparam [9:0]  BASE   = {4'b0011, 1'b1, 5'd0};  // word 0x0700_0000 top
-    localparam [1:0]  K_TRD  = 2'd0, K_CPM = 2'd1, K_FDI = 2'd2;
+    localparam [1:0]  K_TRD  = 2'd0, K_CPM = 2'd1, K_FDI = 2'd2, K_UDI = 2'd3;
     localparam [6:0]  LAST   = 7'd83;        // the 84-track cap
     localparam [12:0] TRKEND = 13'd6250;     // bytes of one built track
 
@@ -234,6 +235,16 @@ module fdd_store (
     reg [7:0]  b_C, b_H, b_R;
     reg [15:0] crc_id, crc_dat;
     reg [31:0] b_doff;
+    // raw (UDI) track: length, the loop counters and the clock-mark bitmap
+    reg [15:0] b_ulen;
+    reg [12:0] b_ui;
+    reg [9:0]  b_uj;
+    reg [7:0]  msk [0:1023];
+    reg [7:0]  m_q;
+    always @(posedge clk) m_q <= msk[b_ui[12:3]];
+    wire [9:0]  b_unm = b_ulen[12:3] + {9'd0, |b_ulen[2:0]};   // mask bytes
+    wire [20:0] b_mad = b_doff[20:0] + {5'd0, b_ulen} + {11'd0, b_uj};
+    wire [20:0] b_dad = b_doff[20:0] + {8'd0, b_ui};
     reg [7:0]  b_rolo;
 
     reg        w_drv, w_side;
@@ -275,7 +286,10 @@ module fdd_store (
                      S_W_SC0  = 7'd39, S_W_SC1  = 7'd40,
                      S_D_SC   = 7'd41, S_D_W8   = 7'd42,
                      S_D_T0   = 7'd43, S_D_T1   = 7'd44,
-                     S_W_SCW  = 7'd46;
+                     S_W_SCW  = 7'd46,
+                     S_U_L0   = 7'd50, S_U_L1   = 7'd51, S_U_L2  = 7'd52,
+                     S_U_M0   = 7'd53, S_U_M1   = 7'd54,
+                     S_U_D0   = 7'd55, S_U_D1   = 7'd56;
     wire [20:0] b_fo = b_fbase + {10'd0, b_i};   // this data byte, file addr
     wire [20:0] w_fo = w_fbase + {10'd0, w_i};   // written byte, file addr
     wire [20:0] w_end = w_fbase + {10'd0, w_len} - 21'd1;  // last byte written
@@ -303,7 +317,7 @@ module fdd_store (
         if (rst) begin
             state       <= S_IDLE;
             f_req <= 1'b0; f_rd <= 1'b0; f_we <= 1'b0;
-            fill_ack_tgl <= 1'b0; trk_ack_tgl <= 1'b0; trk_ack <= 10'd0;
+            fill_ack_tgl <= 1'b0; trk_ack_tgl <= 1'b0; trk_ack <= 10'd0; trk_len <= TRKEND;
             wr_ack_tgl <= 1'b0;  drn_tgl <= 1'b0;  drn_info <= 12'd0;
             fill_pend <= 1'b0; req_new <= 1'b0;
             wrq_pend <= 1'b0;  dna_pend <= 1'b0;
@@ -339,7 +353,8 @@ module fdd_store (
 
             // A killed build's not-ready ack is this remount's answer: no
             // second one from the config branch afterwards.
-            if (kill_fill && state >= 7'd8 && state <= 7'd25) begin
+            if (kill_fill && ((state >= 7'd8 && state <= 7'd25) ||
+                              (state >= S_U_L0 && state <= S_U_D1))) begin
                 killed <= 1'b1;
                 state  <= S_B_NR0;
             end
@@ -413,7 +428,9 @@ module fdd_store (
                     w_H      <= wrq_pay[18:11];
                     w_R      <= wrq_pay[10:3];
                     w_N      <= wrq_pay[2:0];
-                    if (cfg_k2[wrq_pay[35]] == K_FDI) begin
+                    if (cfg_k2[wrq_pay[35]] == K_UDI)   // raw tracks are read-only
+                        state <= S_W_ACK;
+                    else if (cfg_k2[wrq_pay[35]] == K_FDI) begin
                         w_sec <= 6'd0;
                         w_sc  <= 3'd0;
                         state <= (pos_cnt[wrq_pay[35]] == 6'd0)
@@ -442,7 +459,8 @@ module fdd_store (
                         req_cur[6:0] >= cfg_tracks[req_cur[8]] ||
                         (req_cur[7] && !cfg_sides[req_cur[8]]))
                         state <= S_B_NR0;
-                    else if (cfg_k2[req_cur[8]] == K_FDI) begin
+                    else if (cfg_k2[req_cur[8]] == K_FDI ||
+                             cfg_k2[req_cur[8]] == K_UDI) begin
                         b_hi  <= 3'd0;
                         state <= S_B_HDR0;
                     end
@@ -502,6 +520,10 @@ module fdd_store (
                 else begin
                     b_sec <= 6'd0;
                     if (t_q == 8'd0) state <= S_B_NR0;
+                    else if (b_k2 == K_UDI) begin
+                        b_tb  <= 3'd0;
+                        state <= S_U_L0;
+                    end
                     else begin
                         b_cnt          <= (t_q > 8'd32) ? 6'd32 : t_q[5:0];
                         pos_cnt[b_drv] <= (t_q > 8'd32) ? 6'd32 : t_q[5:0];
@@ -723,6 +745,7 @@ module fdd_store (
             // samples it on the toggle edge never sees a stale one
             S_B_ACK0: begin
                 trk_ack <= {1'b1, b_drv, b_side, b_trk};
+                trk_len <= (b_k2 == K_UDI) ? b_ulen[12:0] : TRKEND;
                 state   <= S_B_ACK1;
             end
             S_B_ACK1: begin
@@ -736,6 +759,69 @@ module fdd_store (
             S_B_NR1: begin
                 trk_ack_tgl <= ~trk_ack_tgl;
                 state       <= S_IDLE;
+            end
+
+            // ==================== the raw (UDI) track ====================
+            // the table block: DataOffset at 224.., count at 228; the track's
+            // length is record 0's first two bytes. The data is len bytes at
+            // DataOffset and the clock-mark bitmap, ceil(len/8) bytes, follows
+            // it. A mark makes the byte a sync cell (floppy.sv: A1 -> 4489,
+            // C2 -> 5224, any other marked byte 4489).
+            S_U_L0: begin
+                t_addr <= blk_base(b_drv, b_ti) + {14'd0, b_tb};
+                state  <= S_U_L1;
+            end
+            S_U_L1: state <= S_U_L2;
+            S_U_L2: begin
+                if (b_tb == 3'd0) begin
+                    b_ulen[7:0] <= t_q;
+                    b_tb  <= 3'd1;
+                    state <= S_U_L0;
+                end
+                else begin
+                    b_ulen[15:8] <= t_q;
+                    // an empty track is unformatted, one over the buffer (8191 bytes) does
+                    // not fit it (fdd_src does not let either through)
+                    if ({t_q, b_ulen[7:0]} == 16'd0 || {t_q, b_ulen[7:0]} > 16'd8191)
+                        state <= S_B_NR0;
+                    else begin
+                        b_uj  <= 10'd0;
+                        b_ui  <= 13'd0;
+                        state <= S_U_M0;
+                    end
+                end
+            end
+            S_U_M0: begin
+                if (b_uj == b_unm) state <= S_U_D0;
+                else if (b_uj == 10'd0 || b_mad[2:0] == 3'd0) begin
+                    d_addr <= {BASE, b_drv, b_mad[20:3]};
+                    d_be   <= 8'hFF;
+                    dret   <= S_U_M1;
+                    state  <= S_DR0;
+                end
+                else state <= S_U_M1;
+            end
+            S_U_M1: begin
+                msk[b_uj] <= lc_reg[{b_mad[2:0], 3'd0} +: 8];
+                b_uj  <= b_uj + 10'd1;
+                state <= S_U_M0;
+            end
+            S_U_D0: begin
+                if (b_ui == b_ulen[12:0]) state <= S_B_ACK0;
+                else if (b_ui == 13'd0 || b_dad[2:0] == 3'd0) begin
+                    d_addr <= {BASE, b_drv, b_dad[20:3]};
+                    d_be   <= 8'hFF;
+                    dret   <= S_U_D1;
+                    state  <= S_DR0;
+                end
+                else state <= S_U_D1;
+            end
+            S_U_D1: begin
+                tk_we    <= 1'b1; tk_drv <= b_drv;
+                tk_waddr <= b_ui;
+                tk_wdata <= {m_q[b_ui[2:0]], lc_reg[{b_dad[2:0], 3'd0} +: 8]};
+                b_ui     <= b_ui + 13'd1;
+                state    <= S_U_D0;
             end
 
             // ==================== the write-back ====================

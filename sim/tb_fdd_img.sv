@@ -213,6 +213,7 @@ module tb_fdd_img;
     reg   [8:0] trk_req     = 9'd0;
     wire        trk_ack_tgl;
     wire  [9:0] trk_ack;
+    wire [12:0] trk_len;
     reg  [12:0] trk_addr_b  = 13'd0;
     wire  [8:0] trk_q_b;
 
@@ -245,7 +246,7 @@ module tb_fdd_img;
         .fill_tgl(st_fill_tgl), .fill_word(st_fill_word),
         .fill_ack_tgl(fill_ack_tgl),
         .trk_req_tgl(trk_req_tgl), .trk_req(trk_req),
-        .trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack),
+        .trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack), .trk_len(trk_len),
         .trk_addr_b(trk_addr_b), .trk_q_b(trk_q_b),
         .wr_addr(wr_addr), .wr_data(wr_data), .wr_we(wr_we),
         .wr_info(wr_info), .wr_tgl(wr_tgl), .wr_ack_tgl(wr_ack_tgl),
@@ -1482,7 +1483,11 @@ module tb_fdd_img;
                 5: $readmemh("build/sim/fdd_img/dlbig.hex", dl_mem);
                 6: $readmemh("build/sim/fdd_img/dlwp.hex",  dl_mem);
                 7: $readmemh("build/sim/fdd_img/dlc33.hex", dl_mem);
-                default: $readmemh("build/sim/fdd_img/dl33.hex", dl_mem);
+                8: $readmemh("build/sim/fdd_img/dl33.hex", dl_mem);
+                9: $readmemh("build/sim/fdd_img/dlu.hex",  dl_mem);
+                10: $readmemh("build/sim/fdd_img/dlue.hex", dl_mem);
+                11: $readmemh("build/sim/fdd_img/dlt.hex",  dl_mem);
+                default: $readmemh("build/sim/fdd_img/dlp.hex", dl_mem);
             endcase
             dl_n = 0;
             while (dl_n < 65536 && dl_mem[dl_n] !== 8'hxx)
@@ -1558,6 +1563,7 @@ module tb_fdd_img;
                     if (lost == 0)
                         $display("FAIL index %0d: byte %0d was never taken",
                                  index, k);
+
                     lost = lost + 1;
                 end
             end
@@ -1633,9 +1639,21 @@ module tb_fdd_img;
                     $readmemh("build/sim/fdd_img/ref_dlw_t0s0",       ref_bh);
                     $readmemh("build/sim/fdd_img/ref_dlw_t0s0.sync",   syc_bh);
                 end
-                default: begin
+                5: begin
                     $readmemh("build/sim/fdd_img/ref_dl1_t1s0",       ref_bh);
                     $readmemh("build/sim/fdd_img/ref_dl1_t1s0.sync",   syc_bh);
+                end
+                6: begin
+                    $readmemh("build/sim/fdd_img/ref_dlt_t0s0",       ref_bh);
+                    $readmemh("build/sim/fdd_img/ref_dlt_t0s0.sync",   syc_bh);
+                end
+                7: begin
+                    $readmemh("build/sim/fdd_img/ref_dlt_t0s1",       ref_bh);
+                    $readmemh("build/sim/fdd_img/ref_dlt_t0s1.sync",   syc_bh);
+                end
+                default: begin
+                    $readmemh("build/sim/fdd_img/ref_dlt_t1s0",       ref_bh);
+                    $readmemh("build/sim/fdd_img/ref_dlt_t1s0.sync",   syc_bh);
                 end
             endcase
         end
@@ -1655,6 +1673,59 @@ module tb_fdd_img;
                         $display("FAIL %0s track[%0d] got {%b,%02x} want {%b,%02x}",
                                  who, a, trk_q_b[8], trk_q_b[7:0],
                                  syc_bh[a], ref_bh[a]);
+                    shown  = shown + 1;
+                    errors = errors + 1;
+                    stop   = 1;
+                end
+            end
+        end
+    endtask
+
+    // ---------------- a raw (UDI) track, any length ----------------
+    integer tdk;
+    reg [7:0] ref_u [0:8191];
+    reg       syc_u [0:8191];
+
+    task automatic udi_ref_load(input integer which);
+        begin
+            case (which)
+                0: begin
+                    $readmemh("build/sim/fdd_img/ref_dlu_t0s0",       ref_u);
+                    $readmemh("build/sim/fdd_img/ref_dlu_t0s0.sync",  syc_u);
+                end
+                1: begin
+                    $readmemh("build/sim/fdd_img/ref_dlu_t0s1",       ref_u);
+                    $readmemh("build/sim/fdd_img/ref_dlu_t0s1.sync",  syc_u);
+                end
+                default: begin
+                    $readmemh("build/sim/fdd_img/ref_dlue_t1s0",      ref_u);
+                    $readmemh("build/sim/fdd_img/ref_dlue_t1s0.sync", syc_u);
+                end
+            endcase
+        end
+    endtask
+
+    // the first `n` cells of the buffer are the file's track, and the store
+    // announced exactly n bytes for it
+    task automatic check_udi(input [8*40-1:0] who, input integer n);
+        integer a, stop;
+        begin
+            stop = 0;
+            if (trk_len !== n[12:0]) begin
+                $display("FAIL %0s: the store announced %0d bytes, want %0d",
+                         who, trk_len, n);
+                errors = errors + 1;
+            end
+            for (a = 0; (a < n) && !stop; a = a + 1) begin
+                @(posedge bclk);
+                trk_addr_b <= a[12:0];
+                @(posedge bclk);
+                @(posedge bclk);
+                if (trk_q_b[7:0] !== ref_u[a] || trk_q_b[8] !== syc_u[a]) begin
+                    if (shown < 8)
+                        $display("FAIL %0s track[%0d] got {%b,%02x} want {%b,%02x}",
+                                 who, a, trk_q_b[8], trk_q_b[7:0],
+                                 syc_u[a], ref_u[a]);
                     shown  = shown + 1;
                     errors = errors + 1;
                     stop   = 1;
@@ -2349,6 +2420,87 @@ module tb_fdd_img;
         if (!rdy) bad("fdi_download: the aborts took the drive's image");
         check_bh("fdi_download the image survives the aborts");
         case_end("fdi_download");
+
+        // ---------------- udi_download ----------------
+        // raw tracks: the file's bytes and clock marks, as they are, with the
+        // track's own length announced to the drive
+        host_case_start();
+        dl_load(9);                               // dlu.udi: 6250 and 6290 bytes
+        mon_dlm = 0;                              // not an FDI data area
+        host_download(16'd1, 1);
+        if (mon_cfg !== 1 || mon_rdy !== 1) begin
+            $display("FAIL udi_download A: %0d configs, %0d readies, cfg=%h",
+                     mon_cfg, mon_rdy, mon_cfgw);
+            errors = errors + 1;
+        end
+        if (mon_cfgw !== {2'd0, 1'b0, 2'd3, 7'd1, 1'b1, 19'd0})
+            bad("udi_download: drive A's config is not the UDI's own header");
+        udi_ref_load(0);
+        req_track(1'b0, 1'b0, 7'd0, rdy);
+        if (!rdy) bad("udi_download: track 0/0 is not ready");
+        check_udi("udi_download t0s0", 6250);
+        udi_ref_load(1);
+        req_track(1'b0, 1'b1, 7'd0, rdy);
+        if (!rdy) bad("udi_download: track 0/1 is not ready");
+        check_udi("udi_download t0s1", 6290);
+        // drive B, one side, an extended header to skip, an empty track
+        // and a short one
+        mon_reset();
+        dl_load(10);
+        mon_dlm = 0;
+        host_download(16'd2, 1);
+        if (mon_cfgw !== {2'd0, 1'b1, 2'd3, 7'd2, 1'b0, 19'd0})
+            bad("udi_download: the one-side config is wrong");
+        req_track(1'b1, 1'b0, 7'd0, rdy);
+        if (rdy) bad("udi_download: an empty (length 0) track answered ready");
+        udi_ref_load(2);
+        req_track(1'b1, 1'b0, 7'd1, rdy);
+        if (!rdy) bad("udi_download: the 100-byte track is not ready");
+        check_udi("udi_download short t1s0", 100);
+        case_end("udi_download");
+
+        // ---------------- td0_download ----------------
+        // Teledisk, compressed ("td", with a comment block) and plain ("TD"):
+        // every sector shape parsed into the FDI-style table, the window
+        // filled with the sectors' bytes, the blocks the file lacks emptied
+        for (tdk = 0; tdk < 2; tdk = tdk + 1) begin
+            host_case_start();
+            // an FDI first: its table blocks must not survive into the TD0
+            mon_reset();
+            dl_load(0);
+            host_download(16'd1, 1);
+            mon_reset();
+            dl_load(tdk == 0 ? 11 : 12);
+            mon_dlm = 0;
+            host_download(16'd1, 1);
+            if (mon_cfg !== 1 || mon_rdy !== 1) begin
+                $display("FAIL td0_download %0d: %0d configs, %0d readies, cfg=%h",
+                         tdk, mon_cfg, mon_rdy, mon_cfgw);
+                errors = errors + 1;
+            end
+            if (mon_cfgw !== {2'd0, 1'b0, KIND_FDI, 7'd84, 1'b1, 19'd0})
+                bad("td0_download: the config is not 84 tracks, two sides, FDI-style");
+            ref_load(6);
+            req_track(1'b0, 1'b0, 7'd0, rdy);
+            if (!rdy) bad("td0_download: track 0/0 is not ready");
+            check_bh("td0_download t0s0");
+            ref_load(7);
+            req_track(1'b0, 1'b1, 7'd0, rdy);
+            if (!rdy) bad("td0_download: track 0/1 is not ready");
+            check_bh("td0_download t0s1");
+            ref_load(8);
+            req_track(1'b0, 1'b0, 7'd1, rdy);
+            if (!rdy) bad("td0_download: track 1/0 is not ready");
+            check_bh("td0_download t1s0");
+            // the file has no track 1 side 1 (the FDI before it had no such
+            // track either, but track 0/1 it did: that one is the TD0's now)
+            req_track(1'b0, 1'b1, 7'd1, rdy);
+            if (rdy) bad("td0_download: an absent track answered ready");
+            req_track(1'b0, 1'b0, 7'd40, rdy);
+            if (rdy) bad("td0_download: an absent track 40 answered ready");
+            case_end("td0_download");
+        end
+
 
         // ---------------- eject_mid_fill_host ----------------
         host_case_start();

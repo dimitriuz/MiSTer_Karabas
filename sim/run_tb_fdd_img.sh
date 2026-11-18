@@ -131,6 +131,33 @@ PY
         --image "$OUT/dlw.fdi" --kind fdi --track 0 --side 0
     python3 tools/mk_disk.py reffrom "$OUT/ref_dl1_t1s0" \
         --image "$OUT/dl1.fdi" --kind fdi --track 1 --side 0
+    # ---- UDI: raw tracks. dlu.udi is one cylinder, two sides (6250 and
+    # 6290 bytes, the second with an index mark); dlue.udi is two cylinders,
+    # one side, with a 5-byte extended header, an empty track 0 and a
+    # 100-byte track 1 whose byte 5 is marked
+    python3 tools/mk_disk.py trd "$OUT/udisrc.trd" --tracks 2
+    python3 tools/mk_disk.py udi "$OUT/dlu.udi" --from-trd "$OUT/udisrc.trd"
+    python3 tools/mk_disk.py udiref "$OUT/ref_dlu_t0s0" \
+        --image "$OUT/dlu.udi" --track 0 --side 0
+    python3 tools/mk_disk.py udiref "$OUT/ref_dlu_t0s1" \
+        --image "$OUT/dlu.udi" --track 0 --side 1
+    python3 - "$OUT" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "tools")
+import mk_disk
+
+out = Path(sys.argv[1])
+mk_disk.udi(out / "dlue.udi",
+            [(b"", []),
+             (bytes(range(1, 101)), [1 if i == 5 else 0 for i in range(100)])],
+            2, 1, ext=b"hello")
+mk_disk.udi_ref(out / "ref_dlue_t1s0", out / "dlue.udi", 1, 0)
+PY
+    # ---- TD0: dlt.td0 (compressed, a comment block) and dlp.td0 (plain), and
+    # the reference tracks 0/0, 0/1 and 1/0 the store must build from them
+    python3 tools/td0.py benchfiles "$OUT"
     python3 - "$OUT" <<'PY'
 import sys
 from pathlib import Path
@@ -142,7 +169,9 @@ for name, dst in (("test.trd", "trd.hex"), ("test.cpm", "cpm.hex"),
                   ("dl1.fdi", "dl1.hex"), ("dlcut", "dlcut.hex"),
                   ("dlbad", "dlbad.hex"), ("dlbig", "dlbig.hex"),
                   ("dlwp.fdi", "dlwp.hex"), ("dlc33.fdi", "dlc33.hex"),
-                  ("dl33.fdi", "dl33.hex")):
+                  ("dl33.fdi", "dl33.hex"), ("dlu.udi", "dlu.hex"),
+                  ("dlue.udi", "dlue.hex"), ("dlt.td0", "dlt.hex"),
+                  ("dlp.td0", "dlp.hex")):
     data = (out / name).read_bytes()
     (out / dst).write_text("".join("%02X\n" % b for b in data))
 PY
@@ -154,7 +183,8 @@ fi
 
 for f in trd.hex cpm.hex fdi.prog wide.prog ref_trd_t0s0 ref_wide_t0s0.sync \
          trdh.hex cpmh.hex dl.hex dlw.hex dl1.hex dlcut.hex dlbad.hex \
-         dlbig.hex ref_dl1_t1s0.sync dlwp.hex dlc33.hex dl33.hex; do
+         dlbig.hex ref_dl1_t1s0.sync dlwp.hex dlc33.hex dl33.hex dlu.hex dlue.hex \
+         ref_dlu_t0s1.sync ref_dlue_t1s0.sync dlt.hex dlp.hex ref_dlt_t1s0.sync; do
     if [ ! -f "$OUT/$f" ]; then
         echo "run_tb_fdd_img: no $OUT/$f; run this script once on the host" >&2
         echo "tb_fdd_img: FAIL no fixtures"
@@ -184,6 +214,7 @@ iverilog -g2012 -o build/sim/tb_fdd_img.vvp \
     sim/models/hps_disk_model.sv \
     rtl/disk/fdd_store.sv \
     rtl/disk/fdd_src.sv \
+    rtl/disk/td0_lzh.sv \
     rtl/mem/ddr_arb.sv
 vvp build/sim/tb_fdd_img.vvp > "$LOG" 2>&1 || true
 cat "$LOG"

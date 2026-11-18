@@ -293,9 +293,16 @@ not disk slots, and are read-only.
   read-only) or an FDI stream. The tracks live in DDR3: the image is only
   consulted for the track the head asks for, and a track the machine
   writes is rebuilt in place and goes back into the mounted file. The FDI
-  entries (`F1` `Floppy A FDI`, `F2` `Floppy B FDI`) stream an image in
-  over the ioctl path instead of mounting it, and are read-only - their
-  writes are volatile. `Disk layout` (Auto / TR-DOS / CP/M) overrides the
+  entries (`F1` `Floppy A FDI/UDI/TD0`, `F2` `Floppy B FDI/UDI/TD0`) stream an
+  image in over the ioctl path instead of mounting it, and are read-only -
+  their writes are volatile. The file's own header says what it is:
+  `FDI` (sector list), `UDI!` (raw tracks - bytes and clock-mark bitmap played
+  as they are, a protected disk's odd sync marks and track length included;
+  MFM tracks of at most 8191 bytes, the revolution takes the track's own
+  length) and `TD`/`td` Teledisk (the "td" advanced compression is decoded
+  in the core; sectors are rebuilt as standard MFM, so deleted marks and
+  CRC-error flags are not reproduced; a damaged or oddly built file is
+  refused and the drive keeps its image). `Disk layout` (Auto / TR-DOS / CP/M) overrides the
   geometry guess for images the ID header cannot vouch for. A TR-DOS image
   with a `boot` program starts straight from the GO menu's
   `Run TR-DOS 128K`. `profi.vhd` grows two exports for this: `ENA_CPU_O`

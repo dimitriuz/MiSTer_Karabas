@@ -719,21 +719,8 @@ def _ccitt(data):
     return crc
 
 
-def reftrack(path, track, side, sectors, cpm=False, fdi=False):
-    """write the reference track as hex (one byte per line) and <path>.sync
-
-    Per sector: 10x4E, 12x00, 3xA1 + FE + C,H,R,N + CRC, 22x4E, 12x00,
-    3xA1 + FB + data + CRC, 60x4E; CCITT-FFFF over the three A1s, the
-    mark and the payload, high byte first (MakeVGCRC); padded with 4E
-    to 6250. TR-DOS writes H = 0 on both sides, CP/M H = side, and for
-    `fdi` the ID's H is the sector tuple's own. Sync flags are 1 at
-    exactly the six A1 positions. `sectors` entries are (C, H, R, N,
-    data); for the non-FDI kinds the ID record's H is `side` (CP/M) or 0
-    (TR-DOS) and the tuple's H is ignored. A tuple with data=None is an
-    FDI "no data" sector (flags 0x40): ID only, no data mark, and the
-    trailing 4E gap follows the ID's CRC.
-    """
-    path = Path(path)
+def _raw_track(side, sectors, cpm=False, fdi=False):
+    """the formatted bytes of a track and its sync flags (no padding)"""
     image = bytearray()
     sync = []
     for (c, h, r, n, data) in sectors:
@@ -757,6 +744,25 @@ def reftrack(path, track, side, sectors, cpm=False, fdi=False):
         image += head + body + b"\x4e" * 60
         sync += ([0] * 22 + [1, 1, 1] + [0] * 7 + [0] * 22 + [0] * 12 +
                  [1, 1, 1] + [0] * (len(data) + 3) + [0] * 60)
+    return image, sync
+
+
+def reftrack(path, track, side, sectors, cpm=False, fdi=False):
+    """write the reference track as hex (one byte per line) and <path>.sync
+
+    Per sector: 10x4E, 12x00, 3xA1 + FE + C,H,R,N + CRC, 22x4E, 12x00,
+    3xA1 + FB + data + CRC, 60x4E; CCITT-FFFF over the three A1s, the
+    mark and the payload, high byte first (MakeVGCRC); padded with 4E
+    to 6250. TR-DOS writes H = 0 on both sides, CP/M H = side, and for
+    `fdi` the ID's H is the sector tuple's own. Sync flags are 1 at
+    exactly the six A1 positions. `sectors` entries are (C, H, R, N,
+    data); for the non-FDI kinds the ID record's H is `side` (CP/M) or 0
+    (TR-DOS) and the tuple's H is ignored. A tuple with data=None is an
+    FDI "no data" sector (flags 0x40): ID only, no data mark, and the
+    trailing 4E gap follows the ID's CRC.
+    """
+    image, sync = _raw_track(side, sectors, cpm, fdi)
+    path = Path(path)
     pad = TRACK_BYTES - len(image)
     if pad < 0:
         raise ValueError(f"mk_disk: reftrack: {len(image)} > {TRACK_BYTES}")
@@ -765,6 +771,91 @@ def reftrack(path, track, side, sectors, cpm=False, fdi=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(f"{b:02X}\n" for b in image))
     Path(str(path) + ".sync").write_text("".join(f"{s}\n" for s in sync))
+
+
+import zlib
+
+
+def udi(path, tracks, cyls, sides=2, ext=b""):
+    """write a UDI file: `tracks` is a list, in file order (cylinder 0 side 0,
+    cylinder 0 side 1, ...), of (data bytes, sync flags) or (data, flags,
+    type); the flags mark the bytes whose clock is missing (the bitmap)."""
+    out = bytearray(b"UDI!" + b"\0" * 4)
+    out += bytes([0, cyls - 1, sides - 1, 0]) + len(ext).to_bytes(4, "little")
+    out += ext
+    for t in tracks:
+        data, flags = t[0], t[1]
+        ttype = t[2] if len(t) > 2 else 0
+        if len(flags) != len(data):
+            raise ValueError("mk_disk: udi: one sync flag per byte")
+        mask = bytearray((len(data) + 7) // 8)
+        for i, f in enumerate(flags):
+            if f:
+                mask[i >> 3] |= 1 << (i & 7)
+        out += bytes([ttype]) + len(data).to_bytes(2, "little") + data + mask
+    out[4:8] = len(out).to_bytes(4, "little")
+    out += zlib.crc32(bytes(out)).to_bytes(4, "little")
+    Path(path).write_bytes(bytes(out))
+
+
+def udi_read(path):
+    """(cyls, sides, [(type, data, flags)]) of a UDI file"""
+    d = Path(path).read_bytes()
+    if d[:4] != b"UDI!":
+        raise ValueError("mk_disk: not a UDI file")
+    size = int.from_bytes(d[4:8], "little")
+    cyls, sides = d[9] + 1, d[10] + 1
+    o = 16 + int.from_bytes(d[12:16], "little")
+    tracks = []
+    for _ in range(cyls * sides):
+        ttype = d[o]
+        n = int.from_bytes(d[o + 1:o + 3], "little")
+        data = d[o + 3:o + 3 + n]
+        mask = d[o + 3 + n:o + 3 + n + (n + 7) // 8]
+        flags = [(mask[i >> 3] >> (i & 7)) & 1 for i in range(n)]
+        tracks.append((ttype, bytes(data), flags))
+        o += 3 + n + (n + 7) // 8
+    if o > size:
+        raise ValueError("mk_disk: udi: tracks run past the declared size")
+    return cyls, sides, tracks
+
+
+def udi_from_trd(path, trd_path, cyls=1):
+    """a UDI of the first `cyls` cylinders of a TRD: side 0 is the standard
+    6250-byte track; side 1 is longer (6290 bytes) and leads with an index
+    mark (C2 C2 C2 FC, the C2s marked), so a player meets a raw feature a
+    sector builder never writes"""
+    image = Path(trd_path).read_bytes()
+    tracks = []
+    for t in range(cyls):
+        for side in (0, 1):
+            lt = t * 2 + side
+            secs = [(t, 0, r, 1, image[lt * 4096 + (r - 1) * 256:
+                                       lt * 4096 + r * 256])
+                    for r in range(1, 17)]
+            data, sync = _raw_track(side, secs)
+            data, sync = bytearray(data), list(sync)
+            if side == 1:
+                lead = b"\x4e" * 10 + b"\x00" * 12 + b"\xc2\xc2\xc2\xfc" + b"\x4e" * 14
+                data = bytearray(lead) + data
+                sync = [0] * 22 + [1, 1, 1] + [0] * 15 + sync
+            while len(data) < (6290 if side == 1 else 6250):
+                data.append(0x4E)
+                sync.append(0)
+            tracks.append((bytes(data), sync))
+    udi(path, tracks, cyls)
+
+
+def udi_ref(path, udi_path, track, side):
+    """<path>, <path>.sync, <path>.len: a UDI track as the store should
+    present it (what the drive reads, sync flags included)"""
+    cyls, sides, tracks = udi_read(udi_path)
+    _t, data, flags = tracks[track * sides + side]
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"{b:02X}\n" for b in data))
+    Path(str(path) + ".sync").write_text("".join(f"{f}\n" for f in flags))
+    Path(str(path) + ".len").write_text(f"{len(data)}\n")
 
 
 def _ref_sectors(track, cpm):
@@ -923,6 +1014,15 @@ def main(argv=None):
     fs.add_argument("path")
     fs.add_argument("--image", required=True)
     fs.add_argument("pairs", nargs="+", metavar="TRACK:SIDE")
+    ud = sub.add_parser("udi", help="write a UDI file from the start of a TRD")
+    ud.add_argument("path")
+    ud.add_argument("--from-trd", required=True)
+    ud.add_argument("--cyls", type=int, default=1)
+    ur = sub.add_parser("udiref", help="reference track of a UDI file")
+    ur.add_argument("path")
+    ur.add_argument("--image", required=True)
+    ur.add_argument("--track", type=int, required=True)
+    ur.add_argument("--side", type=int, required=True)
     ls = sub.add_parser("ls", help="list a VHD partition or a TRD catalog")
     ls.add_argument("path")
     cat = sub.add_parser("cat", help="write one image file to stdout")
@@ -962,6 +1062,12 @@ def main(argv=None):
     elif args.cmd == "fdistream":
         pairs = [tuple(int(v) for v in p.split(":")) for p in args.pairs]
         fdistream(args.path, args.image, pairs)
+        print(args.path)
+    elif args.cmd == "udi":
+        udi_from_trd(args.path, args.from_trd, args.cyls)
+        print(args.path)
+    elif args.cmd == "udiref":
+        udi_ref(args.path, args.image, args.track, args.side)
         print(args.path)
     elif args.cmd == "ls":
         if Path(args.path).suffix == ".trd":

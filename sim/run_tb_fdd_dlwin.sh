@@ -41,7 +41,8 @@ mkdir -p build/sim
 iverilog -g2012 -DFDD_DL_SMALL -o build/sim/tb_fdd_dlwin.vvp \
     sim/tb_fdd_dlwin.sv \
     sim/models/altsyncram_model.sv \
-    rtl/disk/fdd_src.sv
+    rtl/disk/fdd_src.sv \
+    rtl/disk/td0_lzh.sv
 vvp build/sim/tb_fdd_dlwin.vvp > "$LOG" 2>&1 || true
 cat "$LOG"
 grep -q 'tb_fdd_dlwin: PASS' "$LOG"

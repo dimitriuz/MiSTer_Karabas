@@ -76,6 +76,7 @@ module floppy (
     output reg  [8:0]  trk_req,             // {drive, side, track[6:0]}
     input  wire        trk_ack_tgl,
     input  wire  [9:0] trk_ack,             // {ready, drive, side, track[6:0]}
+    input  wire [12:0] trk_len,             // bytes of the answered track (6250 unless raw)
     // track buffers: port B read here, port A written by the store
     output wire [12:0] trk_addr_a, trk_addr_b,
     input  wire  [8:0] trk_q_a, trk_q_b,    // {sync, byte}
@@ -117,8 +118,8 @@ module floppy (
         reg [7:0] b;
         begin
             b = q[7:0];
-            if (q[8])
-                chan_word = 16'h4489;
+            if (q[8])                            // a sync: A1 is 4489, the index mark's C2 is 5224
+                chan_word = (b == 8'hC2) ? 16'h5224 : 16'h4489;
             else
                 chan_word = {!prev && !b[7], b[7], !b[7] && !b[6], b[6], !b[6] && !b[5], b[5],
                              !b[5] && !b[4], b[4], !b[4] && !b[3], b[3], !b[3] && !b[2], b[2],
@@ -209,11 +210,17 @@ module floppy (
     reg        tick = 1'b0;
     reg [16:0] rev  = 17'd0;
 
-    wire [16:0] rev_n    = (rev == REV_TICKS - 17'd1) ? 17'd0 : rev + 17'd1;
+    // The revolution is the track's own length: a raw (UDI) track longer or
+    // shorter than 6250 bytes turns the disk a little slower or faster, the
+    // byte rate stays 16 ticks. Taken at the index, like the stream itself.
+    reg  [12:0] rev_len  = TRK_BYTES;
+    reg  [12:0] len_pend = TRK_BYTES;      // what the last matching ack said
+    wire [16:0] rev_end  = {rev_len, 4'd0} - 17'd1;
+    wire [16:0] rev_n    = (rev == rev_end) ? 17'd0 : rev + 17'd1;
     wire        new_byte = (rev_n[3:0] == 4'd0);
     wire        new_rev  = (rev_n == 17'd0);
     wire [12:0] byte_now = rev[16:4];
-    wire [13:0] ahead    = (byte_now == TRK_BYTES - 13'd1) ? 14'd0
+    wire [13:0] ahead    = (byte_now == rev_len - 13'd1) ? 14'd0
                                                            : {1'b0, byte_now} + 14'd1;
 
     assign trk_addr_b = ahead[12:0];
@@ -267,6 +274,7 @@ module floppy (
     always @(posedge clk) begin
         if (reset) begin
             rev       <= 17'd0;          // rev is reset and advanced here, once
+            rev_len   <= TRK_BYTES;
             active    <= 1'b0;
             q_cur     <= {1'b0, FILLER};
             chan      <= 16'd0;
@@ -274,6 +282,8 @@ module floppy (
         end
         else if (tick) begin
             rev       <= rev_n;
+            if (new_rev)
+                rev_len <= (stream_ready && cur == req_sent) ? len_pend : TRK_BYTES;
             fdc_index <= stream_on && (rev_n < IDX_TICKS);
             chan      <= chan_n;
             if (new_byte) q_cur  <= src_q;
@@ -327,7 +337,10 @@ module floppy (
             // an answer for the request that is out: only a matching echo
             // switches the stream, ready of an answer for another request is
             // nothing this drive may believe
-            if (ack_ev && (trk_ack[8:0] == req_sent)) stream_ready <= trk_ack[9];
+            if (ack_ev && (trk_ack[8:0] == req_sent)) begin
+                stream_ready <= trk_ack[9];
+                len_pend     <= trk_len;
+            end
 
             if (cur != req_sent) begin
                 req_sent     <= cur;

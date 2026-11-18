@@ -29,11 +29,11 @@ Instructions for agents (and humans) changing this repository. Read these with:
 
 | What | Command | Notes |
 |---|---|---|
-| Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (80 as of 2026-11-18, seed 3: worst setup slack **+0.232 ns**; build 79 passed too and did not boot, so boot every RBF on the board before trusting it, see docs/dev/cpm-mouse-results.md). |
+| Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (83 as of 2026-11-18, seed 3: worst setup slack **+0.173 ns**; builds 77, 79, 81 and 82 passed timing and showed a black screen, so boot every RBF on the board before trusting it, see docs/dev/cpm-mouse-results.md and docs/dev/udi-td0-results.md). |
 | Revert the qsf | `git checkout -- Karabas_Profi.qsf` | Quartus rewrites `LAST_QUARTUS_VERSION` on every compile. |
 | Simulations | `tools/sim.sh sim/run_tb_*.sh` | Runs in image `karabas-sim:1` (repo at `/work`). Every testbench prints exactly one final `<tb>: PASS` / `<tb>: FAIL <reason>` and exits non-zero on failure. |
-| All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 26 today, one per `sim/run_tb_*.sh`). |
-| Python tests | `python3 -m unittest discover -s tools/tests` | 131 tests. `tests/` holds only the `.bas` sources for the tape fixtures — there are no python tests there. |
+| All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 28 today, one per `sim/run_tb_*.sh`). |
+| Python tests | `python3 -m unittest discover -s tools/tests` | 145 tests. `tests/` holds only the `.bas` sources for the tape fixtures — there are no python tests there. |
 | Upstream gates | `tools/check_upstream.sh`, `tools/elab_upstream.sh` | Tripwire for files we replace, and elaboration of the rewritten upstream. |
 
 Simulation runtimes, so a long run is not mistaken for a hang:
@@ -116,7 +116,7 @@ Never "I sent it, therefore it happened".
   build 77, `Video` before it), and `Up` on the first item wraps to the bottom of the page.
   Count `Down` presses on the **build that is loaded**: rows change with CONF_STR. **Build
   77+ (images first, then settings by type)**: 0 `IDE 0`, 1 `IDE 1`, 2 `SD Card`,
-  3 `Floppy A`, 4 `Floppy B`, 5 `Floppy A FDI`, 6 `Floppy B FDI`, 7 `Disk layout`,
+  3 `Floppy A`, 4 `Floppy B`, 5 `Floppy A FDI/UDI/TD0`, 6 `Floppy B FDI/UDI/TD0`, 7 `Disk layout`,
   8 `Tape`, 9 `Tape play/pause`, 10 previous block, 11 next block, 12 `ROM Bank`,
   13 `Mode`, 14 `Turbo`, 15 `DivMMC`, 16 `Pause`, 17 `Joystick L`, 18 `Joystick R`,
   19 `Keyboard`, 20 `PSG Mix`, 21 `Covox`, 22 `MT32-pi`, 23 `Video`, 24 `Serial channel`,

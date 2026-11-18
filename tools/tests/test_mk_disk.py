@@ -6,6 +6,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -616,3 +617,47 @@ class FdistreamTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class UdiTest(unittest.TestCase):
+    def test_roundtrip_and_layout(self):
+        with tempfile.TemporaryDirectory() as d:
+            trd_path = Path(d) / "t.trd"
+            mk_disk.trd(trd_path, tracks=2, files=[])
+            u = Path(d) / "t.udi"
+            mk_disk.udi_from_trd(u, trd_path, cyls=2)
+            raw = u.read_bytes()
+            self.assertEqual(raw[:4], b"UDI!")
+            self.assertEqual(int.from_bytes(raw[4:8], "little"), len(raw) - 4)
+            self.assertEqual(int.from_bytes(raw[-4:], "little"),
+                             zlib.crc32(raw[:-4]))
+            cyls, sides, tracks = mk_disk.udi_read(u)
+            self.assertEqual((cyls, sides, len(tracks)), (2, 2, 4))
+            self.assertEqual([len(t[1]) for t in tracks],
+                             [6250, 6290, 6250, 6290])
+            # side 1 leads with the index mark: the three C2 are marked
+            _t, data, flags = tracks[1]
+            self.assertEqual(data[22:26], b"\xc2\xc2\xc2\xfc")
+            self.assertEqual(flags[22:26], [1, 1, 1, 0])
+            # the A1s of the sector marks are marked too
+            _t, data0, flags0 = tracks[0]
+            self.assertEqual(sum(flags0), 6 * 16)
+
+    def test_ref_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            trd_path = Path(d) / "t.trd"
+            mk_disk.trd(trd_path, tracks=2, files=[])
+            u = Path(d) / "t.udi"
+            mk_disk.udi_from_trd(u, trd_path)
+            mk_disk.udi_ref(Path(d) / "r", u, 0, 1)
+            self.assertEqual((Path(d) / "r.len").read_text(), "6290\n")
+            self.assertEqual(len((Path(d) / "r").read_text().split()), 6290)
+
+    def test_extension_and_empty_track(self):
+        with tempfile.TemporaryDirectory() as d:
+            u = Path(d) / "e.udi"
+            mk_disk.udi(u, [(b"", []), (b"\x4e" * 9, [0] * 8 + [1])], 2, 1,
+                        ext=b"hello")
+            cyls, sides, tracks = mk_disk.udi_read(u)
+            self.assertEqual((cyls, sides), (2, 1))
+            self.assertEqual(tracks[0][1], b"")
+            self.assertEqual(tracks[1][2], [0] * 8 + [1])

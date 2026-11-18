@@ -319,7 +319,7 @@ def menu_visible(im):
 #: capture on every new CONF_STR before trusting any count.
 ROWS = {
     0: "IDE 0", 1: "IDE 1", 2: "SD Card",
-    3: "Floppy A", 4: "Floppy B", 5: "Floppy A FDI", 6: "Floppy B FDI",
+    3: "Floppy A", 4: "Floppy B", 5: "Floppy A FDI/UDI/TD0", 6: "Floppy B FDI/UDI/TD0",
     7: "Disk layout",
     8: "Tape", 9: "Tape play/pause", 10: "Tape previous block",
     11: "Tape next block",

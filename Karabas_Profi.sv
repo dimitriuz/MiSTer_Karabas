@@ -68,8 +68,8 @@ localparam CONF_STR = {
 	"-;",
 	"S4,TRDIMGSCL,Floppy A;",
 	"S5,TRDIMGSCL,Floppy B;",
-	"F1,FDI,Floppy A FDI;",
-	"F2,FDI,Floppy B FDI;",
+	"F1,FDIUDITD0,Floppy A FDI/UDI/TD0;",
+	"F2,FDIUDITD0,Floppy B FDI/UDI/TD0;",
 	"O[35:34],Disk layout,Auto,TR-DOS,CP/M;",
 	"-;",
 	"S0,TAPTZXCSW,Tape;",
@@ -647,6 +647,7 @@ wire        trk_req_tgl;
 wire [8:0]  trk_req;
 wire        trk_ack_tgl;
 wire [9:0]  trk_ack;
+wire [12:0] trk_len;
 wire [12:0] trk_addr_b;
 wire [8:0]  trk_q_b;
 wire [9:0]  wr_addr;
@@ -667,7 +668,7 @@ fdd_store u_fdd_store (
 	.fill_tgl(fill_tgl), .fill_word(fill_word), .fill_ack_tgl(fill_ack_tgl),
 
 	.trk_req_tgl(trk_req_tgl), .trk_req(trk_req),
-	.trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack),
+	.trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack), .trk_len(trk_len),
 	.trk_addr_b(trk_addr_b), .trk_q_b(trk_q_b),
 	.wr_addr(wr_addr), .wr_data(wr_data), .wr_we(wr_we),
 	.wr_info(wr_info), .wr_tgl(wr_tgl), .wr_ack_tgl(wr_ack_tgl),
@@ -696,7 +697,7 @@ floppy u_floppy (
 	.wprt(fdc_wp_s2),
 
 	.trk_req_tgl(trk_req_tgl), .trk_req(trk_req),
-	.trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack),
+	.trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack), .trk_len(trk_len),
 	.trk_addr_a(), .trk_addr_b(trk_addr_b),
 	.trk_q_a(9'd0), .trk_q_b(trk_q_b),
 

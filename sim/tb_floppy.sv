@@ -199,6 +199,7 @@ reg         trk_req_tgl;
 reg  [8:0]  trk_req;
 reg         trk_ack_tgl = 1'b0;
 reg  [9:0]  trk_ack     = 10'd0;
+reg  [12:0] trk_len     = 13'd6250;
 reg         wr_tgl;
 reg  [35:0] wr_info;
 reg         wr_ack_tgl  = 1'b0;
@@ -211,7 +212,7 @@ floppy u_drive (
     .fdc_rdata(FDC_RDATA), .fdc_index(FDC_INDEX), .fdc_tr00(FDC_TR00), .fdc_wprt(FDC_WPRT),
     .wprt(wprt),
     .trk_req_tgl(trk_req_tgl), .trk_req(trk_req),
-    .trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack),
+    .trk_ack_tgl(trk_ack_tgl), .trk_ack(trk_ack), .trk_len(trk_len),
     .trk_addr_a(trk_addr_a), .trk_addr_b(trk_addr_b),
     .trk_q_a(trk_q_a), .trk_q_b(trk_q_b),
     .wr_tgl(wr_tgl), .wr_info(wr_info), .wr_ack_tgl(wr_ack_tgl),

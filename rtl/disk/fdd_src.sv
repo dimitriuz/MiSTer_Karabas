@@ -143,7 +143,7 @@ module fdd_src (
     output reg         drn_ack_tgl
 );
 
-    localparam [1:0] K_TRD = 2'd0, K_CPM = 2'd1, K_FDI = 2'd2;
+    localparam [1:0] K_TRD = 2'd0, K_CPM = 2'd1, K_FDI = 2'd2, K_UDI = 2'd3;
 
     // ---------------- reset synchroniser ----------------
     reg [1:0] rst_sync = 2'b11;
@@ -391,38 +391,47 @@ module fdd_src (
     assign sd_buff_din = db_q;
 
     // ================= the engine =================
-    localparam [4:0] E_IDLE  = 5'd0,
-                     E_P_SET = 5'd1,    // a fill word goes out
-                     E_P_ACK = 5'd2,    // the store took it
-                     E_F_BEG = 5'd3,    // the fill: a sector, or ready
-                     E_F_SET = 5'd4,    // sd_rd for the sector
-                     E_F_ACK = 5'd5,    // its ack rose
-                     E_F_END = 5'd6,    // its ack fell
-                     E_F_RD0 = 5'd7,    // the buffer address
-                     E_F_RDW = 5'd8,    // its registered output
-                     E_F_RD1 = 5'd9,    // the byte
-                     E_F_PSH = 5'd10,   // push it
-                     E_F_INC = 5'd11,   // the next byte or sector
-                     E_F_OK  = 5'd12,   // the last byte: ready
-                     E_F_DONE= 5'd13,   // the fill is over
-                     E_D_RD0 = 5'd14,   // the drain: the store's buffer
-                     E_D_RD1 = 5'd15,
-                     E_D_WR0 = 5'd16,   // the byte into ours
-                     E_D_CHK = 5'd17,
-                     E_D_REQ = 5'd18,   // sd_wr
-                     E_D_ACK = 5'd19,
-                     E_D_END = 5'd20,
-                     E_D_ACKS= 5'd21,   // the store's ack toggle
-                     E_L_WT  = 5'd22,   // the download: a byte from the host
-                     E_L_B   = 5'd23,   // ... transformed
-                     E_L_HDR = 5'd24,   // the header is complete
-                     E_L_ADV = 5'd25,   // the table walk's next group
-                     E_L_END = 5'd26;   // the window closed
+    localparam [5:0] E_IDLE  = 6'd0,
+                     E_P_SET = 6'd1,    // a fill word goes out
+                     E_P_ACK = 6'd2,    // the store took it
+                     E_F_BEG = 6'd3,    // the fill: a sector, or ready
+                     E_F_SET = 6'd4,    // sd_rd for the sector
+                     E_F_ACK = 6'd5,    // its ack rose
+                     E_F_END = 6'd6,    // its ack fell
+                     E_F_RD0 = 6'd7,    // the buffer address
+                     E_F_RDW = 6'd8,    // its registered output
+                     E_F_RD1 = 6'd9,    // the byte
+                     E_F_PSH = 6'd10,   // push it
+                     E_F_INC = 6'd11,   // the next byte or sector
+                     E_F_OK  = 6'd12,   // the last byte: ready
+                     E_F_DONE= 6'd13,   // the fill is over
+                     E_D_RD0 = 6'd14,   // the drain: the store's buffer
+                     E_D_RD1 = 6'd15,
+                     E_D_WR0 = 6'd16,   // the byte into ours
+                     E_D_CHK = 6'd17,
+                     E_D_REQ = 6'd18,   // sd_wr
+                     E_D_ACK = 6'd19,
+                     E_D_END = 6'd20,
+                     E_D_ACKS= 6'd21,   // the store's ack toggle
+                     E_L_WT  = 6'd22,   // the download: a byte from the host
+                     E_L_B   = 6'd23,   // ... transformed
+                     E_L_HDR = 6'd24,   // the header is complete
+                     E_L_ADV = 6'd25,   // the table walk's next group
+                     E_L_END = 6'd26,   // the window closed
+                     E_U_TW  = 6'd27,   // a raw track's table words go out
+                     E_T_RUN = 6'd28,   // TD0: the decoder and the parser
+                     E_T_OUT = 6'd29,   // ... one decoded byte parsed
+                     E_T_EM  = 6'd30,   // ... one sector byte into the window
+                     E_T_TW  = 6'd31,   // ... a track header's or a record's table words
+                     E_T_CLR = 6'd32;   // ... every table block's count to 0
 
-    localparam [1:0] P_HDR = 2'd0, P_TBL = 2'd1, P_DAT = 2'd2;
+    localparam [2:0] P_HDR = 3'd0, P_TBL = 3'd1, P_DAT = 3'd2, P_UDI = 3'd3, P_TD = 3'd4;
+    // the UDI stream, inside P_UDI: the extended header to skip, a track's
+    // three header bytes, its data, its clock-mark bitmap, and the tail
+    localparam [2:0] U_EXT = 3'd0, U_TH = 3'd1, U_DAT = 3'd2, U_MSK = 3'd3, U_END = 3'd4;
 
-    reg [4:0]  st     = E_IDLE;
-    reg [4:0]  p_ret  = E_IDLE;
+    reg [5:0]  st     = E_IDLE;
+    reg [5:0]  p_ret  = E_IDLE;
     reg [31:0] p_word = 32'd0;
     reg        p_seen = 1'b0;
 
@@ -460,11 +469,70 @@ module fdd_src (
     reg        dl_kill = 1'b0;
     reg [15:0] dl_widx = 16'd1;
     reg [7:0]  dl_b    = 8'd0;
-    reg [7:0]  hdr     [0:13];
-    reg [1:0]  dl_phase= P_HDR;
+    reg [7:0]  hdr     [0:15];
+    reg [2:0]  dl_phase= P_HDR;
     reg [23:0] t_pos   = 24'd0;
     reg [15:0] off_data= 16'd0;
     reg        dl_s2   = 1'b1;        // the file carries both sides
+    // a UDI download: the raw tracks go to the window back to back, data then
+    // clock bitmap, and the store's table learns each track's offset and length
+    reg [2:0]  u_sub   = U_EXT;
+    reg [1:0]  u_i     = 2'd0;         // the byte of a track header
+    reg [7:0]  u_type  = 8'd0;
+    reg [15:0] u_len   = 16'd0;
+    reg [23:0] u_cnt   = 24'd0;        // bytes left in the stretch being streamed
+    reg [21:0] u_off   = 22'd0;        // where the next stored byte goes
+    reg        u_ok    = 1'b0;         // this track is stored (else skipped)
+    reg [7:0]  u_trk   = 8'd0;         // tracks done
+    reg [7:0]  u_ntrk  = 8'd0;         // tracks the header declares
+    reg        u_two   = 1'b1;
+    reg [3:0]  u_w     = 4'd0;
+
+    // a TD0 download: the (decoded) record stream is parsed as it comes. A
+    // sector's bytes go to the window one after the other, the track's table
+    // block learns the track's DataOffset and a 7-byte record per sector
+    // (the FDI table's own shape, so the store's FDI builder makes the track).
+    localparam [3:0] TP_CM = 4'd0,  TP_SKIP = 4'd1, TP_TH = 4'd2,  TP_SH = 4'd3,
+                     TP_BL = 4'd4,  TP_M0 = 4'd5,   TP_M1 = 4'd6,  TP_M2K = 4'd7,
+                     TP_M2N = 4'd8, TP_M2L = 4'd9,  TP_M2P = 4'd10, TP_GEN = 4'd11,
+                     TP_PAD = 4'd12, TP_END = 4'd13;
+    reg        td_comp = 1'b0;         // "td": the body is LZHUF-compressed
+    reg        tdp     = 1'b0;         // a file byte waits in dl_b for the decoder
+    reg [3:0]  tp      = TP_TH;
+    reg [3:0]  tp_i    = 4'd0;
+    reg [7:0]  ob      = 8'd0;         // the decoded byte being parsed
+    reg [7:0]  eb      = 8'd0;         // the sector byte being emitted
+    reg [7:0]  tk_nsec = 8'd0, tk_cyl = 8'd0, tk_head = 8'd0, sidx = 8'd0;
+    reg        tk_ok   = 1'b0;
+    reg [20:0] tk_base = 21'd0;
+    reg [7:0]  sh_c = 8'd0, sh_h = 8'd0, sh_r = 8'd0, sh_sz = 8'd0, sh_fl = 8'd0;
+    reg [7:0]  rec_fl  = 8'd0;
+    reg [15:0] rec_off = 16'd0;
+    reg [15:0] bl16    = 16'd0, bl_left = 16'd0, cm_len = 16'd0;
+    reg [1:0]  meth    = 2'd0;
+    reg [12:0] em_n    = 13'd0, s_size = 13'd0;
+    reg [15:0] g_rep   = 16'd0;
+    reg [7:0]  g_idx   = 8'd0, g_len = 8'd0;
+    reg        g_lit   = 1'b0;
+    // the repeat pattern: one write port (the 2-byte pattern of method 1 goes
+    // to 0 and 1, a method 2 pattern to g_idx), read at g_idx
+    reg [7:0]  pbuf [0:255];
+    wire       pwe = (st == E_T_OUT) && ((tp == TP_M1 && tp_i[3:1] == 3'd1) || tp == TP_M2P);
+    wire [7:0] pwa = (tp == TP_M1) ? {7'd0, tp_i[0]} : g_idx;
+    always @(posedge clk_sys) if (pwe) pbuf[pwa] <= ob;
+    reg [2:0]  tw_k    = 3'd0;
+    reg [2:0]  tw_w    = 3'd0;
+    reg [2:0]  tw_n    = 3'd0;
+    reg        lz_init = 1'b0, lz_in_vld = 1'b0, lz_out_req = 1'b0;
+    reg  [7:0] lz_in_data = 8'd0;
+    wire       lz_need, lz_out_vld;
+    wire [7:0] lz_out_data;
+    td0_lzh u_lz (.clk(clk_sys), .rst(rst), .init(lz_init), .need(lz_need),
+                  .in_vld(lz_in_vld), .in_data(lz_in_data), .out_req(lz_out_req),
+                  .out_vld(lz_out_vld), .out_data(lz_out_data));
+    wire [7:0] tk_ti    = {tk_cyl[6:0], tk_head[0]};
+    wire       sh_nodata = (sh_fl[5:4] != 2'b00) || (sh_sz > 8'd6);
+    wire [12:0] sh_size  = 13'd128 << ((sh_sz > 8'd3) ? 8'd3 : sh_sz[2:0]);
     reg [15:0] t_exp   = 16'd14;      // where the group being streamed starts
     reg [7:0]  t_blk   = 8'd0;
     reg [8:0]  t_nblk  = 9'd0;
@@ -530,6 +598,19 @@ module fdd_src (
                           (h_offd >= 16'd21);                   // 0x0E + group
     // a one-side file holds cyl blocks, a two-side one cyl*2 (the store
     // indexes them track*2+side regardless)
+    // a UDI header: "UDI!", u32 size, version 0, cyls-1 <= 83, sides-1 <= 1,
+    // a zero byte, the u32 extended header size (kept to 16 bits)
+    wire        h_udi   = (hdr[0] == 8'h55);
+    // a TD0 header: "TD" or "td", sides 1 or 2
+    wire        h_td    = ((hdr[0] == 8'h54) && (hdr[1] == 8'h44)) ||   // "TD"
+                          ((hdr[0] == 8'h74) && (hdr[1] == 8'h64));     // "td"
+    wire        h_ok_t  = h_td && (hdr[9] == 8'd1 || hdr[9] == 8'd2);
+    wire        h_ok_u  = (hdr[0] == 8'h55) && (hdr[1] == 8'h44) &&
+                          (hdr[2] == 8'h49) && (hdr[3] == 8'h21) &&
+                          (hdr[8] == 8'h00) && (hdr[9] <= 8'd83) &&
+                          (hdr[10] <= 8'd1) &&
+                          (hdr[14] == 8'h00) && (hdr[15] == 8'h00);
+    wire [8:0]  h_ntrk  = ({1'b0, hdr[9]} + 9'd1) << hdr[10][0];
     wire [8:0]  h_nblk  = hdr[6][0] ? {2'd0, h_cyl} : {1'b0, h_cyl, 1'b0};
 
     // ---- what the dispatcher may do right now ----
@@ -611,7 +692,9 @@ module fdd_src (
                           !chg_pend[dr_pay[11]];
 
     wire       dl_sel  = ioctl_download &&
-                         (ioctl_index == 16'd1 || ioctl_index == 16'd2);
+                         (ioctl_index[5:0] == 6'd1 || ioctl_index[5:0] == 6'd2);
+    // (the FDI/UDI entries list two extensions: Main adds the chosen
+    // extension's number above bit 5)
     wire       dl_win  = ioctl_download && (ioctl_index == dl_widx);
     wire       dl_rise = dl_sel && !dl_prev;
 
@@ -633,6 +716,13 @@ module fdd_src (
     // so a one-side image's block n lives at 2n (a request for its side 1 is
     // refused by cfg_sides, so 2n is the only index that is ever read).
     wire [7:0] tbl_ti = dl_s2 ? t_blk : {t_blk[6:0], 1'b0};
+    // the raw track being described: its table block, and the verdict on it
+    wire [7:0]  u_ti    = u_two ? u_trk : {u_trk[6:0], 1'b0};
+    wire [15:0] u_lenN  = {dl_b, u_len[7:0]};
+    wire [12:0] u_nmN   = u_lenN[15:3] + {12'd0, |u_lenN[2:0]};
+    wire [23:0] u_endN  = {2'd0, u_off} + {8'd0, u_lenN} + {11'd0, u_nmN};
+    wire        u_okN   = (u_type == 8'd0) && (u_lenN != 16'd0) &&
+                          (u_lenN <= 16'd8191) && (u_endN <= {1'b0, DL_MAX});
 
     // a record's last data byte against the store's 2 MiB window: the record
     // is C,H,R,N,flags,off_lo,off_hi, so N is there since byte 3, off_lo since
@@ -679,6 +769,8 @@ module fdd_src (
             // block is served makes those bytes somebody else's
             dn_snap <= gen[drn_info[11]];
         end
+        lz_init   <= 1'b0;                 // (pulses)
+        lz_in_vld <= 1'b0;
         // ---- the download claim (hps_io opens one window per file) ----
         dl_prev <= dl_sel;
         if (dl_rise && !dl_own) begin
@@ -701,6 +793,10 @@ module fdd_src (
             t_pos <= 24'd0; t_exp <= 16'd14; t_blk <= 8'd0; t_nblk <= 9'd0;
             t_walk <= 1'b0; t_rec <= 8'd0; t_cnt <= 8'd0; t_idx <= 3'd0;
             dl_s2 <= 1'b1;
+            u_sub <= U_EXT; u_i <= 2'd0; u_type <= 8'd0; u_len <= 16'd0; u_cnt <= 24'd0;
+            td_comp <= 1'b0; tdp <= 1'b0; tp <= TP_TH; tp_i <= 4'd0; lz_out_req <= 1'b0;
+            tk_ok <= 1'b0; sidx <= 8'd0; em_n <= 13'd0; s_size <= 13'd0; tw_k <= 3'd0; tw_w <= 3'd0; tw_n <= 3'd0;
+            u_off <= 22'd0; u_ok <= 1'b0; u_trk <= 8'd0; u_ntrk <= 8'd0; u_two <= 1'b1; u_w <= 4'd0;
             rc_n <= 8'd0; rc_ol <= 8'd0;
             chg_pend <= 2'b00; chg_new <= 2'b00; gen <= 2'b00;
             drn_evt <= 1'b0; dn_act <= 1'b0; dr_pay <= 12'd0;
@@ -1002,7 +1098,7 @@ module fdd_src (
 
             // the header is complete: validate it, then mount the FDI
             E_L_HDR: begin
-                if (!h_ok) begin
+                if (!(h_udi ? h_ok_u : h_td ? h_ok_t : h_ok)) begin
                     dl_own  <= 1'b0;
                     dl_have <= 1'b0;
                     dl_act  <= 1'b0;
@@ -1012,6 +1108,42 @@ module fdd_src (
                     // written sector is rebuilt, and a drive that had no fill
                     // running is left exactly as it was.
                     st      <= E_IDLE;              // the drive keeps its image
+                end
+                else if (h_td) begin
+                    // Teledisk: the drive is an FDI-style one (protected, its
+                    // blocks never sent back); every table block is emptied
+                    // first, because the file lists only the tracks it has
+                    td_comp  <= hdr[0][5];             // 't' (0x74) vs 'T' (0x54)
+                    tdp      <= 1'b0;
+                    tp       <= hdr[7][7] ? TP_CM : TP_TH;
+                    tp_i     <= 4'd0;
+                    u_off    <= 22'd0;
+                    u_trk    <= 8'd0;
+                    dl_s2    <= hdr[9][1];
+                    dl_phase <= P_TD;
+                    fdi[dl_drv] <= 1'b1;
+                    lz_init  <= hdr[0][5];
+                    p_word   <= {2'd0, dl_drv, K_FDI, 7'd84, hdr[9][1], 19'd0};
+                    p_ret    <= E_T_CLR;
+                    st       <= E_P_SET;
+                end
+                else if (h_udi) begin
+                    // raw tracks: the drive is protected as for an FDI (a raw
+                    // track has no sector table to write into)
+                    dl_s2    <= hdr[10][0];
+                    u_two    <= hdr[10][0];
+                    u_ntrk   <= h_ntrk[7:0];
+                    u_trk    <= 8'd0;
+                    u_off    <= 22'd0;
+                    u_i      <= 2'd0;
+                    u_cnt    <= {8'd0, hdr[13], hdr[12]};
+                    u_sub    <= ({hdr[13], hdr[12]} == 16'd0) ? U_TH : U_EXT;
+                    dl_phase <= P_UDI;
+                    fdi[dl_drv] <= 1'b1;
+                    p_word   <= {2'd0, dl_drv, K_UDI, hdr[9][6:0] + 7'd1,
+                                 hdr[10][0], 19'd0};
+                    p_ret    <= E_L_WT;
+                    st       <= E_P_SET;
                 end
                 else begin
                     off_data <= h_offd;
@@ -1048,7 +1180,7 @@ module fdd_src (
                 if (t_pos != 24'hFF_FFFF) t_pos <= t_pos + 24'd1;
                 if (dl_phase == P_HDR) begin
                     hdr[t_pos[3:0]] <= dl_b;
-                    st              <= (t_pos == 24'd13) ? E_L_HDR : E_L_WT;
+                    st              <= (t_pos == (h_udi ? 24'd15 : h_td ? 24'd11 : 24'd13)) ? E_L_HDR : E_L_WT;
                 end
                 else if (dl_phase == P_TBL) begin
                     // t_idx (the byte's slot inside the 7-byte group) is
@@ -1092,6 +1224,54 @@ module fdd_src (
                         end
                     end
                 end
+                else if (dl_phase == P_TD) begin
+                    // a Teledisk byte: into the decoder (or, plain, straight
+                    // to the parser); after the end marker the rest is dropped
+                    if (tp == TP_END) st <= E_L_WT;
+                    else if (td_comp) begin tdp <= 1'b1; st <= E_T_RUN; end
+                    else begin ob <= dl_b; st <= E_T_OUT; end
+                end
+                else if (dl_phase == P_UDI) begin
+                    st <= E_L_WT;
+                    case (u_sub)
+                    U_EXT: begin                            // skip the extension
+                        u_cnt <= u_cnt - 24'd1;
+                        if (u_cnt == 24'd1) begin u_sub <= U_TH; u_i <= 2'd0; end
+                    end
+                    U_TH: begin                             // type, length lo, hi
+                        u_i <= u_i + 2'd1;
+                        if (u_i == 2'd0) u_type <= dl_b;
+                        else if (u_i == 2'd1) u_len[7:0] <= dl_b;
+                        else begin
+                            u_len <= u_lenN;
+                            u_ok  <= u_okN;
+                            u_w   <= 4'd0;
+                            st    <= E_U_TW;
+                        end
+                    end
+                    U_DAT, U_MSK: begin
+                        u_cnt <= u_cnt - 24'd1;
+                        if (u_ok) begin
+                            p_word <= {2'd1, 1'b0, u_off[20:0], dl_b};
+                            p_ret  <= E_L_WT;
+                            st     <= E_P_SET;
+                            u_off  <= u_off + 22'd1;
+                        end
+                        if (u_cnt == 24'd1) begin
+                            if (u_sub == U_DAT) begin
+                                u_sub <= U_MSK;
+                                u_cnt <= {11'd0, u_len[15:3] + {12'd0, |u_len[2:0]}};
+                            end
+                            else begin
+                                u_trk <= u_trk + 8'd1;
+                                u_i   <= 2'd0;
+                                u_sub <= (u_trk + 8'd1 == u_ntrk) ? U_END : U_TH;
+                            end
+                        end
+                    end
+                    default: ;                              // the tail: ignored
+                    endcase
+                end
                 else begin                                  // the data area
                     // the store addresses a drive with 21 bits: a byte past
                     // the window has nowhere to go, and wrapping it would
@@ -1107,6 +1287,264 @@ module fdd_src (
                     end
                     else
                         st <= E_L_WT;
+                end
+            end
+
+            // ==================== Teledisk ====================
+            // every table block's count byte to 0, then the first file byte
+            E_T_CLR: begin
+                if (u_trk == 8'd168) st <= E_L_WT;
+                else begin
+                    p_word <= {2'd1, 2'b11, 9'd0, u_trk, 3'd4, 8'd0};
+                    u_trk  <= u_trk + 8'd1;
+                    p_ret  <= E_T_CLR;
+                    st     <= E_P_SET;
+                end
+            end
+
+            // the parser asks for a decoded byte (or makes one up while it is
+            // generating a run); a starved decoder is fed from the host
+            E_T_RUN: begin
+                if (tp == TP_GEN || tp == TP_PAD) begin
+                    // no input needed: the next sector byte comes from here
+                    if (tp == TP_PAD) begin
+                        if (em_n < s_size) begin eb <= 8'd0; st <= E_T_EM; end
+                        else begin              // the sector is complete
+                            tp_i <= 4'd0;
+                            sidx <= sidx + 8'd1;
+                            tp   <= (sidx + 8'd1 >= tk_nsec) ? TP_TH : TP_SH;
+                        end
+                    end
+                    else if (em_n >= s_size) tp <= TP_PAD;
+                    else begin
+                        eb    <= pbuf[g_idx];
+                        st    <= E_T_EM;
+                        if (g_idx + 8'd1 == g_len) begin
+                            g_idx <= 8'd0;
+                            g_rep <= g_rep - 16'd1;
+                            if (g_rep == 16'd1)
+                                tp <= (bl_left == 16'd0) ? TP_PAD : TP_M2K;
+                        end
+                        else g_idx <= g_idx + 8'd1;
+                    end
+                end
+                else if (!td_comp) begin
+                    // plain file: the byte waits in dl_b only after E_L_B
+                    st <= E_L_WT;
+                end
+                else if (lz_out_vld) begin
+                    ob <= lz_out_data; lz_out_req <= 1'b0; st <= E_T_OUT;
+                end
+                else begin
+                    lz_out_req <= 1'b1;
+                    if (tdp && lz_need && !lz_in_vld) begin
+                        lz_in_vld <= 1'b1; lz_in_data <= dl_b; tdp <= 1'b0;
+                    end
+                    else if (lz_need && !tdp && !lz_in_vld)
+                        st <= E_L_WT;          // starved: the next file byte
+                end
+            end
+
+            // a sector byte into the window
+            E_T_EM: begin
+                if (em_n < s_size) begin
+                    p_word <= {2'd1, 1'b0, u_off[20:0], eb};
+                    u_off  <= u_off + 22'd1;
+                    em_n   <= em_n + 13'd1;
+                    p_ret  <= E_T_RUN;
+                    st     <= E_P_SET;
+                end
+                else st <= E_T_RUN;
+            end
+
+            // a track header's (5 words) or a sector record's (7) table words
+            E_T_TW: begin
+                if (tw_w == tw_n) st <= E_T_RUN;
+                else begin
+                    tw_w  <= tw_w + 3'd1;
+                    p_ret <= E_T_TW;
+                    st    <= E_P_SET;
+                    if (tw_k == 3'd1) begin
+                        case (tw_w)
+                        3'd0: p_word <= {2'd1, 2'b11, 9'd0, tk_ti, 3'd0, tk_base[7:0]};
+                        3'd1: p_word <= {2'd1, 2'b11, 9'd0, tk_ti, 3'd1, tk_base[15:8]};
+                        3'd2: p_word <= {2'd1, 2'b11, 9'd0, tk_ti, 3'd2, 3'd0, tk_base[20:16]};
+                        3'd3: p_word <= {2'd1, 2'b11, 9'd0, tk_ti, 3'd3, 8'd0};
+                        default: p_word <= {2'd1, 2'b11, 9'd0, tk_ti, 3'd4,
+                                            (tk_nsec > 8'd32) ? 8'd32 : tk_nsec};
+                        endcase
+                    end
+                    else begin
+                        case (tw_w)
+                        3'd0: p_word <= {2'd1, 2'b10, 4'd0, tk_ti, sidx[4:0], 3'd0, sh_c};
+                        3'd1: p_word <= {2'd1, 2'b10, 4'd0, tk_ti, sidx[4:0], 3'd1, sh_h};
+                        3'd2: p_word <= {2'd1, 2'b10, 4'd0, tk_ti, sidx[4:0], 3'd2, sh_r};
+                        3'd3: p_word <= {2'd1, 2'b10, 4'd0, tk_ti, sidx[4:0], 3'd3, 5'd0, sh_sz[2:0]};
+                        3'd4: p_word <= {2'd1, 2'b10, 4'd0, tk_ti, sidx[4:0], 3'd4, rec_fl};
+                        3'd5: p_word <= {2'd1, 2'b10, 4'd0, tk_ti, sidx[4:0], 3'd5, rec_off[7:0]};
+                        default: p_word <= {2'd1, 2'b10, 4'd0, tk_ti, sidx[4:0], 3'd6, rec_off[15:8]};
+                        endcase
+                    end
+                end
+            end
+
+            // one decoded byte of the record stream
+            E_T_OUT: begin
+                st <= E_T_RUN;
+                case (tp)
+                TP_CM: begin                                // the comment block
+                    tp_i <= tp_i + 4'd1;
+                    if (tp_i == 4'd2) cm_len[7:0] <= ob;
+                    if (tp_i == 4'd3) begin
+                        u_cnt <= {8'd0, ob, cm_len[7:0]} + 24'd6;
+                        tp    <= TP_SKIP;
+                    end
+                end
+                TP_SKIP: begin
+                    u_cnt <= u_cnt - 24'd1;
+                    if (u_cnt == 24'd1) begin tp <= TP_TH; tp_i <= 4'd0; end
+                end
+                TP_TH: begin                                // nsec, cyl, head, crc
+                    tp_i <= tp_i + 4'd1;
+                    if (tp_i == 4'd0) tk_nsec <= ob;
+                    if (tp_i == 4'd1) tk_cyl  <= ob;
+                    if (tp_i == 4'd2) tk_head <= ob;
+                    if (tp_i == 4'd3) begin
+                        tp_i <= 4'd0;
+                        sidx <= 8'd0;
+                        if (tk_nsec == 8'd255) tp <= TP_END;
+                        else begin
+                            tp      <= (tk_nsec == 8'd0) ? TP_TH : TP_SH;
+                            tk_ok   <= (tk_cyl <= 8'd83);
+                            tk_base <= u_off[20:0];
+                            if (tk_cyl <= 8'd83 && tk_nsec != 8'd0) begin
+                                tw_k <= 3'd1; tw_w <= 3'd0; tw_n <= 3'd5;
+                                st   <= E_T_TW;
+                            end
+                        end
+                    end
+                end
+                TP_SH: begin                                // c, h, sec, size, flags, crc
+                    tp_i <= tp_i + 4'd1;
+                    if (tp_i == 4'd0) sh_c  <= ob;
+                    if (tp_i == 4'd1) sh_h  <= ob;
+                    if (tp_i == 4'd2) sh_r  <= ob;
+                    if (tp_i == 4'd3) sh_sz <= ob;
+                    if (tp_i == 4'd4) sh_fl <= ob;
+                    if (tp_i == 4'd5) begin
+                        tp_i   <= 4'd0;
+                        em_n   <= 13'd0;
+                        // the data: a sector that fits the window and the
+                        // store's 32 record slots is stored; others only parsed
+                        if (!sh_nodata && tk_ok && sidx < 8'd32 &&
+                            ({1'b0, u_off} + {10'd0, sh_size} <= {1'b0, DL_MAX})) begin
+                            s_size  <= sh_size;
+                            rec_fl  <= 8'h01;
+                            rec_off <= u_off[15:0] - tk_base[15:0];
+                        end
+                        else begin
+                            s_size  <= 13'd0;
+                            rec_fl  <= 8'h40;
+                            rec_off <= 16'd0;
+                            if (!sh_nodata && tk_ok && sidx < 8'd32) max_bad <= 1'b1;
+                        end
+                        // (a sector without data goes through PAD with nothing
+                        // to pad: that closes it and counts it)
+                        tp <= sh_nodata ? TP_PAD : TP_BL;
+                        if (tk_ok && sidx < 8'd32) begin
+                            tw_k <= 3'd2; tw_w <= 3'd0; tw_n <= 3'd7;
+                            st   <= E_T_TW;
+                        end
+                    end
+                end
+                TP_BL: begin                                // length, method
+                    tp_i <= tp_i + 4'd1;
+                    if (tp_i == 4'd0) bl16[7:0]  <= ob;
+                    if (tp_i == 4'd1) bl16[15:8] <= ob;
+                    if (tp_i == 4'd2) begin
+                        tp_i    <= 4'd0;
+                        meth    <= ob[1:0];
+                        bl_left <= bl16 - 16'd1;
+                        if (ob > 8'd2 || bl16 == 16'd0) dl_kill <= 1'b1;
+                        else if (ob == 8'd0) tp <= (bl16 == 16'd1) ? TP_PAD : TP_M0;
+                        else if (ob == 8'd1) tp <= TP_M1;
+                        else                 tp <= TP_M2K;
+                    end
+                end
+                TP_M0: begin                                // raw bytes
+                    eb      <= ob;
+                    bl_left <= bl_left - 16'd1;
+                    if (bl_left == 16'd1) tp <= TP_PAD;
+                    st      <= E_T_EM;
+                end
+                TP_M1: begin                                // count, 2-byte pattern
+                    tp_i    <= tp_i + 4'd1;
+                    bl_left <= bl_left - 16'd1;
+                    if (tp_i == 4'd0) g_rep[7:0]  <= ob;
+                    if (tp_i == 4'd1) g_rep[15:8] <= ob;
+                    if (tp_i == 4'd3) begin
+                        g_len <= 8'd2; g_idx <= 8'd0; tp_i <= 4'd0;
+                        tp <= (g_rep == 16'd0) ? TP_PAD : TP_GEN;
+                    end
+                end
+                TP_M2K: begin                               // 0: literals; k: 2^k-byte pattern
+                    bl_left <= bl_left - 16'd1;
+                    g_lit   <= (ob == 8'd0);
+                    g_len   <= 8'd1 << ob[2:0];
+                    if (ob > 8'd7) dl_kill <= 1'b1;
+                    tp <= TP_M2N;
+                end
+                TP_M2N: begin
+                    bl_left <= bl_left - 16'd1;
+                    g_rep   <= {8'd0, ob};
+                    g_idx   <= 8'd0;
+                    if (ob == 8'd0) tp <= (bl_left == 16'd1) ? TP_PAD : TP_M2K;
+                    else            tp <= g_lit ? TP_M2L : TP_M2P;
+                end
+                TP_M2L: begin                               // literal bytes
+                    eb      <= ob;
+                    bl_left <= bl_left - 16'd1;
+                    g_rep   <= g_rep - 16'd1;
+                    st      <= E_T_EM;
+                    if (g_rep == 16'd1) tp <= (bl_left == 16'd1) ? TP_PAD : TP_M2K;
+                end
+                TP_M2P: begin                               // the pattern to repeat
+                    bl_left     <= bl_left - 16'd1;
+                    g_idx       <= g_idx + 8'd1;
+                    if (g_idx + 8'd1 == g_len) begin g_idx <= 8'd0; tp <= TP_GEN; end
+                end
+                default: ;
+                endcase
+            end
+
+            // a raw track's table words: DataOffset (4 bytes), count, and the
+            // length in record 0 - seven words, then on to its data
+            E_U_TW: begin
+                if (u_w == 4'd7) begin
+                    if (u_len == 16'd0) begin               // nothing follows
+                        u_trk <= u_trk + 8'd1;
+                        u_i   <= 2'd0;
+                        u_sub <= (u_trk + 8'd1 == u_ntrk) ? U_END : U_TH;
+                    end
+                    else begin
+                        u_sub <= U_DAT;
+                        u_cnt <= {8'd0, u_len};
+                    end
+                    st <= E_L_WT;
+                end
+                else begin
+                    u_w   <= u_w + 4'd1;
+                    p_ret <= E_U_TW;
+                    st    <= E_P_SET;
+                    case (u_w)
+                    4'd0: p_word <= {2'd1, 2'b11, 9'd0, u_ti, 3'd0, u_ok ? u_off[7:0]  : 8'd0};
+                    4'd1: p_word <= {2'd1, 2'b11, 9'd0, u_ti, 3'd1, u_ok ? u_off[15:8] : 8'd0};
+                    4'd2: p_word <= {2'd1, 2'b11, 9'd0, u_ti, 3'd2, u_ok ? {2'd0, u_off[21:16]} : 8'd0};
+                    4'd3: p_word <= {2'd1, 2'b11, 9'd0, u_ti, 3'd3, 8'd0};
+                    4'd4: p_word <= {2'd1, 2'b11, 9'd0, u_ti, 3'd4, u_ok ? 8'd1 : 8'd0};
+                    4'd5: p_word <= {2'd1, 2'b10, 4'd0, u_ti, 5'd0, 3'd0, u_ok ? u_len[7:0]  : 8'd0};
+                    default: p_word <= {2'd1, 2'b10, 4'd0, u_ti, 5'd0, 3'd1, u_ok ? u_len[15:8] : 8'd0};
+                    endcase
                 end
             end
 
@@ -1146,7 +1584,9 @@ module fdd_src (
                 jb      <= 1'b0;
                 dl_kill <= 1'b0;
                 dl_have <= 1'b0;
-                if (!dl_kill && !max_bad && dl_phase == P_DAT) begin
+                if (!dl_kill && !max_bad &&
+                    (dl_phase == P_DAT || (dl_phase == P_UDI && u_sub == U_END) ||
+                     (dl_phase == P_TD && (tp == TP_END || (tp == TP_TH && tp_i == 4'd0))))) begin
                     p_word <= {2'd2, dl_drv, 29'd0};
                     p_ret  <= E_IDLE;
                     st     <= E_P_SET;
