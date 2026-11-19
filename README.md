@@ -86,6 +86,20 @@ serial channels owns the HPS UART - see Serial below), and the reset buttons.
 hard-wires it to Pentagon), so the core profile's `profi.vhd` rewrite widens
 `kg_soft_switches` to 16 registers and feeds `kb_screen_mode` from it.
 
+### Keyboard shortcuts
+
+The Karabas Go's MCU firmware has hotkeys (Menu+F11 turbo, Menu+F12 NMI,
+Ctrl+Alt+Del reset); this port has no such firmware and MiSTer keeps F12 for its
+own OSD, so `rtl/host/hotkeys.sv` decodes its own (either Ctrl and either Alt):
+
+| Keys | Does |
+|---|---|
+| `Ctrl+Alt+Del` | Reset (the OSD `Reset` item) |
+| `Ctrl+Alt+End` | NMI (the OSD `NMI` item) |
+| `Ctrl+Alt+PgUp` | Turbo: Off, 2x, 4x, 8x, Off ... (the OSD `Turbo` field follows) |
+
+The keys also reach the machine as ordinary key presses.
+
 ## Mouse, joysticks and RTC
 
 The board's MCU sends more than the keyboard and the OSD switches over the
@@ -290,12 +304,14 @@ not disk slots, and are read-only.
   A drive answers from the mounted image: `.trd` (TR-DOS, its ID header
   decides), `.img`/`.scl` (no reliable geometry - the `Disk layout` item
   says what they are; an `.scl` arrives as Main's converted temporary TRD,
-  read-only) or an FDI stream. The tracks live in DDR3: the image is only
+  read-only) or an FDI stream. Main's picker also lists `.fdi`/`.udi` under the `(TRD)` entries and converts them to a plain TRD (protection lost), and that converter cannot open a file inside a zip (empty disk, TR-DOS disc error); the `(raw)` entries take `.fdi`, `.udi`, `.td0` and `.scl` as they are, also from a zip. The tracks live in DDR3: the image is only
   consulted for the track the head asks for, and a track the machine
   writes is rebuilt in place and goes back into the mounted file. The FDI
-  entries (`F1` `Floppy A FDI/UDI/TD0`, `F2` `Floppy B FDI/UDI/TD0`) stream an
+  entries (`F1` `Floppy A (raw)`, `F2` `Floppy B (raw)`) stream an
   image in over the ioctl path instead of mounting it, and are read-only -
-  their writes are volatile. The file's own header says what it is:
+  their writes are volatile. Main offers Backspace-unmount only for
+  mounted `S` slots, not for these rows, so a raw image stays in the drive until another one
+  is mounted or the core is reloaded. The file's own header says what it is:
   `FDI` (sector list), `UDI!` (raw tracks - bytes and clock-mark bitmap played
   as they are, a protected disk's odd sync marks and track length included;
   MFM tracks of at most 8191 bytes, the revolution takes the track's own

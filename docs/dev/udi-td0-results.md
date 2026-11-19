@@ -1,6 +1,6 @@
 # UDI and TD0 floppy images (2026-11-18)
 
-The `F1`/`F2` entries (`Floppy A/B FDI/UDI/TD0`) take three more kinds of
+The `F1`/`F2` entries (`Floppy A/B (raw)`) take three more kinds of
 file. The header decides, so one entry does all of them.
 
 ## UDI: raw tracks
@@ -57,6 +57,23 @@ comment record after the tracks in eleven (ignored). Marked bytes: A1 (all), C2
   matches after decompression and expansion for 66 566; every expanded sector
   has exactly its declared size (95 988 sectors).
 
+## SCL: Sinclair archives
+
+Main converts `.scl` (and `.fdi`, `.udi`) picked under the `(TRD)` rows to a TRD
+itself, with a plain `open()` of the path, so a file inside a zip yields an empty
+image and TR-DOS reports a disc error (MiSTer's `x2trd`; not a core fault). The
+`(raw)` rows stream the file through Main's zip-aware loader instead, so they now
+take `.scl` as well: `fdd_src` (`P_SCL`) builds the TRD in the window. The
+catalog area (4 KiB) is cleared first, each 14-byte entry goes to `entry * 16`
+with its first sector and track made up from the running sector count, the ID
+sector gets first free sector/track, disk type 0x16, file count, free sectors and
+the TR-DOS signature, and the file sectors follow from 0x1000. The 32-bit sum at
+the end is not checked. Config: TRD kind, 80 cylinders, two sides; protected like
+the other raw formats. More than 128 files, or more sectors than an 80-cylinder
+disk holds, is refused (no ready). Reference: `tools/scl.py`; bench:
+`sim/run_tb_fdd_scl.sh` (byte-exact window of a three-file image, stale catalog
+cleared, both refusals; two mutants caught).
+
 ## Verification
 
 | What | Result |
@@ -66,6 +83,7 @@ comment record after the tracks in eleven (ignored). Marked bytes: A1 (all), C2
 | `sim/run_tb_fdd_img.sh` | PASS: `udi_download` (A: 6250 and 6290-byte tracks; B: one side, extension, empty and short track; the store announces each length, mutant without the marks fails), `td0_download` (compressed and plain, comment, every sector shape, stale table blocks emptied) |
 | `sim/run_tb_floppy_raw.sh` | PASS: period = length x 16 ticks for 6400/6250/6016, exactly one `5224`, `4489` present |
 | `sim/run_tb_floppy.sh` | PASS, six speed/CPU combinations (73 min) with the variable revolution |
+| Build 90 (seed 7) | `check_timing` OK with the SDRAM pin constraints (read path +1.215 ns, docs/dev/sdram-timing.md); boots; hotkeys, renamed rows; an SCL (loose and inside a zip) streamed through `Floppy A (raw)` runs its auto-run program under TR-DOS |
 | Build 83 (seed 3) | `check_timing` OK, worst setup slack **+0.173 ns** (HDMI PLL domain); 81 % ALMs, 398 of 553 RAM blocks; boots |
 | Board, standard TR-DOS UDI | `boot` runs: The Dizzy Editor loads |
 | Board, UDI with 6400-byte tracks (a STEP demo) | runs the whole intro; the same disk converted to a sector TRD falls back to BASIC |

@@ -162,8 +162,8 @@ class FloppyBuild(unittest.TestCase):
 
     def test_the_storage_rows_come_before_the_tape(self):
         for row, name in ((0, "IDE 0"), (1, "IDE 1"), (2, "SD Card"),
-                          (3, "Floppy A"), (4, "Floppy B"),
-                          (5, "Floppy A FDI/UDI/TD0"), (6, "Floppy B FDI/UDI/TD0"),
+                          (3, "Floppy A (TRD)"), (4, "Floppy B (TRD)"),
+                          (5, "Floppy A (raw)"), (6, "Floppy B (raw)"),
                           (7, "Disk layout"), (8, "Tape")):
             self.assertEqual(mister.ROWS[row], name)
 
@@ -248,7 +248,7 @@ class ConfStrRowMap(unittest.TestCase):
         rows = self.conf_str_rows()
         self.assertEqual(rows[:12], [
             "IDE 0", "IDE 1", "SD Card",
-            "Floppy A", "Floppy B", "Floppy A FDI/UDI/TD0", "Floppy B FDI/UDI/TD0",
+            "Floppy A (TRD)", "Floppy B (TRD)", "Floppy A (raw)", "Floppy B (raw)",
             "Disk layout",
             "Tape", "Tape play/pause", "Tape previous block",
             "Tape next block"])

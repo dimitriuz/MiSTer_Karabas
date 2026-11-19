@@ -423,9 +423,19 @@ module fdd_src (
                      E_T_OUT = 6'd29,   // ... one decoded byte parsed
                      E_T_EM  = 6'd30,   // ... one sector byte into the window
                      E_T_TW  = 6'd31,   // ... a track header's or a record's table words
-                     E_T_CLR = 6'd32;   // ... every table block's count to 0
+                     E_T_CLR = 6'd32,   // ... every table block's count to 0
+                     E_S_CLR = 6'd33,   // SCL: the catalog area to zero
+                     E_S_X   = 6'd34,   // ... an entry's made-up first sector and track
+                     E_S_I   = 6'd35;   // ... the ID sector's fields
 
-    localparam [2:0] P_HDR = 3'd0, P_TBL = 3'd1, P_DAT = 3'd2, P_UDI = 3'd3, P_TD = 3'd4;
+    localparam [2:0] P_HDR = 3'd0, P_TBL = 3'd1, P_DAT = 3'd2, P_UDI = 3'd3, P_TD = 3'd4,
+                     P_SCL = 3'd5;
+    // the SCL stream: the catalog entries, then the files' sectors
+    reg        sc_dat  = 1'b0;
+    reg [11:0] sc_tot  = 12'd0;        // sectors the entries declared so far
+    reg  [7:0] sc_len  = 8'd0;         // the entry's sector count
+    wire [11:0] sc_free = 12'd2544 - sc_tot;       // 80 cylinders x 2 x 16 - 16
+    wire  [7:0] sc_trk  = sc_tot[11:4] + 8'd1;     // the first free track
     // the UDI stream, inside P_UDI: the extended header to skip, a track's
     // three header bytes, its data, its clock-mark bitmap, and the tail
     localparam [2:0] U_EXT = 3'd0, U_TH = 3'd1, U_DAT = 3'd2, U_MSK = 3'd3, U_END = 3'd4;
@@ -605,6 +615,11 @@ module fdd_src (
     wire        h_td    = ((hdr[0] == 8'h54) && (hdr[1] == 8'h44)) ||   // "TD"
                           ((hdr[0] == 8'h74) && (hdr[1] == 8'h64));     // "td"
     wire        h_ok_t  = h_td && (hdr[9] == 8'd1 || hdr[9] == 8'd2);
+    // an SCL header: "SINCLAIR" and the file count (the TR-DOS catalog holds 128)
+    wire        h_scl   = (hdr[0] == 8'h53);
+    wire        h_ok_s  = (hdr[0] == 8'h53) && (hdr[1] == 8'h49) && (hdr[2] == 8'h4E) &&
+                          (hdr[3] == 8'h43) && (hdr[4] == 8'h4C) && (hdr[5] == 8'h41) &&
+                          (hdr[6] == 8'h49) && (hdr[7] == 8'h52) && (hdr[8] <= 8'd128);
     wire        h_ok_u  = (hdr[0] == 8'h55) && (hdr[1] == 8'h44) &&
                           (hdr[2] == 8'h49) && (hdr[3] == 8'h21) &&
                           (hdr[8] == 8'h00) && (hdr[9] <= 8'd83) &&
@@ -1098,7 +1113,7 @@ module fdd_src (
 
             // the header is complete: validate it, then mount the FDI
             E_L_HDR: begin
-                if (!(h_udi ? h_ok_u : h_td ? h_ok_t : h_ok)) begin
+                if (!(h_udi ? h_ok_u : h_td ? h_ok_t : h_scl ? h_ok_s : h_ok)) begin
                     dl_own  <= 1'b0;
                     dl_have <= 1'b0;
                     dl_act  <= 1'b0;
@@ -1108,6 +1123,21 @@ module fdd_src (
                     // written sector is rebuilt, and a drive that had no fill
                     // running is left exactly as it was.
                     st      <= E_IDLE;              // the drive keeps its image
+                end
+                else if (h_scl) begin
+                    // Sinclair SCL: the drive is a flat TRD built in the window
+                    // (rtl notes at the top of tools/scl.py); protected like an FDI
+                    dl_s2    <= 1'b1;
+                    dl_phase <= P_SCL;
+                    sc_dat   <= 1'b0;
+                    sc_tot   <= 12'd0;
+                    tp_i     <= 4'd0;
+                    u_trk    <= 8'd0;
+                    u_off    <= 22'd0;
+                    fdi[dl_drv] <= 1'b1;
+                    p_word   <= {2'd0, dl_drv, K_TRD, 7'd80, 1'b1, 19'd0};
+                    p_ret    <= E_S_CLR;
+                    st       <= E_P_SET;
                 end
                 else if (h_td) begin
                     // Teledisk: the drive is an FDI-style one (protected, its
@@ -1180,7 +1210,7 @@ module fdd_src (
                 if (t_pos != 24'hFF_FFFF) t_pos <= t_pos + 24'd1;
                 if (dl_phase == P_HDR) begin
                     hdr[t_pos[3:0]] <= dl_b;
-                    st              <= (t_pos == (h_udi ? 24'd15 : h_td ? 24'd11 : 24'd13)) ? E_L_HDR : E_L_WT;
+                    st              <= (t_pos == (h_udi ? 24'd15 : h_td ? 24'd11 : h_scl ? 24'd8 : 24'd13)) ? E_L_HDR : E_L_WT;
                 end
                 else if (dl_phase == P_TBL) begin
                     // t_idx (the byte's slot inside the 7-byte group) is
@@ -1222,6 +1252,28 @@ module fdd_src (
                             if (t_idx == 3'd5) rc_ol <= dl_b;
                             if (t_idx == 3'd6 && rc_bad) max_bad <= 1'b1;
                         end
+                    end
+                end
+                else if (dl_phase == P_SCL) begin
+                    st <= E_L_WT;
+                    if (!sc_dat) begin
+                        // byte tp_i of entry u_trk, straight to the catalog
+                        p_word <= {2'd1, 1'b0, 10'd0, u_trk[6:0], tp_i, dl_b};
+                        p_ret  <= E_L_WT;
+                        st     <= E_P_SET;
+                        if (tp_i == 4'd13) begin           // the sector count
+                            sc_len <= dl_b;
+                            tw_k   <= 3'd0;
+                            p_ret  <= E_S_X;
+                        end
+                        else tp_i <= tp_i + 4'd1;
+                    end
+                    else if (u_cnt != 24'd0) begin         // a file sector byte
+                        p_word <= {2'd1, 1'b0, u_off[20:0], dl_b};
+                        p_ret  <= E_L_WT;
+                        st     <= E_P_SET;
+                        u_off  <= u_off + 22'd1;
+                        u_cnt  <= u_cnt - 24'd1;
                     end
                 end
                 else if (dl_phase == P_TD) begin
@@ -1300,6 +1352,68 @@ module fdd_src (
                     p_ret  <= E_T_CLR;
                     st     <= E_P_SET;
                 end
+            end
+
+            // ==================== Sinclair SCL ====================
+            // the catalog area (4 KiB) to zero: the window keeps the last image
+            E_S_CLR: begin
+                if (u_off == 22'd4096) begin
+                    u_off <= 22'h1000;                     // file data starts here
+                    tw_k  <= 3'd0;
+                    st    <= (hdr[8] == 8'd0) ? E_S_I : E_L_WT;
+                end
+                else begin
+                    p_word <= {2'd1, 1'b0, u_off[20:0], 8'd0};
+                    u_off  <= u_off + 22'd1;
+                    p_ret  <= E_S_CLR;
+                    st     <= E_P_SET;
+                end
+            end
+
+            // an entry's last two bytes (first sector, first track) come from the
+            // running sector count; then the next entry, or the ID sector
+            E_S_X: begin
+                case (tw_k)
+                3'd0: begin
+                    p_word <= {2'd1, 1'b0, 10'd0, u_trk[6:0], 4'd14, 4'd0, sc_tot[3:0]};
+                    tw_k   <= 3'd1; p_ret <= E_S_X; st <= E_P_SET;
+                end
+                3'd1: begin
+                    p_word <= {2'd1, 1'b0, 10'd0, u_trk[6:0], 4'd15, sc_trk};
+                    tw_k   <= 3'd2; p_ret <= E_S_X; st <= E_P_SET;
+                end
+                default: begin
+                    sc_tot <= sc_tot + {4'd0, sc_len};
+                    // more sectors than an 80-cylinder disk holds: refused
+                    if (sc_tot + {4'd0, sc_len} > 12'd2544) dl_kill <= 1'b1;
+                    tp_i   <= 4'd0;
+                    u_trk  <= u_trk + 8'd1;
+                    tw_k   <= 3'd0;
+                    st     <= (u_trk + 8'd1 == hdr[8]) ? E_S_I : E_L_WT;
+                end
+                endcase
+            end
+
+            // the ID sector: first free sector and track, disk type, file
+            // count, free sectors, the TR-DOS signature; then the file data
+            E_S_I: begin
+                tw_k <= tw_k + 3'd1;
+                p_ret <= E_S_I;
+                st    <= E_P_SET;
+                case (tw_k)
+                3'd0: p_word <= {2'd1, 1'b0, 21'h0008E1, 4'd0, sc_tot[3:0]};
+                3'd1: p_word <= {2'd1, 1'b0, 21'h0008E2, sc_trk};
+                3'd2: p_word <= {2'd1, 1'b0, 21'h0008E3, 8'h16};
+                3'd3: p_word <= {2'd1, 1'b0, 21'h0008E4, hdr[8]};
+                3'd4: p_word <= {2'd1, 1'b0, 21'h0008E5, sc_free[7:0]};
+                3'd5: p_word <= {2'd1, 1'b0, 21'h0008E6, 4'd0, sc_free[11:8]};
+                3'd6: p_word <= {2'd1, 1'b0, 21'h0008E7, 8'h10};
+                default: begin
+                    sc_dat <= 1'b1;
+                    u_cnt  <= {4'd0, sc_tot, 8'd0};
+                    st     <= E_L_WT;
+                end
+                endcase
             end
 
             // the parser asks for a decoded byte (or makes one up while it is
@@ -1585,7 +1699,7 @@ module fdd_src (
                 dl_kill <= 1'b0;
                 dl_have <= 1'b0;
                 if (!dl_kill && !max_bad &&
-                    (dl_phase == P_DAT || (dl_phase == P_UDI && u_sub == U_END) ||
+                    (dl_phase == P_DAT || (dl_phase == P_UDI && u_sub == U_END) || (dl_phase == P_SCL && sc_dat) ||
                      (dl_phase == P_TD && (tp == TP_END || (tp == TP_TH && tp_i == 4'd0))))) begin
                     p_word <= {2'd2, dl_drv, 29'd0};
                     p_ret  <= E_IDLE;

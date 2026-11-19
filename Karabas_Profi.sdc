@@ -87,6 +87,7 @@ create_generated_clock -name clk_bus24 -divide_by 4 -add -master_clock clk_mem96
 	[get_registers {emu:emu|profi:u_profi|clock:U1|clkdiv4:U11|q}]
 
 # DS80 selects one {clk_mem, clk_bus} pair at a time.
+# (the SDRAM_CLK pin clocks are defined further down; they join these groups there)
 set_clock_groups -logically_exclusive -group {clk_mem112 clk_bus28} \
 	-group {clk_mem96 clk_bus24}
 
@@ -188,3 +189,32 @@ set_false_path -from [get_registers {*sdram_nowait:U_SDRAM|b_done_r}] \
 # (the stage 1 sram_bridge cdc_fifo false paths went with the bridge: the
 # no-wait controller has no gray-pointer crossing between these clocks)
 
+
+# ---- the SDRAM chip's I/O timing (the pins were unconstrained before: the
+# data the chip returns was never timed, so whether it was captured correctly
+# depended on the seed's placement) ----
+# SDRAM_CLK leaves through the DDR output register as clk_mem inverted (datain_h
+# 0, datain_l 1), one generated clock per clkmux2 input.
+create_generated_clock -name SDRAM_CLK112 -invert -master_clock clk_mem112 \
+	-source [get_pins {emu:emu|profi:u_profi|clock:U1|clkmux2:U9|clk_out~CLKENA*|outclk}] \
+	[get_ports {SDRAM_CLK}]
+create_generated_clock -name SDRAM_CLK96 -invert -add -master_clock clk_mem96 \
+	-source [get_pins {emu:emu|profi:u_profi|clock:U1|clkmux2:U9|clk_out~CLKENA*|outclk}] \
+	[get_ports {SDRAM_CLK}]
+# the chip (MiSTer SDRAM module, -6/-7 grade, CL2): tAC 5.4 + ~1 board on the data
+# it drives (max), tOH 2.5 + ~0.7 (min); tIS 1.5 and tIH 0.8 on what it samples
+foreach c {SDRAM_CLK112 SDRAM_CLK96} {
+	set_input_delay -clock $c -max 6.4 [get_ports {SDRAM_DQ[*]}] -add_delay
+	set_input_delay -clock $c -min 3.2 [get_ports {SDRAM_DQ[*]}] -add_delay
+	set_output_delay -clock $c -max 1.5 [get_ports {SDRAM_A[*] SDRAM_BA[*] SDRAM_DQ[*] SDRAM_DQMH SDRAM_DQML SDRAM_nCAS SDRAM_nRAS SDRAM_nWE}] -add_delay
+	set_output_delay -clock $c -min -0.8 [get_ports {SDRAM_A[*] SDRAM_BA[*] SDRAM_DQ[*] SDRAM_DQMH SDRAM_DQML SDRAM_nCAS SDRAM_nRAS SDRAM_nWE}] -add_delay
+}
+set_clock_groups -logically_exclusive -group {clk_mem112 clk_bus28 SDRAM_CLK112} \
+	-group {clk_mem96 clk_bus24 SDRAM_CLK96}
+# The read data: a READ at S0 + 2 is captured at S0 + 5 (sdram_nowait.vhd), so
+# the data the chip launches at its clock edge two chip cycles after the READ
+# (CL2) is taken three clk_mem edges after that edge, not at the next one
+set_multicycle_path -setup 3 -from [get_clocks {SDRAM_CLK112}] -to [get_clocks {clk_mem112}]
+set_multicycle_path -hold  2 -from [get_clocks {SDRAM_CLK112}] -to [get_clocks {clk_mem112}]
+set_multicycle_path -setup 3 -from [get_clocks {SDRAM_CLK96}]  -to [get_clocks {clk_mem96}]
+set_multicycle_path -hold  2 -from [get_clocks {SDRAM_CLK96}]  -to [get_clocks {clk_mem96}]

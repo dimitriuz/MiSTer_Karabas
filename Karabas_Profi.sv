@@ -66,10 +66,10 @@ localparam CONF_STR = {
 	"-;",
 	"S1,VHD,SD Card;",
 	"-;",
-	"S4,TRDIMGSCL,Floppy A;",
-	"S5,TRDIMGSCL,Floppy B;",
-	"F1,FDIUDITD0,Floppy A FDI/UDI/TD0;",
-	"F2,FDIUDITD0,Floppy B FDI/UDI/TD0;",
+	"S4,TRDIMGSCL,Floppy A (TRD);",
+	"S5,TRDIMGSCL,Floppy B (TRD);",
+	"F1,FDIUDITD0SCL,Floppy A (raw);",
+	"F2,FDIUDITD0SCL,Floppy B (raw);",
 	"O[35:34],Disk layout,Auto,TR-DOS,CP/M;",
 	"-;",
 	"S0,TAPTZXCSW,Tape;",
@@ -128,7 +128,13 @@ wire forced_scandoubler;
 wire [21:0] gamma_bus;
 wire [7:0] uart_mode;             // OSD "UART mode" select: 3 = MIDI
 
-wire osd_reset = status[0] | buttons[1] | RESET;
+// keyboard shortcuts (rtl/host/hotkeys.sv): Ctrl+Alt+Del reset, Ctrl+Alt+End NMI,
+// Ctrl+Alt+PgUp turbo cycle (written back to the OSD status)
+wire        hk_reset, hk_nmi, hk_turbo_set;
+wire  [1:0] hk_turbo;
+wire osd_reset = status[0] | buttons[1] | RESET | hk_reset;
+// what mcu_emu sees: the status with the NMI shortcut OR'd into the NMI trigger bit
+wire [127:0] status_mcu = status | {107'd0, hk_nmi, 20'd0};
 
 wire        ioctl_download;
 wire [15:0] ioctl_index;
@@ -217,6 +223,8 @@ hps_io #(.CONF_STR(CONF_STR), .VDNUM(6), .BLKSZ(2)) hps_io
 
 	.buttons(buttons),
 	.status(status),
+	.status_in({status[127:10], hk_turbo, status[7:0]}),
+	.status_set(hk_turbo_set),
 	.status_menumask(16'd0),
 
 	.uart_mode(uart_mode),
@@ -271,6 +279,17 @@ ps2_hid ps2_hid (
 	.changed(kb_changed)
 );
 
+hotkeys u_hotkeys (
+	.clk(clk_sys),
+	.reset(por_reset | RESET),
+	.ps2_key(ps2_key),
+	.turbo_now(status[9:8]),
+	.hk_reset(hk_reset),
+	.hk_nmi(hk_nmi),
+	.turbo_new(hk_turbo),
+	.turbo_set(hk_turbo_set)
+);
+
 wire mcu_cs_n, mcu_sck, mcu_mosi, mcu_miso;
 wire [23:0] mcu_last_reply;   // for later stages
 wire        mcu_reply_valid;
@@ -315,7 +334,7 @@ mcu_emu u_mcu (
 	.ioctl_dout(ioctl_dout),
 	.ioctl_wait(mcu_ioctl_wait),
 
-	.status(status),
+	.status(status_mcu),
 	.osd_reset(osd_reset),
 
 	.kb_report(kb_report),

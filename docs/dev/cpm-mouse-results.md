@@ -60,4 +60,5 @@ Build 80, CP/M MultiConfig item 2 (Psw Soft's): three or more mouse events reboo
 - `sim/_probe_int.vhd` / `sim/_probe_int.sh` (scratch probe, not in `run_all`): real `serial_mouse` + `hw_int` + T80 in IM2 with a handler at the vector. Six events give exactly three interrupts each, `INT_N` returns high after the reads. The chip and the CPU path are correct when a handler exists.
 - Working theory, not proven: Psw sets the #93 bit0 interrupt enable with no handler at RST 20h / the IM2 vector, so the held byte re-enters the vector forever.
 - Experiment, interrupt forced off (`INT_N <= '1'` in the chip): builds 81 (seed 3) and 82 (seed 4) both booted to a black screen, so it was never tested. Black builds without the experiment: 77 (seed 1) and 79 (seed 2). Cause unknown; `check_timing` does not catch it.
+- Update 2026-11-19: the black builds are explained by the unconstrained SDRAM pins (docs/dev/sdram-timing.md), so the experiment of builds 81/82 can be rebuilt and tested on a build that boots.
 - Next: a full-system run with the ROM, or a debug latch for "CPU took a mouse INTA", or a real-hardware comparison.

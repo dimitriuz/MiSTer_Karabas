@@ -60,13 +60,12 @@ set_global_assignment -name ECO_OPTIMIZE_TIMING ON
 set_global_assignment -name PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
 set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
-# Seed 3. Seed 1 (build 77) closed with -0.42 ns on the HDMI PLL's counter clock
-# (pll_hdmi, not our logic) and did not boot. Seed 2 booted on builds 78 and
-# passed check_timing on build 79 too, but build 79 (seed 2 with the serial
-# mouse rewrite) showed a black screen on the board, without any image; the
-# same sources on seed 3 (build 80) boot. A build that passes check_timing can
-# still not boot: boot every RBF on the board before trusting it.
-set_global_assignment -name SEED 3
+# Seed 7 (build 90). Until build 89 the SDRAM pins had no timing constraints
+# (Karabas_Profi.sdc) and a build that passed check_timing could still read
+# garbage from the chip depending on the seed - see docs/dev/sdram-timing.md. With
+# the constraints the read path is timed and the fitter places it, so the seed
+# matters much less; this one booted on builds 89 and 90.
+set_global_assignment -name SEED 7
 
 #set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
 
