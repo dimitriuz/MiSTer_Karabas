@@ -218,3 +218,13 @@ set_multicycle_path -setup 3 -from [get_clocks {SDRAM_CLK112}] -to [get_clocks {
 set_multicycle_path -hold  2 -from [get_clocks {SDRAM_CLK112}] -to [get_clocks {clk_mem112}]
 set_multicycle_path -setup 3 -from [get_clocks {SDRAM_CLK96}]  -to [get_clocks {clk_mem96}]
 set_multicycle_path -hold  2 -from [get_clocks {SDRAM_CLK96}]  -to [get_clocks {clk_mem96}]
+
+# The HQ2x scandoubler's blender (sys/hq2x.sv) runs on clk_vid (112.5 MHz) but every register in it
+# is enabled by ce_in = scandoubler's ce_x4i, which fires at 1/4, 2/4 and 3/4 of a pixel plus once
+# per line at the hsync edge: with our pixel strobe (ENA_RGB, 7 MHz Spectrum modes = 16 clk_vid,
+# 12 MHz DS80 = ~9) the regular spacing is 4, never below 2 clk_vid. Both ends of every path into the
+# blender are loaded on that enable, so two clk_vid periods are available (the long Blend adder
+# chain missed one by 1.4 to 1.7 ns in seeds 12, 15 and 17, and swings by 2 ns between seeds).
+# The only 1-clk spacing is the hsync-edge pulse next to a regular one, inside the blanking.
+set_multicycle_path -setup 2 -to [get_registers {*|Hq2x:Hq2x|Blend:blender|*}]
+set_multicycle_path -hold  1 -to [get_registers {*|Hq2x:Hq2x|Blend:blender|*}]

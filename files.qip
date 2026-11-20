@@ -49,6 +49,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape/tape_src.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/ps2_hid.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/hotkeys.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/fdc_trace.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/core_beacon.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/pc_trace.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/mcu_spi_master.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/bcd_clock.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/host/mcu_emu.sv

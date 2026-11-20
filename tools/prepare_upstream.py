@@ -443,6 +443,46 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
     ("src/rtl/profi.vhd",
      "STATUS_CF \t\t=> hdd_active or sdc_active or hdf_led,",
      "STATUS_CF \t\t=> hdd_active or hdf_led,"),
+    # Stage 6 (rtl/host/fdc_trace.sv): the FDC bus cycle, out for the debug log.
+    # The strobes are the hrdy_fdc's own selects; reg is A[6:5], q the chip's
+    # answer. Read-only taps: nothing here changes what the machine does.
+    ("src/rtl/profi.vhd",
+     "\tFDC_SIDE_N : out  STD_LOGIC\n);\nend profi;",
+     "\tFDC_SIDE_N : out  STD_LOGIC;\n"
+     "\tDBG_FDC_WR : out std_logic;\n"
+     "\tDBG_FDC_RD : out std_logic;\n"
+     "\tDBG_FDC_FF : out std_logic;\n"
+     "\tDBG_FDC_REG : out std_logic_vector(1 downto 0);\n"
+     "\tDBG_FDC_D : out std_logic_vector(7 downto 0);\n"
+     "\tDBG_FDC_Q : out std_logic_vector(7 downto 0);\n"
+     "\tDBG_PC_FETCH : out std_logic;\n"
+     "\tDBG_PC : out std_logic_vector(15 downto 0);\n"
+     "\tDBG_PC_DI : out std_logic_vector(7 downto 0)\n);\nend profi;"),
+    ("src/rtl/profi.vhd",
+     "\n-- FDD controller\nG_FDD: if ENABLE_FDD=1 generate",
+     "\nDBG_FDC_WR <= '1' when (cpu_iorq_n = '0' and cpu_wr_n = '0' and (fdd_cs_n = '0' or fdd_cs_pff_n = '0')) else '0';\n"
+     "DBG_FDC_RD <= '1' when (cpu_iorq_n = '0' and cpu_rd_n = '0' and (fdd_cs_n = '0' or fdd_cs_pff_n = '0')) else '0';\n"
+     "DBG_FDC_FF <= not fdd_cs_pff_n;\n"
+     "DBG_FDC_REG <= cpu_a_bus(6 downto 5);\n"
+     "DBG_FDC_D <= cpu_do_bus;\n"
+     "DBG_FDC_Q <= fdd_do_bus;\n"
+     "DBG_PC_FETCH <= '1' when (cpu_m1_n = '0' and cpu_mreq_n = '0') else '0';\n"
+     "DBG_PC <= cpu_a_bus;\n"
+     "DBG_PC_DI <= cpu_di_bus;\n"
+     "\n-- FDD controller\nG_FDD: if ENABLE_FDD=1 generate"),
+    # TR-DOS page for the M1 that enters it (#3Dxx in the 48 ROM). Upstream's dos_pre is
+    # registered at the end of T1 and is on the SRAM address in T2; the SDRAM controller
+    # (rtl/mem/sdram_nowait.vhd) latches the address and so the ROM page two clk_mem after T1
+    # starts, one fetch before dos_pre arrives. The first opcode after `JP #3D30` then came
+    # from the 48 ROM (00) instead of TR-DOS (C9 = the RET the AMS.fdi loader jumps through).
+    # The same condition, combinationally from the T1 address and /M1, reaches the sample.
+    ("src/rtl/profi.vhd",
+     "dos_rom <= dos_act or (dos_pre and not cpu_mreq_n);",
+     "dos_early <= '1' when (cpu_m1_n = '0' and hia = X\"3D\" and (rom14 = '1' or unlock_128 = '1') and port_dffd_reg(4) = '0') else '0';\n"
+     "dos_rom <= dos_act or (dos_pre and not cpu_mreq_n) or dos_early;"),
+    ("src/rtl/profi.vhd",
+     "signal dos_pre\t\t\t\t: std_logic := '0';",
+     "signal dos_pre\t\t\t\t: std_logic := '0';\nsignal dos_early\t\t\t: std_logic := '0';"),
 ]
 
 # T80s.vhd rewrites (core profile only). The exception to "never patch T80":
@@ -479,6 +519,52 @@ SERIAL_MOUSE_REWRITES = [  # (out-relative file, exact old string, exact new str
 ]
 
 
+# jtopl rewrites (core profile only): jotego/jtopl ff18c47 (2026-11-15, "Correct envelope rates and
+# key scaling") for the three envelope files, plus the decay increment of jtopl's earlier "OPL ref
+# increments by 1" change that the vendored copy still lacks (its fast-rate table and default step
+# only match the fixed key-scale shift together). sim/run_tb_jtopl_eg_rate.sh runs jtopl's own
+# eg_rate test (sim/tb_jtopl_eg_rate.v) on the rewritten files.
+JTOPL_REWRITES = [  # (out-relative file, exact old string, exact new string)
+    ("src/rtl/sound/jtopl/jtopl_eg_ctrl.v",
+     "base_rate   = {rrate,1'b1};",
+     "base_rate   = {rrate,1'b0};"),
+    ("src/rtl/sound/jtopl/jtopl_eg_pure.v",
+     "        4'b1100: dr_sum = 4'h2; // 12\n"
+     "        4'b1101: dr_sum = 4'h4; // 13\n"
+     "        4'b1110: dr_sum = 4'h8; // 14\n"
+     "        4'b1111: dr_sum = 4'hf;// 15\n"
+     "        default: dr_sum = { 2'b0, step, 1'b0 };",
+     "        4'b1100: dr_sum = step ? 4'd2 : 4'd1;\n"
+     "        4'b1101: dr_sum = step ? 4'd4 : 4'd2;\n"
+     "        4'b1110: dr_sum = step ? 4'd8 : 4'd4;\n"
+     "        4'b1111: dr_sum = 4'd8;\n"
+     "        default: dr_sum = { 3'b0, step };"),
+    ("src/rtl/sound/jtopl/jtopl_eg_step.v",
+     "assign shby = ksr ? 2'd1 : 2'd3;",
+     "assign shby = ksr ? 2'd0 : 2'd2;"),
+    # a YM3812 status read has bits 4:0 clear (#C0 after a timer 1 overflow); the 5'd6 is the
+    # YMF262 value. The esxdos VGM player detects the chip by comparing against #C0.
+    ("src/rtl/sound/jtopl/jtopl.v",
+     "assign          dout    = { ~irq_n, flag_A, flag_B, 5'd6 };",
+     "assign          dout    = { ~irq_n, flag_A, flag_B, (OPL_TYPE==2) ? 5'd0 : 5'd6 };"),
+]
+
+
+# divmmc_map.vhd rewrite (core profile only). AUTOMAP reaches the memory unit in the first
+# clock of /MREQ, after the SDRAM controller has latched the page (2 clk_mem after T1 starts):
+# the fetch that maps (#3Dxx, immediate) read the main ROM and every delayed map (#0000, #0008,
+# #0038, #0066, #04C6, #0562) took effect one fetch late. Before /MREQ the value the fetch
+# will get is already a function of the T1 address and the map condition of the fetches
+# before it, so the output follows that while /M1 is low and the fetch has not started.
+# sim/tb_rom_entry.vhd runs the rewritten file.
+DIVMMC_MAP_REWRITES = [  # (out-relative file, exact old string, exact new string)
+    ("src/rtl/bus/divmmc_map.vhd",
+     "AUTOMAP <= '0' when blk_r = '1' else automap_next_r when fetch_start = '1' else automap_r;",
+     "AUTOMAP <= '0' when blk_r = '1' else automap_next_r when fetch_start = '1' else\n"
+     "\t(mapcond_r or map3DXX) when (M1_N = '0' and fetch = '0' and fetch_r = '0') else automap_r;"),
+]
+
+
 def apply_rewrites(text, rewrites):
     """(file, old, new) rewrites over the text; every old string must occur
     exactly once; anything else is an error naming the file and the string."""
@@ -498,6 +584,16 @@ def apply_profi_rewrites(text):
 def apply_t80s_rewrites(text):
     """T80S_REWRITES over the text of src/rtl/t80se/T80s.vhd."""
     return apply_rewrites(text, T80S_REWRITES)
+
+
+def apply_jtopl_rewrites(text, rel):
+    """JTOPL_REWRITES of one file (rel is the out-relative path)."""
+    return apply_rewrites(text, [r for r in JTOPL_REWRITES if r[0] == rel])
+
+
+def apply_divmmc_map_rewrites(text):
+    """DIVMMC_MAP_REWRITES over the text of src/rtl/bus/divmmc_map.vhd."""
+    return apply_rewrites(text, DIVMMC_MAP_REWRITES)
 
 
 def apply_serial_mouse_rewrites(text):
@@ -701,6 +797,11 @@ def main():
         p.write_text(apply_t80s_rewrites(p.read_text(errors="replace")))
         p = out / "src/rtl/mouse/serial_mouse.vhd"
         p.write_text(apply_serial_mouse_rewrites(p.read_text(errors="replace")))
+        p = out / "src/rtl/bus/divmmc_map.vhd"
+        p.write_text(apply_divmmc_map_rewrites(p.read_text(errors="replace")))
+        for rel in sorted({r[0] for r in JTOPL_REWRITES}):
+            p = out / rel
+            p.write_text(apply_jtopl_rewrites(p.read_text(errors="replace"), rel))
 
     # ---- the compize_proto rewrite over the compiled (qip-kept) VHDL ----------
     vmods, vhd_ents = {}, set()

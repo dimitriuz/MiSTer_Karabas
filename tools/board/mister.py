@@ -327,7 +327,8 @@ ROWS = {
     17: "Joystick L", 18: "Joystick R", 19: "Keyboard",
     20: "PSG Mix", 21: "Covox", 22: "MT32-pi", 23: "Video",
     24: "Serial channel",
-    25: "GS Reset", 26: "NMI", 27: "Reset",
+    25: "FDC trace to UART",
+    26: "GS Reset", 27: "NMI", 28: "Reset",
 }
 
 BAR_X = 330      # a column inside the bar's left padding, 960 px wide

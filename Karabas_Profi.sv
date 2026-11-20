@@ -100,6 +100,7 @@ localparam CONF_STR = {
 	"P1O[7],VSync,50 Hz,60 Hz;",
 	"-;",
 	"O[36],Serial channel,ESP,USB;",
+	"O[37],FDC trace to UART,Off,On;",
 	"-;",
 	"T[19],GS Reset;",
 	"T[20],NMI;",
@@ -429,6 +430,13 @@ end
 wire [15:0] fdc_cell_num = ds80_s ? 16'd14 : 16'd4;
 wire [15:0] fdc_cell_den = ds80_s ? 16'd675 : 16'd225;
 
+// The FDC bus cycle for rtl/host/fdc_trace.sv (profi.vhd's DBG_FDC_* taps).
+wire       dbg_fdc_wr, dbg_fdc_rd, dbg_fdc_ff, dbg_pc_fetch;
+wire [15:0] dbg_pc;
+wire  [7:0] dbg_pc_di;
+wire [1:0] dbg_fdc_reg;
+wire [7:0] dbg_fdc_d, dbg_fdc_q;
+
 // The VHDL entity binds by name; generics per the Stage-1 constraints.
 profi #(
 	.ENABLE_FDD(1),
@@ -554,6 +562,15 @@ profi #(
 	.FDC_TR00(fdc_tr00),
 	.FDC_WPRT(fdc_wprt_chip),
 	.FDC_RDATA(fdc_rdata),
+	.DBG_FDC_WR(dbg_fdc_wr),
+	.DBG_FDC_RD(dbg_fdc_rd),
+	.DBG_FDC_FF(dbg_fdc_ff),
+	.DBG_FDC_REG(dbg_fdc_reg),
+	.DBG_FDC_D(dbg_fdc_d),
+	.DBG_FDC_Q(dbg_fdc_q),
+	.DBG_PC_FETCH(dbg_pc_fetch),
+	.DBG_PC(dbg_pc),
+	.DBG_PC_DI(dbg_pc_di),
 	.FDC_SIDE_N(fdc_side_n),
 	.FDC_SWAP_O(fdc_swap)
 );
@@ -1224,16 +1241,37 @@ mt32_mix u_mt32_mix (
 // KG soft switch, so it is not in rtl/host/osd_items.svh) picks the ESP wires
 // or the ZiFi/EVO USB byte channel; UART mode MIDI (uart_mode == 3) keeps
 // priority over both and is exactly mt32_mix's line, as before.
+// The FDC trace (OSD `FDC trace to UART`, status[37]) takes the USB byte channel:
+// it forces the channel to USB and replaces the MCU's bytes while it is on, so
+// `cat /dev/ttyS1` on the board shows the log (docs/dev/fdc-trace.md).
+wire       fdc_trace_en = status[37];
+wire [7:0] trace_tx_data, pc_tx_data;
+wire       trace_tx_wr, pc_tx_wr, trace_burst_end, trace_idle;
+fdc_trace u_fdc_trace (
+	.clk_bus(clk_bus), .clk_sys(clk_sys), .enable(fdc_trace_en),
+	.dbg_wr(dbg_fdc_wr), .dbg_rd(dbg_fdc_rd), .dbg_ff(dbg_fdc_ff),
+	.dbg_reg(dbg_fdc_reg), .dbg_d(dbg_fdc_d), .dbg_q(dbg_fdc_q),
+	.tx_data(trace_tx_data), .tx_wr(trace_tx_wr),
+	.burst_end(trace_burst_end), .idle(trace_idle)
+);
+// the opcode fetches that follow a long data read (the disk loader's first moves)
+pc_trace u_pc_trace (
+	.clk_bus(clk_bus), .clk_sys(clk_sys), .enable(fdc_trace_en),
+	.trig(trace_burst_end), .fetch(dbg_pc_fetch), .a(dbg_pc), .di(dbg_pc_di),
+	.other_idle(trace_idle),
+	.tx_data(pc_tx_data), .tx_wr(pc_tx_wr)
+);
+
 uart_route u_uart_route (
 	.clk(clk_sys),
 	.reset(uart_reset),
-	.channel(status[36]),
+	.channel(status[36] | fdc_trace_en),
 	.uart_mode(uart_mode),
 	.esp_tx(esp_tx),
 	.esp_cts(esp_cts),
 	.esp_rx(esp_rx),
-	.usb_tx_data(mcu_uart_tx_data),
-	.usb_tx_wr(mcu_uart_tx_stb),
+	.usb_tx_data(fdc_trace_en ? (pc_tx_wr ? pc_tx_data : trace_tx_data) : mcu_uart_tx_data),
+	.usb_tx_wr(fdc_trace_en ? (trace_tx_wr | pc_tx_wr) : mcu_uart_tx_stb),
 	.usb_rx_data(route_usb_rx_data),
 	.usb_rx_idx(route_usb_rx_idx),
 	.uart_rxd(UART_RXD),
@@ -1242,7 +1280,30 @@ uart_route u_uart_route (
 );
 
 assign USER_OUT = mt32_user_out;  // [1] MIDI TX, [0] SDA/RX, [6:2] held high
-assign UART_TXD = uart_txd;       // MIDI, USB bytes or the ESP wires
+// Debug beacon (rtl/host/core_beacon.sv): a heartbeat line on the HPS UART whatever the
+// machine does, to tell a dead core (no video sync: Main_MiSTer then spins in findPLLpar)
+// from a running one. It shares the line with MIDI / USB / ESP, so it is a debug option:
+// BEACON = 0 removes it.
+localparam BEACON = 0;
+reg [10:0] bc_bus = 11'd0;
+reg [11:0] bc_mem = 12'd0;
+reg [11:0] bc_vid = 12'd0;
+reg  [9:0] bc_cpu = 10'd0;
+always @(posedge clk_bus) begin
+	bc_bus <= bc_bus + 11'd1;
+	if (ena_cpu_o) bc_cpu <= bc_cpu + 10'd1;
+end
+always @(posedge clk_sdr) bc_mem <= bc_mem + 12'd1;
+always @(posedge clk_vid) bc_vid <= bc_vid + 12'd1;
+wire beacon_tx;
+core_beacon u_beacon (
+	.clk(clk_sys),
+	.flags({profi_areset, profi_reset, mem_ready, 5'd0}),
+	.t_bus(bc_bus[10]), .t_mem(bc_mem[11]), .t_vid(bc_vid[11]),
+	.t_vs(VGA_VS), .t_cpu(bc_cpu[9]),
+	.tx(beacon_tx)
+);
+assign UART_TXD = BEACON ? (uart_txd & beacon_tx) : uart_txd;   // MIDI, USB bytes, ESP wires (+ beacon)
 
 ///////////////////////   AUDIO   //////////////////////////////////////////
 
