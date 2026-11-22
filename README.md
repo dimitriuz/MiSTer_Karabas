@@ -53,12 +53,22 @@ sed -i 's/^set_global_assignment -name LAST_QUARTUS_VERSION.*/set_global_assignm
 
 ## Installing
 
-Copy to the SD card of the MiSTer (the core appears under the `Computer` menu):
+The latest build is committed in `releases/` (a plain `build.sh` output goes to
+`output_files/Karabas_Profi.rbf` and is not tracked). Copy two files to the SD card of the
+MiSTer and the core appears under the `Computer` menu:
 
 ```
-output_files/Karabas_Profi.rbf        ->  /media/fat/_Computer/Karabas_Profi_YYYYMMDD.rbf
+releases/Karabas_Profi_20261120.rbf   ->  /media/fat/_Computer/Karabas_Profi_20261120.rbf
 releases/boot.rom                     ->  /media/fat/games/Karabas_Profi/boot.rom
 ```
+
+Keep one Karabas `.rbf` in `_Computer`: MiSTer lists every file, and an older build next to
+the new one is easy to start by mistake. Disk, tape and SD/IDE images go next to `boot.rom`
+in `/media/fat/games/Karabas_Profi/` (the file browser of each OSD item opens there).
+Release 20261120 is the build with the TR-DOS first-fetch fix (AMS.fdi boots), the DivMMC
+AUTOMAP fix (esxdos, NMI), the jtopl envelope fix and timing closed on seed 19; its sha256 is
+`d6ffa2f3a490fc7714a095756098fbafcd95b35f30ea1398cb8da510f19d6034`. The YM3812 status fix
+(the esxdos VGM player reports "not detected" with it, but plays) is not in it yet.
 
 `boot.rom` is the ROM image the core's MCU emulation streams into the machine at
 start (offsets per `tools/build_boot_rom.py`); MiSTer downloads it as ioctl index 0.

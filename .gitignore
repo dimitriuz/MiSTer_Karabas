@@ -3,6 +3,7 @@ output_files/
 db/
 incremental_db/
 *.rbf
+!releases/*.rbf
 *.qws
 __pycache__/
 .superpowers/
