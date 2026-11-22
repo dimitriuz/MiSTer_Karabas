@@ -1,353 +1,126 @@
-# MiSTer Karabas_Profi
+# Karabas Profi for MiSTer
 
-A [MiSTer](https://github.com/MiSTer-devel/Main_MiSTer) (DE10-Nano, Cyclone V) port of Andy
-Karpov's [karabas-go-core-profi](https://github.com/andykarpov/karabas-go-core-profi) core —
-the "Karabas Pro +" (Profi) home computer: a T80 machine with Profi paging, Spectrum/Pentagon
-and 512x240 (DS80) video, TurboSound FM + SAA1099 + OPL2 + General Sound audio, VG93 FDC,
-Profi IDE, RTC and more. The upstream sources are kept as a git submodule
-(`upstream/karabas-go-core-profi`, with its `modules/` submodule) and are **never edited**:
-`tools/prepare_upstream.py` generates `build/upstream/` from them — a directory-preserving
-copy with the source rewrites Quartus 17 needs (VHDL instantiations of Verilog modules
-become component instantiations, init-file paths fixed, vendor library stubs), plus the
-`upstream.qip` file list; `tools/elab_upstream.sh` proves the copy still elaborates and
-`tools/check_upstream.sh` fails when upstream changes a file we replace. The MiSTer side
-(`sys/`, replaced RTL under `rtl/`, the `Karabas_Profi` top level) consumes that copy.
+A [MiSTer](https://github.com/MiSTer-devel/Main_MiSTer) (DE10-Nano) port of Andy Karpov's
+[karabas-go-core-profi](https://github.com/andykarpov/karabas-go-core-profi): the
+**Karabas Pro+ (Profi)**, a Russian ZX Spectrum / Pentagon-class home computer with TR-DOS,
+CP/M, 512x240 text-friendly video, a stack of sound chips and real disk drives.
 
-## Building
+## What you get
 
-Prerequisites: Docker, and both upstream submodules
-(`git submodule update --init --recursive`). All builds run in Docker; no local Quartus or
-GHDL install is needed.
-
-```
-python3 tools/prepare_upstream.py # regenerate build/upstream + upstream.qip
-tools/check_upstream.sh           # tripwire: upstream files vs SHA256SUMS
-tools/build.sh                    # the one-command build: prepare_upstream + check_upstream + qbuild,
-                                  # ends with `build: exit <code>`
-python3 tools/build_boot_rom.py   # releases/boot.rom from upstream's src/roms (committed; --check verifies)
-tools/sim.sh <command>            # run <command> in the karabas-sim:1 image (GHDL, Icarus, repo at /work);
-                                  # builds tools/sim/Dockerfile into karabas-sim:1 on first use
-tools/sim.sh sim/run_all.sh       # every simulation testbench, ends `run_all: N passed, 0 failed`
-python3 -m unittest discover -s tools/tests -v  # the python tools' tests
-tools/elab_upstream.sh            # upstream gate: quartus_map --analysis_and_elaboration of top `profi`
-tools/check_upstream.sh           # upstream-change tripwire for the files we replace
-tools/qbuild.sh . Karabas_Profi   # just the Quartus compile of the MiSTer core in raetro/quartus:17.0
-```
-
-Agent workflow and hard rules (gates, build numbering, board driving, commits) are in
-`AGENTS.md`; the per-stage evidence is under `docs/dev/`.
-
-`build.sh` runs `tools/check_timing.py` on the TimeQuest reports after the compile and
-fails the build on a negative slack or a missing `clk_bus28`/`clk_bus24` bus clock
-(Quartus itself exits 0 with timing unclosed; only warnings mark an sdc clock that
-stopped resolving).
-
-A full compile takes 10-20 minutes, so launch it detached and poll the log:
-`setsid nohup tools/build.sh </dev/null >build/logs/build.log 2>&1 &`, then watch for the
-`build: exit <code>` line. Quartus 17 rewrites `LAST_QUARTUS_VERSION` in the `.qsf` on every
-run; revert it afterwards:
-
-```
-sed -i 's/^set_global_assignment -name LAST_QUARTUS_VERSION.*/set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Standard Edition"/' Karabas_Profi.qsf
-```
+- **Machine**: Z80 with Profi paging, Pentagon or 48k timing, up to 8x turbo.
+- **Video**: Spectrum modes and the Profi 512x240 mode, HDMI and analog, scandoubler and CRT filters.
+- **Sound**: TurboSound FM (2x AY), SAA1099, OPL2, General Sound card, Covox, MIDI out
+  (MidiLink or an mt32-pi on the USER port).
+- **Storage**: two IDE hard disks, an SD card for esxDOS (DivMMC), two floppy drives
+  (TRD, SCL, FDI, UDI, TD0 images), tape (TAP, TZX, CSW).
+- **Extras**: mouse, joysticks, real-time clock from MiSTer, serial port for ZiFi/ESP software.
 
 ## Installing
 
-The latest build is committed in `releases/` (a plain `build.sh` output goes to
-`output_files/Karabas_Profi.rbf` and is not tracked). Copy two files to the SD card of the
-MiSTer and the core appears under the `Computer` menu:
+1. Copy two files from [`releases/`](releases) to the MiSTer SD card:
 
-```
-releases/Karabas_Profi_20261120.rbf   ->  /media/fat/_Computer/Karabas_Profi_20261120.rbf
-releases/boot.rom                     ->  /media/fat/games/Karabas_Profi/boot.rom
-```
+   | From this repo | To the SD card |
+   |---|---|
+   | `Karabas_Profi_20261120.rbf` | `/media/fat/_Computer/` |
+   | `boot.rom` | `/media/fat/games/Karabas_Profi/` |
 
-Keep one Karabas `.rbf` in `_Computer`: MiSTer lists every file, and an older build next to
-the new one is easy to start by mistake. Disk, tape and SD/IDE images go next to `boot.rom`
-in `/media/fat/games/Karabas_Profi/` (the file browser of each OSD item opens there).
-Release 20261120 is the build with the TR-DOS first-fetch fix (AMS.fdi boots), the DivMMC
-AUTOMAP fix (esxdos, NMI), the jtopl envelope fix and timing closed on seed 19; its sha256 is
-`d6ffa2f3a490fc7714a095756098fbafcd95b35f30ea1398cb8da510f19d6034`. The YM3812 status fix
-(the esxdos VGM player reports "not detected" with it, but plays) is not in it yet.
+2. Put your disk, tape and hard-disk images in `/media/fat/games/Karabas_Profi/`. The OSD
+   file browser opens there.
+3. Start **Karabas_Profi** from the `Computer` menu.
 
-`boot.rom` is the ROM image the core's MCU emulation streams into the machine at
-start (offsets per `tools/build_boot_rom.py`); MiSTer downloads it as ioctl index 0.
+Keep only one Karabas `.rbf` in `_Computer`, otherwise it is easy to start an old one by mistake.
 
-## OSD items
+The 20261120 release has working TR-DOS, esxdos/DivMMC and NMI, and meets timing. Known small issue: the esxdos VGM player says the OPL chip is "not detected"
+but still plays.
 
-The machine's own switches (ROM Bank, Turbo, PSG Mix, Covox, joysticks, DivMMC,
-Keyboard, Pause, Mode, VSync 50/60 Hz, GS Reset, NMI, Reset) travel over the
-emulated MCU SPI link - the table of indices and status bits is
-`rtl/host/osd_items.svh`.
-MiSTer-side: Aspect ratio and Scandoubler Fx (None, HQ2x, CRT filters) on the
-Video page; the MT32-pi page for a Pi on the USER port; `boot.rom` is loaded
-automatically at core start.
-The main page lists the disk images first - `IDE 0`, `IDE 1` (the CF drives),
-`SD Card`, then `Floppy A`, `Floppy B`, their FDI entries and `Disk layout`
-(see Disks), then the tape and its three controls - and the settings after
-them, grouped by type: machine (`ROM Bank`, `Mode`, `Turbo`, `DivMMC`,
-`Pause`), input (the joysticks and `Keyboard`), sound (`PSG Mix`, `Covox`,
-the MT32-pi page), the `Video` page, `Serial channel` (which of the machine's
-serial channels owns the HPS UART - see Serial below), and the reset buttons.
+## Using it
 
-`Mode` is the screen timing: Pentagon (the upstream default, 320 lines) or 48k
-(the classic 312-line frame with memory contention). It is soft-switch register
-15, the one register the Karabas Go layout has no OSD item for (the board
-hard-wires it to Pentagon), so the core profile's `profi.vhd` rewrite widens
-`kg_soft_switches` to 16 registers and feeds `kb_screen_mode` from it.
+### Loading things
+
+Open the OSD (F12) and pick an image from the main page:
+
+| Item | What it takes |
+|---|---|
+| `Floppy A` / `Floppy B` | `.trd`, `.scl`, `.img`. Changes are saved back to `.trd` and `.img` files. |
+| `Floppy A (raw)` / `Floppy B (raw)` | `.fdi`, `.udi`, `.td0`, `.scl`, also inside a zip. Use these for protected games. They are read-only: writes last until you load another image or reload the core. |
+| `Disk layout` | `Auto`, `TR-DOS` or `CP/M`. Leave on `Auto` unless an image is misdetected. |
+| `IDE 0` / `IDE 1` | Hard-disk images (`.hdf`). Read-write. |
+| `SD Card` | A raw SD image (`.vhd`) for esxdos. Read-write. **It must be FAT32.** A FAT16 image is ignored by the Karabas ROM. |
+| `Tape` | `.tap`, `.tzx`, `.csw`. |
+
+A TR-DOS disk with a `boot` program starts directly from the GO menu's `Run TR-DOS 128K`.
+
+### Tape
+
+Mounting a tape starts it paused. Use `Tape play/pause`, `Tape previous block` and
+`Tape next block`. The `Turbo` setting also speeds up tape loading. Large TZX files mount
+instantly. Plain TAP and standard-speed TZX blocks are supported. Once a tape has played
+to the end, mount it again to replay it.
+
+### Machine settings
+
+`ROM Bank`, `Mode` (Pentagon or 48k timing), `Turbo`, `DivMMC`, `Pause`, `PSG Mix`, `Covox`,
+`Keyboard`, joystick types, `VSync 50/60 Hz`, `GS Reset`, `NMI` and `Reset`. The `Video` page
+has aspect ratio and the scandoubler/CRT filters.
 
 ### Keyboard shortcuts
 
-The Karabas Go's MCU firmware has hotkeys (Menu+F11 turbo, Menu+F12 NMI,
-Ctrl+Alt+Del reset); this port has no such firmware and MiSTer keeps F12 for its
-own OSD, so `rtl/host/hotkeys.sv` decodes its own (either Ctrl and either Alt):
+MiSTer keeps F12 for its own menu, so the core has its own hotkeys (either Ctrl and either Alt):
 
 | Keys | Does |
 |---|---|
-| `Ctrl+Alt+Del` | Reset (the OSD `Reset` item) |
-| `Ctrl+Alt+End` | NMI (the OSD `NMI` item) |
-| `Ctrl+Alt+PgUp` | Turbo: Off, 2x, 4x, 8x, Off ... (the OSD `Turbo` field follows) |
+| `Ctrl+Alt+Del` | Reset |
+| `Ctrl+Alt+End` | NMI |
+| `Ctrl+Alt+PgUp` | Cycle Turbo: Off, 2x, 4x, 8x |
 
-The keys also reach the machine as ordinary key presses.
+### Mouse, joysticks, clock
 
-## Mouse, joysticks and RTC
+- **Mouse**: a regular USB/PS/2 mouse works as a Kempston mouse, and as a serial mouse for the
+  CP/M driver (Profi video mode).
+- **Joysticks**: pick the type for each port (Kempston, Sinclair 1/2, cursor keys, QAOPM/QAOPS).
+  On Sinclair and cursor types, button B fires.
+- **Clock**: the time comes from MiSTer. Writes by the machine are ignored, and the CMOS memory
+  starts empty on every core load.
 
-The board's MCU sends more than the keyboard and the OSD switches over the
-SPI link; the emulation feeds the same frames:
+### Sound and MIDI
 
-- **Mouse**: the MiSTer PS/2 mouse reaches the machine the way the board's
-  USB mouse does - through the Profi's Kempston-mouse ports (0A-0C) and
-  upstream's serial-mouse emulation. Movement is relative (the PS/2 packet);
-  the wheel and the three buttons travel too. The Kempston ports are
-  decoded outside CP/M only; the CP/M mouse driver (`PCMSMOUS`) reads the
-  serial-mouse emulation, an 8251-style chip at ports #D3 (data) and #F3
-  (status), which is on the bus only in the Profi video mode (`ds80`). Upstream's
-  chip select had the opposite sense to its own output enable, so the CPU could
-  never read it; `tools/prepare_upstream.py` corrects the select
-  (`SERIAL_MOUSE_REWRITES`, bench `sim/tb_serial_mouse.vhd`).
-- **Joysticks**: `J1` with A, B, C, X, Y, Z, Start and Mode; the OSD picks
-  the type of each port (Kempston, Sinclair 1/2, cursor keys, QAOPM/QAOPS).
-  Upstream maps Sinclair 1 to keys 1-5 and Sinclair 2 to keys 6-0 (left,
-  right, down, up, fire); on the Sinclair and cursor types only B fires,
-  while A is Kempston bit 5.
-- **RTC**: the time comes from MiSTer's clock (the HPS sends it about once a
-  minute); the core keeps it ticking in the FPGA, second by second, between
-  those updates, and sends it every 500 ms and once right after the first
-  HPS time update. The MC146818A's BCD/binary mode follows the register B
-  the machine writes; other CPU writes of time or CMOS are ignored -
-  MiSTer's clock is the time source. The CMOS bytes start as FF on every
-  core load: persistent CMOS comes with stage 4's storage.
+All the sound chips are on by default. `GS Reset` restarts the General Sound CPU.
 
+For MIDI, either set `UART mode` to `MIDI` and choose a target in MiSTer's MidiLink menu
+(mt32-pi over the network, MUNT, FluidSynth, a USB MIDI adapter), or connect an mt32-pi to the
+USER port and use the `MT32-pi` page.
 
-Simulation tests run through `tools/sim.sh` (GHDL with `--std=93c -fsynopsys`, Icarus with
-`-g2012`); `sim/run_all.sh` runs all of them.
+### Serial port (ZiFi, ESP, WiFi software)
 
-## Sound
+The machine's serial channels share MiSTer's UART. The OSD item `Serial channel` picks which
+one gets it: `ESP` (default) or `USB` (fixed 115200). MiSTer's `UART mode` must be `None`,
+`PPP` or `Console`, with `Baud` matching the software's speed. Flow control is up to the
+software.
 
-The machine's sound is upstream's: TurboSound FM, SAA1099 and OPL2 on the
-Z80 side, and the General Sound (GS) card. The GS is enabled: its 2 MB of
-sample memory is `rtl/mem/gs_mem.sv`, the low 64 KB in BRAM and the rest in
-MiSTer's DDR3 (the `DDRAM_*` port), and it runs on its own fixed 28.125 MHz
-clock from the machine PLL. `GS Reset` in the OSD restarts the GS CPU.
+## Known limitations
 
-### MIDI
+- Turbo runs without memory wait states.
+- Floppy `Format Track` and raw `Write Track` are not implemented. The drive holds up to 84
+  tracks and 32 sectors per track. CP/M images need their owner reference filled to boot
+  (`tools/mk_disk.py reffrom`).
+- TZX blocks other than standard speed end the tape where they start.
+- In the 512x240 mode the analog scandoubler may duplicate pixels. HDMI is fine.
 
-The MIDI out is the TurboSound's (AY port A bit 2), as on the ZX 128. It has
-two routes:
+## Building from source
 
-- **MidiLink (HPS UART)**: set the OSD `UART mode` to `MIDI` (Main's mode 3,
-  always 31250 - Main's own `midi_speeds` list, never the `Baud` submenu),
-  then pick the target in MiSTer's MidiLink menu - a remote mt32-pi, MUNT,
-  FluidSynth or a USB MIDI adapter. Only `None` gives the port to the
-  `Serial channel` item described below; the other modes have something of
-  MiSTer's own on it too (the table under Serial).
-- **mt32-pi on the USER port**: connect the Pi there and use the MT32-pi OSD
-  page (`Use MT32-pi`, `Synth`, `Munt ROM`); its I2S audio is mixed into
-  AUDIO_L/R. `Use MT32-pi: No` silences only that Pi - the MidiLink route
-  keeps carrying the unmuted line.
+You need Docker and the submodules (`git submodule update --init --recursive`). Nothing else
+is installed locally.
 
-## Serial (the HPS UART)
+```
+tools/build.sh                    # full build (10-20 min); ends with "build: exit <code>"
+tools/sim.sh sim/run_all.sh       # all simulation tests
+```
 
-The machine's two serial channels share MiSTer's UART (`/dev/ttyS1` for
-Linux), and the OSD `Serial channel` item says which one owns the line:
-`ESP` (the default) or `USB`. `rtl/host/uart_route.sv` is the router. The item
-is MiSTer-side only - the machine never hears about it.
+The result is `output_files/Karabas_Profi.rbf`. The upstream sources are never edited: a
+script prepares a patched copy for Quartus 17. Developer notes, rules and per-stage evidence
+are in `AGENTS.md` and `docs/dev/`.
 
-- **ESP (the wires)**: `profi.vhd`'s `UART_TX`/`UART_RX` - the ZiFi or ZXUNO
-  port it selects internally - pass through bit by bit with no resampling, so
-  **the baud is whatever the software programmes**. In `None`, `PPP` and
-  `Console` MiSTer's `UART mode` -> `Baud` has to carry the same speed for the
-  bytes to mean anything at the other end (in the other modes the speed is
-  Main's own, see the table). `UART_CTS` is not forwarded (the core has no CTS
-  path into the tty and MiSTer ties the port's RTS/CTS low), so **flow control
-  stays a software matter**.
-- **USB (bytes)**: the ZiFi/EVO USB-RS232 path - the MCU link's `CMD_UART`
-  frames between `rtl/host/mcu_emu.sv` and the router - framed 8N1 at a fixed
-  **115200**, the standard ZiFi rate. The tty speed is still Main's, so
-  in `None`, `PPP` and `Console` `Baud` has to say 115200.
+## Credits
 
-`UART mode` is Main's fixed list - `config_uart_msg` in `menu.cpp` - and what
-an entry does to `/dev/ttyS1` is decided by Main, not by this core:
-
-| `UART mode` (Main's number) | who else is on the port | speed comes from |
-|---|---|---|
-| `None` (0) | nobody: the line is raw - this is the byte-pipe mode | our `Baud` list |
-| `PPP` (1) | MiSTer's PPP daemon | our `Baud` list |
-| `Console` (2) | MiSTer's serial console: a login prompt on the port, which the machine's ESP wire receives as data | our `Baud` list |
-| `MIDI` (3) | this core's MidiLink (`mt32_mix`) | Main's `midi_speeds` (31250 by default) |
-| `Modem` (4) | MidiLink's Hayes modem: `user_io.cpp:1592` turns MidiLink on for mode 4 | Main's fixed `mlink_speeds` |
-| `UDP` (5), `SNI` (6) | MiSTer's UDP tunnel and `snid`; neither is selectable unless already running (`menu.cpp`) | Main's fixed `mlink_speeds` |
-
-The `Serial channel` item only chooses which of the machine's two channels the
-router hangs on the port - in `None` that is the whole of the traffic, in every
-other mode something else shares the port with it, and in `MIDI` the router
-yields the line completely. MIDI's priority is what it was before stage 5: it
-takes the line immediately, mid-byte as well, and while it owns it the two
-channels neither send nor receive.
-
-Main sets the port's speed from the list `GetUARTbauds()` picks for the mode
-(`user_io.cpp:1002`): `midi_speeds` for 3, `mlink_speeds` for anything above 3,
-and the list this core declares for 0, 1 and 2. That list is `CONF_STR`'s
-`UART115200:31250,MIDI` - 115200 as the default, 31250 for slow bit-banged
-software - so the `Baud` submenu only means something in `None`, `PPP` and
-`Console`; MIDI keeps its own 31250 and the MidiLink-family modes theirs, which
-is why adding the two numbers left them untouched.
-
-Those mode facts are read out of `Main_MiSTer` (`user_io.cpp:463-467`,
-`992-1022`, `1590-1597`, `menu.cpp`'s `config_uart_msg`) and MiSTer's docs
-("Linux OS runs PPP or Console daemon on this connection"): they are **not
-board-verified**, task 4 verifies them.
-
-Limits worth knowing (the first four are cases of `sim/tb_uart_route.sv`):
-
-- a channel switch waits for a whole idle frame (~87 us at 115200) of the
-  entire port: the machine's TX wire, the HPS line, the level the core drives
-  and the deserialiser at rest. A line held low parks the switch.
-- `UART_RXD` must idle high before `/dev/ttyS1` is opened for the same
-  reason.
-- a reset or a channel flip can drop bytes for the same ~87 us, and the reset
-  empties the send queue.
-- the send queue holds 16 bytes (plus one in the shift register) and drops the
-  newest when it is full: nothing ever stalls the machine, and nobody draining
-  the line loses data silently.
-- `mcu_emu` consumes the ZiFi path's `dll`/`dlm` divisor writes and ignores
-  them, so the USB channel is always 115200. Whether ZiFi software needs a
-  honoured divisor is a board question, open with stage 5.
-- on the board, still unverified: the **first** byte a ZiFi program sends lands
-  in an empty queue and has to start the sender itself. `sim/tb_mcu_emu.sv`
-  covers that hand-over, the real ROM's first write has not been watched yet.
-
-## Tape
-
-The tape file is MiSTer disk slot 0: pick it with the OSD `Tape` item (the
-main page, after the floppy items). TAP, TZX and CSW are accepted; the format is
-sniffed from the file signature. The file is never loaded into memory: the
-core reads it from the SD card through a two-sector cache as the tape
-plays, so a large TZX mounts instantly. `Tape play/pause`, `Tape previous
-block` and `Tape next block` are OSD trigger items; a freshly mounted tape
-starts paused. `Turbo` (the CPU turbo) is also the tape's fast-load rate -
-the player's clock enable is the CPU's own enable, one pulse per T-state.
-
-Playback goes through one player, the ZX core's CSW player
-(`rtl/tape/tape.sv`, a copy of ZX-Spectrum_MISTer at commit c2c4e6f, with
-the data-block pilot raised to 8064 pulses: the Profi ROM consumes the
-standard lead-in while loading, and standard-pilot blocks fail on it; and a
-`blk_seek` input added, because a converted stream has to drop its RLE
-state when `tape_conv.sv` jumps to another block). A
-TAP or TZX file is converted on the fly into the CSW byte stream that
-player eats (`rtl/tape/tape_conv.sv`): the same 32-byte CSW v1 header that
-`zxtap.py` writes, then the RLE pulse list of every block. The import's own
-TAP and TZX decoders (`tape.sv` mode 0 and `rtl/tape/tzxplayer.vhd`) failed
-the data block on this machine even with a byte-perfect waveform - see
-`docs/dev/stage4a-results.md` - so they are compiled only for reference.
-
-Consequences worth knowing: TZX conversion covers standard-speed (0x10)
-blocks, and any other block type ends the tape where it starts; a converted
-tape reports itself as unmounted once it has played to the end, so mount it
-again to replay it; `Tape previous block` and `Tape next block` move
-between the blocks of the converted stream, while a plain CSW file has no
-block list for them. With no tape playing, a signal on the LTC2308 line-in
-header drives the EAR input; the USER LED lights while the tape is playing.
-
-## Disks
-
-Five more MiSTer disk slots sit behind the machine's own disk interfaces;
-each is mounted with its OSD item (`S1` `SD Card`, `S2` `IDE 0`, `S3`
-`IDE 1`, `S4` `Floppy A`, `S5` `Floppy B`), in front of the tape on the main page. Slots 1-3
-are read-write: a sector the machine writes goes back through hps_io into
-the mounted file. Slots 4/5 write back only for `.trd` and `.img` files
-(`.scl` mounts are read-only); the FDI entries (`F1`/`F2`) are downloads,
-not disk slots, and are read-only.
-
-- **SD card (slot 1, `SD Card`)**: the Z-Controller's SPI bus at the Profi
-  boundary (`SD_CS_N`/`SD_CLK`/`SD_DI`/`SD_DO`, `zc_spi` on the Z80 side)
-  drives `sys/sd_card.sv`, the MiSTer card model, as an SDHC card whose
-  sectors come from hps_io slot 1. This is the path the Profi's DivMMC and
-  its esxDOS use (`DivMMC: On`): the image is a raw sector dump (the OSD
-  item filters `.vhd`). **The volume must be FAT32** (an MBR with a type
-  0x0B/0x0C partition): the Karabas ROM's SD driver does not take a FAT16
-  card - with one mounted the loader stays on `Drive: CF` and the file
-  manager shows no SD. Two images that differ only in the filesystem were
-  booted on the board (2026-11-18): FAT16 `Drive: CF`, FAT32 `Drive: SD`.
-  The card's SPI side runs on the machine's bus clock (`clk_bus`), the clock
-  `zc_spi` makes its sck from; on the 50 MHz system clock the card sampled
-  that sck asynchronously and its answers lost bits.
-  `python3 tools/mk_disk.py sd32 OUT.vhd [--size-mb 256] [--file SRC[=NAME]]...`
-  writes such a card (pure Python, long file names included); with
-  `--file karabas_boot.$c` it is the card `Loading boot` expects, and an
-  empty one is the same command without `--file`.
-- **IDE hard disks (slots 2 and 3, `IDE 0`/`IDE 1`)**: the Profi IDE's two
-  ATA devices, upstream's `hdf_ata` (CHS and LBA28, one sector per DRQ).
-  Its sector engine (`img_sdc` on the Karabas Go, the MCU's file mounter)
-  is `rtl/disk/img_src.sv` on the MiSTer side: the engine fetches and stores
-  sectors through hps_io slots 2/3, and `profi.vhd` carries its interface
-  as the `SDC_*` ports. The HDF's sector 0 holds the geometry as an Amiga
-  RDSK block (`mk_disk.py hdf` writes one); without it `hdf_ata` uses 16
-  heads and 63 sectors per track. The OSD `HDD` item is fixed to `Image` -
-  there is no CF card on the MiSTer, so the HDF is device 0 when mounted
-  and device 1 is the second slot.
-
-- **Floppy drives (slots 4 and 5, `Floppy A`/`Floppy B`)**: the VG93 FDC
-  inside the machine now drives two drive models (`rtl/disk/floppy.sv`:
-  heads, flux cells, index) over a track store in DDR3
-  (`rtl/disk/fdd_store.sv`, the second master of the GS memory arbiter).
-  A drive answers from the mounted image: `.trd` (TR-DOS, its ID header
-  decides), `.img`/`.scl` (no reliable geometry - the `Disk layout` item
-  says what they are; an `.scl` arrives as Main's converted temporary TRD,
-  read-only) or an FDI stream. Main's picker also lists `.fdi`/`.udi` under the `(TRD)` entries and converts them to a plain TRD (protection lost), and that converter cannot open a file inside a zip (empty disk, TR-DOS disc error); the `(raw)` entries take `.fdi`, `.udi`, `.td0` and `.scl` as they are, also from a zip. The tracks live in DDR3: the image is only
-  consulted for the track the head asks for, and a track the machine
-  writes is rebuilt in place and goes back into the mounted file. The FDI
-  entries (`F1` `Floppy A (raw)`, `F2` `Floppy B (raw)`) stream an
-  image in over the ioctl path instead of mounting it, and are read-only -
-  their writes are volatile. Main offers Backspace-unmount only for
-  mounted `S` slots, not for these rows, so a raw image stays in the drive until another one
-  is mounted or the core is reloaded. The file's own header says what it is:
-  `FDI` (sector list), `UDI!` (raw tracks - bytes and clock-mark bitmap played
-  as they are, a protected disk's odd sync marks and track length included;
-  MFM tracks of at most 8191 bytes, the revolution takes the track's own
-  length) and `TD`/`td` Teledisk (the "td" advanced compression is decoded
-  in the core; sectors are rebuilt as standard MFM, so deleted marks and
-  CRC-error flags are not reproduced; a damaged or oddly built file is
-  refused and the drive keeps its image). `Disk layout` (Auto / TR-DOS / CP/M) overrides the
-  geometry guess for images the ID header cannot vouch for. A TR-DOS image
-  with a `boot` program starts straight from the GO menu's
-  `Run TR-DOS 128K`. `profi.vhd` grows two exports for this: `ENA_CPU_O`
-  and `FDC_SWAP_O` (the drive-swap cable), and hps_io gains the two image
-  slots.
-
-`tools/mk_disk.py` makes the test images (a FAT16 VHD for the SD slot,
-RDSK HDFs for the IDE slots, `.trd` volumes and `.fdi` streams for the
-drives) and reads them back (`ls`, `cat`) to verify what the machine wrote.
-
-## Known limitations (stage 1)
-
-- CPU turbo runs without memory wait states (no-wait SDRAM controller).
-- Floppy drives (stage 4c): `Format Track` and the raw `Write Track`
-  command are not implemented; an FDI image is read-only from the file and
-  the machine's writes to it live only in DDR3 until it is re-downloaded;
-  a CP/M image needs its owner reference filled (`mk_disk.py reffrom`) to
-  boot; the store holds at most 84 tracks and 32 sectors per track.
-- 80-column (DS80) mode: the pixel enable runs at a 9/9/10 cadence of the
-  112.5 MHz video clock, so the analog scandoubler may duplicate pixels;
-  HDMI is unaffected.
-- DS80 mode switches at runtime: switching between the Profi menu (DS80) and the Spectrum modes, through the menu and through reset, works on the board; arbitrary software toggling is not separately tested.
+The core is Andy Karpov's. This port adds the MiSTer side: memory, video, disks, tape, sound
+routing, serial and the OSD.
