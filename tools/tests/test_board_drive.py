@@ -41,7 +41,8 @@ class BarRow(unittest.TestCase):
         self.assertIsNone(mister.bar_row(self.column(174, h=0)))
 
     def test_tape_play_default_map(self):
-        self.assertEqual(mister.ROWS[zx.TAPE_ROW], "Tape play/pause")
+        self.assertEqual(mister.ROWS[zx.TAPE_MENU_ROW], "Tape")
+        self.assertEqual(mister.TAPE_PAGE_ROWS[zx.TAPE_PLAY_IN_PAGE], "Tape play/pause")
 
 
 class FakeRemote:
@@ -156,9 +157,10 @@ class Sequences(unittest.TestCase):
 class FloppyBuild(unittest.TestCase):
     """The build-73 OSD map and the TR-DOS walk (stage 4c)."""
 
-    def test_tape_row_is_nine_on_build_77(self):
-        self.assertEqual(zx.TAPE_ROW, 9)
-        self.assertEqual(mister.ROWS[zx.TAPE_ROW], "Tape play/pause")
+    def test_tape_is_a_submenu_row_eight(self):
+        self.assertEqual(zx.TAPE_MENU_ROW, 8)
+        self.assertEqual(mister.ROWS[zx.TAPE_MENU_ROW], "Tape")
+        self.assertEqual(mister.TAPE_PAGE_ROWS[zx.TAPE_PLAY_IN_PAGE], "Tape play/pause")
 
     def test_the_storage_rows_come_before_the_tape(self):
         for row, name in ((0, "IDE 0"), (1, "IDE 1"), (2, "SD Card"),
@@ -241,23 +243,31 @@ class ConfStrRowMap(unittest.TestCase):
             self.assertEqual(rows[row], name, "row %d" % row)
 
     def test_the_tape_row_counts_from_the_core(self):
-        self.assertEqual(self.conf_str_rows().index("Tape play/pause"),
-                         zx.TAPE_ROW)
+        # the tape controls are inside page 3: the main page has only the entry
+        self.assertEqual(self.conf_str_rows().index("Tape"), zx.TAPE_MENU_ROW)
+        self.assertNotIn("Tape play/pause", self.conf_str_rows())
+
+    def test_the_tape_page_rows_match_the_core(self):
+        body = self.TOP.read_text().split("localparam CONF_STR = {", 1)[1]
+        body = body.split("\n};", 1)[0]
+        fields = "".join(re.findall(r'"([^"]*)"', body)).split(";")
+        page = []
+        for item in fields[2:]:
+            m = re.match(r"^P3([A-Za-z].*)$", item.strip())
+            if not m:
+                continue
+            parts = m.group(1).split(",")
+            if m.group(1)[0] in "OTR" and len(parts) > 1:
+                page.append(parts[1])
+            elif m.group(1)[0] in "SF" and len(parts) > 2:
+                page.append(parts[2])
+        self.assertEqual(dict(enumerate(page)), mister.TAPE_PAGE_ROWS)
 
     def test_the_images_come_first_then_the_settings_by_type(self):
         rows = self.conf_str_rows()
-        self.assertEqual(rows[:12], [
+        self.assertEqual(rows[:10], [
             "IDE 0", "IDE 1", "SD Card",
             "Floppy A (TRD)", "Floppy B (TRD)", "Floppy A (raw)", "Floppy B (raw)",
-            "Disk layout",
-            "Tape", "Tape play/pause", "Tape previous block",
-            "Tape next block"])
-        self.assertEqual(rows[zx.TAPE_ROW:zx.TAPE_ROW + 3],
-                         ["Tape play/pause", "Tape previous block",
-                          "Tape next block"])
-        self.assertLess(rows.index("Tape next block"),
-                        rows.index("ROM Bank"))
+            "Disk layout", "Tape", "ROM Bank"])
+        self.assertLess(rows.index("Tape"), rows.index("ROM Bank"))
 
-
-if __name__ == "__main__":
-    unittest.main()

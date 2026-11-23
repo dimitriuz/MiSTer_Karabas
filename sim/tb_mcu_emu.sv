@@ -1,6 +1,6 @@
 // Testbench for rtl/host/mcu_emu.sv: the emulated MCU behind upstream's
 // unmodified kg_mcu (generics and the tied inputs as in profi.vhd U7) on a
-// 28.125 MHz clk_bus of unrelated phase, plus kg_soft_switches #(.N(16))
+// 28.125 MHz clk_bus of unrelated phase, plus kg_soft_switches #(.N(21))
 // fed by SOFTSW_COMMAND as in profi.vhd U9.
 //
 // A behavioural ioctl source streams a 0x58000-byte pseudo-random boot.rom
@@ -183,7 +183,7 @@ module tb_mcu_emu;
    wire [15:0] SOFTSW_COMMAND;
    wire [7:0]  HWID;
    wire        BUSY;
-   wire [16*8-1:0] softsw_regs;
+   wire [21*8-1:0] softsw_regs;
 
    kg_mcu #(
       .BURST_MAX_MHZ (0), .CS_FILTER (3), .ENABLE_RTC (1), .ENABLE_UART (1),
@@ -229,7 +229,7 @@ module tb_mcu_emu;
       .BUSY (BUSY)
    );
 
-   kg_soft_switches #(.N (16)) u_sw (
+   kg_soft_switches #(.N (21)) u_sw (
       .clk (clk_bus), .command (SOFTSW_COMMAND),
       .regs (softsw_regs), .upd ()
    );
@@ -483,12 +483,14 @@ module tb_mcu_emu;
                        (128'd1 << 12) |                     // Joy L field 4
                        (128'd1 << 13) | (128'd1 << 15) |     // Joy R field 5
                        (128'd1 << 16) | (128'd1 << 17) |      // DivMMC, Kbd
-                       (128'd1 << 18);                        // Pause
+                       (128'd1 << 18) |                       // Pause
+                       (128'd1 << 56);                        // Tape monitor field 2
          status_full[2:1] = bank;
       end
    endfunction
 
    integer curbank = 3;                  // status[2:1] as last sent
+   integer curtape = 2;                  // status[56:55] as last sent
    function [7:0] exp_sw;
       input integer idx;
       begin
@@ -505,6 +507,7 @@ module tb_mcu_emu;
             10:      exp_sw = 8'd1;
             11:      exp_sw = 8'd1;
             15:      exp_sw = 8'd0;      // Mode: Pentagon
+            20:      exp_sw = curtape[7:0];   // Tape monitor: status[56:55]
             default: exp_sw = 8'd0;      // 9, and the triggers 12..14
          endcase
       end
@@ -612,7 +615,7 @@ module tb_mcu_emu;
 
    // compare the frames [fbase, ...) with the protocol's stream for source
    // bytes [lo, hi): start sequence, banks only when they change, data,
-   // ROMLOADER off, the 15 switches, the keyboard clear, INIT_DONE.
+   // ROMLOADER off, the 16 switches (0-8, 10-15, 20), the keyboard clear, INIT_DONE.
    task walk_stream;
       input integer fbase;
       input integer lo;
@@ -645,6 +648,7 @@ module tb_mcu_emu;
                bb = b;
                chkfrm(j, {8'h05, bb, exp_sw(b)});   j = j + 1;
             end
+         chkfrm(j, {8'h05, 8'h14, exp_sw(20)});     j = j + 1;   // Tape monitor
          for (b = 0; b < 256; b = b + 1) begin
             chkfrm(j, exp_rtc(b));                  j = j + 1;
          end
@@ -758,6 +762,11 @@ module tb_mcu_emu;
                      i, softsw_regs[i*8 +: 8], exp_sw(i));
             $finish;
          end
+      if (softsw_regs[20*8 +: 8] !== exp_sw(20)) begin
+         $display("tb_mcu_emu: FAIL reg 20 is %02h expected %02h",
+                  softsw_regs[20*8 +: 8], exp_sw(20));
+         $finish;
+      end
 
       // a changed status reaches register 0 within 50 us
       @(negedge clk);
@@ -783,6 +792,17 @@ module tb_mcu_emu;
       for (i = n0; i < nfrm; i = i + 1)
          if (flog[i] === 24'h050F00) mseen = 1;
       if (!mseen) `FAIL("no 05 0F 00 frame for status[26] = 0");
+
+      // the Tape monitor item (index 20): status[56:55] = 3 sends 05 14 03
+      n0 = nfrm;
+      @(negedge clk);
+      status[56:55] = 2'b11;
+      curtape       = 3;
+      `WAIT_GT(softsw_regs[20*8 +: 8] !== 8'd3, 50000, "register 20 did not follow status");
+      mseen = 0;
+      for (i = n0; i < nfrm; i = i + 1)
+         if (flog[i] === 24'h051403) mseen = 1;
+      if (!mseen) `FAIL("no 05 14 03 frame for status[56:55] = 3");
 
       // keyboard
       @(negedge clk);

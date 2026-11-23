@@ -61,7 +61,11 @@ MENU_TO_TRDOS_128 = 4    # gamepad `down` presses on the GO menu (below)
 # 54-72 and 15 on 73-76, both counted from `Video`). The first board run
 # re-reads the map from a capture before trusting the count (AGENTS.md
 # rule); mister.ROWS carries the same map.
-TAPE_ROW = 9
+TAPE_ROW = 9   # up to build 77, on the main page; kept for the history only
+#: Since the tape items became the `Tape` submenu: the submenu entry is row 8 of the
+#: main page, `Tape play/pause` is row 1 inside it (row 0 is the file).
+TAPE_MENU_ROW = 8
+TAPE_PLAY_IN_PAGE = 1
 
 
 def shot(name):
@@ -257,7 +261,7 @@ def tape(r, cap):
     row = open_osd(r, cap)
     if row is None:
         raise RuntimeError("no OSD bar on the capture")
-    while row < TAPE_ROW:
+    while row < TAPE_MENU_ROW:
         want = row + 1
         r.pad("down")
         cap.frame(shot("osd"))
@@ -268,8 +272,13 @@ def tape(r, cap):
             raise RuntimeError(f"stepped from row {row} to {got}, wanted {want}")
         row = got
     cap.frame(shot("osd"))
-    if read_bar(shot("osd")) != TAPE_ROW:
+    if read_bar(shot("osd")) != TAPE_MENU_ROW:
         raise RuntimeError("the bar moved before the fire")
+    r.press("KEY_ENTER")                 # into the Tape page
+    time.sleep(1.5)
+    for _ in range(TAPE_PLAY_IN_PAGE):
+        r.pad("down")
+        time.sleep(1.0)
     r.press("KEY_ENTER")
     time.sleep(2.0)
     r.pad("home")               # close the OSD to watch the machine
@@ -300,15 +309,20 @@ def fire_tape(r, tries=2):
     """Fire `Tape play/pause` blind, and prove it by the machine's screen.
 
     With no HDMI signal on the capture card the OSD bar cannot be read, so the
-    walk is the documented one (Home, `TAPE_ROW` x gamepad Down, keyboard
-    Enter, Home) and the *effect* is the check: the loader screen changes when
+    walk is the documented one (Home, `TAPE_MENU_ROW` x gamepad Down, Enter into
+    the Tape page, `TAPE_PLAY_IN_PAGE` x Down, Enter, Home) and the *effect* is the check: the loader screen changes when
     the tape starts. A dropped press costs a whole walk, hence `tries`.
     """
     before = r.screen(shot("before"))
     for attempt in range(1, tries + 1):
         r.pad("home")
         time.sleep(2.0)
-        for _ in range(TAPE_ROW):
+        for _ in range(TAPE_MENU_ROW):
+            r.pad("down")
+            time.sleep(1.8)
+        r.press("KEY_ENTER")             # into the Tape page
+        time.sleep(1.5)
+        for _ in range(TAPE_PLAY_IN_PAGE):
             r.pad("down")
             time.sleep(1.8)
         r.press("KEY_ENTER")

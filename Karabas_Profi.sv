@@ -72,10 +72,13 @@ localparam CONF_STR = {
 	"F2,FDIUDITD0SCL,Floppy B (raw);",
 	"O[35:34],Disk layout,Auto,TR-DOS,CP/M;",
 	"-;",
-	"S0,TAPTZXCSW,Tape;",
-	"T[31],Tape play/pause;",
-	"T[32],Tape previous block;",
-	"T[33],Tape next block;",
+	"P3,Tape;",
+	"P3S0,TAPTZXCSW,Tape;",
+	"P3T[31],Tape play/pause;",
+	"P3T[32],Tape previous block;",
+	"P3T[33],Tape next block;",
+	"P3-;",
+	"P3O[56:55],Tape monitor,Off,In,Out,Both;",
 	"-;",
 	"O[2:1],ROM Bank,ROMain,PQ-DOS,FDImage,FATALL;",
 	"O[26],Mode,Pentagon,48k;",
@@ -92,11 +95,13 @@ localparam CONF_STR = {
 	"P2,MT32-pi;",
 	"P2O[27],Use MT32-pi,Yes,No;",
 	"P2O[39:38],Show Info,No,Yes,LCD-On,LCD-Auto;",
+	"P2O[52:51],LCD Type,Auto,SSD1306,SH1106,HD44780;",
+	"P2O[54:53],HD44780 Size,20x4,16x2,20x2,16x4;",
 	"P2-;",
 	"P2-,Default Config:;",
-	"P2O[28],Synth,Munt,FluidSynth;",
+	"P2O[50:48],Synth,Munt,FluidSynth,EmuSC,Nuked SC-55,MU50;",
 	"P2O[30:29],Munt ROM,MT-32 v1,MT-32 v2,CM-32L;",
-	"P2O[42:40],SoundFont,0,1,2,3,4,5,6,7;",
+	"P2O[47:44],SoundFont,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
 	"P2-;",
 	"P2T[43],Reset Hanging Notes;",
 	"-;",
@@ -120,10 +125,21 @@ localparam CONF_STR = {
 	"MT32-pi: SoundFont #5,",
 	"MT32-pi: SoundFont #6,",
 	"MT32-pi: SoundFont #7,",
+	"MT32-pi: SoundFont #8,",
+	"MT32-pi: SoundFont #9,",
+	"MT32-pi: SoundFont #10,",
+	"MT32-pi: SoundFont #11,",
+	"MT32-pi: SoundFont #12,",
+	"MT32-pi: SoundFont #13,",
+	"MT32-pi: SoundFont #14,",
+	"MT32-pi: SoundFont #15,",
 	"MT32-pi: MT-32 v1,",
 	"MT32-pi: MT-32 v2,",
 	"MT32-pi: CM-32L,",
-	"MT32-pi: Unknown mode;",
+	"MT32-pi: Unknown mode,",
+	"MT32-pi: EmuSC,",
+	"MT32-pi: Nuked SC-55,",
+	"MT32-pi: MU50;",
 	"J1,A,B,C,X,Y,Z,Start,Mode;",
 	"V,v",`BUILD_DATE
 };
@@ -1205,6 +1221,11 @@ wire [6:0]  mt32_user_out;
 // "Reset Hanging Notes" (status[43], a button) resets the mt32pi link, which makes
 // the Pi drop its notes - the same way as the other cores' MT32-pi pages
 wire        mt32_rst = RESET | status[0] | status[43];
+// OSD Synth item order (Munt first, the old default) -> the module's encoding:
+// 0 FluidSynth (0xA2), 1 Munt (0xA1), 2 EmuSC (0xA3), 3 Nuked SC-55 (0xA4), 4 MU50 (0xA5).
+// The last three need the ckeisc/mt32-pi fork; a stock Pi treats them as FluidSynth.
+wire  [2:0] mt32_synth_req = (status[50:48] == 3'd0) ? 3'd1 :
+                             (status[50:48] == 3'd1) ? 3'd0 : status[50:48];
 wire [15:0] mt32_i2s_l, mt32_i2s_r;
 wire        mt32_available;
 wire        midi_tx_to_pi;
@@ -1231,9 +1252,11 @@ mt32pi u_mt32pi (
 	.mt32_i2s_r(mt32_i2s_r),
 	.mt32_available(mt32_available),
 
-	.mt32_mode_req(status[28]),
+	.mt32_synth_req(mt32_synth_req),
 	.mt32_rom_req(status[30:29]),
-	.mt32_sf_req({5'd0, status[42:40]}),
+	.mt32_sf_req({12'd0, status[47:44]}),
+	.mt32_lcd_type(status[52:51]),
+	.mt32_hd_size(status[54:53]),
 
 	.mt32_mode(mt32_mode),
 	.mt32_rom(mt32_rom),
@@ -1248,15 +1271,20 @@ mt32pi u_mt32pi (
 // SoundFont or Munt ROM it runs. The index is the 1-based `I,` string of CONF_STR.
 reg       mt32_newmode_d = 1'b0;
 reg       mt32_info_req_r = 1'b0;
-reg [3:0] mt32_info_disp = 4'd0;
+reg [7:0] mt32_info_disp = 8'd0;
 always @(posedge clk_sys) begin
 	mt32_newmode_d <= mt32_newmode;
 	mt32_info_req_r <= (mt32_newmode_d ^ mt32_newmode) && (status[39:38] == 2'd1);
 
-	mt32_info_disp <= (mt32_mode == 8'hA2) ? (4'd1 + {1'b0, mt32_sf[2:0]}) :
-	                  (mt32_mode == 8'hA1 && mt32_rom == 8'd0) ? 4'd9 :
-	                  (mt32_mode == 8'hA1 && mt32_rom == 8'd1) ? 4'd10 :
-	                  (mt32_mode == 8'hA1 && mt32_rom == 8'd2) ? 4'd11 : 4'd12;
+	// 1-based index into the "I," strings: 1..16 SoundFont #0..#15, 17..19 MT-32 v1 /
+	// v2 / CM-32L, 20 unknown, 21 EmuSC, 22 Nuked SC-55, 23 MU50
+	mt32_info_disp <= (mt32_mode == 8'hA2) ? (8'd1 + {4'd0, mt32_sf[3:0]}) :
+	                  (mt32_mode == 8'hA1 && mt32_rom == 8'd0) ? 8'd17 :
+	                  (mt32_mode == 8'hA1 && mt32_rom == 8'd1) ? 8'd18 :
+	                  (mt32_mode == 8'hA1 && mt32_rom == 8'd2) ? 8'd19 :
+	                  (mt32_mode == 8'hA3) ? 8'd21 :
+	                  (mt32_mode == 8'hA4) ? 8'd22 :
+	                  (mt32_mode == 8'hA5) ? 8'd23 : 8'd20;
 
 	if (mt32_rst) begin
 		mt32_newmode_d <= mt32_newmode;
@@ -1264,7 +1292,7 @@ always @(posedge clk_sys) begin
 	end
 end
 assign mt32_info_req = mt32_info_req_r;
-assign mt32_info_val = {4'd0, mt32_info_disp};
+assign mt32_info_val = mt32_info_disp;
 
 // The Pi's LCD picture over the video ("Show Info: LCD-On" always, "LCD-Auto" for 2 s
 // after each LCD update). It replaces the two top bits of each colour.

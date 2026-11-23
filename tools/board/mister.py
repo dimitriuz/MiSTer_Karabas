@@ -315,20 +315,27 @@ def menu_visible(im):
 #: their FDI entries and layout, the tape and its three controls), then the
 #: settings by type (machine, input, sound, `Video`, serial), then the
 #: buttons. The `-` separators are not rows. Earlier builds counted from
-#: `Video` with `Tape play/pause` on 10 (54-72), 15 (73-76). Re-read from a
+#: `Video` with `Tape play/pause` on 10 (54-72), 15 (73-76), 9 on the main page up
+#: to build 77; since the tape became a submenu it is row 1 of the `Tape` page. Re-read from a
 #: capture on every new CONF_STR before trusting any count.
 ROWS = {
     0: "IDE 0", 1: "IDE 1", 2: "SD Card",
     3: "Floppy A (TRD)", 4: "Floppy B (TRD)", 5: "Floppy A (raw)", 6: "Floppy B (raw)",
     7: "Disk layout",
-    8: "Tape", 9: "Tape play/pause", 10: "Tape previous block",
-    11: "Tape next block",
-    12: "ROM Bank", 13: "Mode", 14: "Turbo", 15: "DivMMC", 16: "Pause",
-    17: "Joystick L", 18: "Joystick R", 19: "Keyboard",
-    20: "PSG Mix", 21: "Covox", 22: "MT32-pi", 23: "Video",
-    24: "Serial channel",
-    25: "FDC trace to UART",
-    26: "GS Reset", 27: "NMI", 28: "Reset",
+    8: "Tape",            # a submenu (page 3): Tape / play-pause / previous / next / monitor
+    9: "ROM Bank", 10: "Mode", 11: "Turbo", 12: "DivMMC", 13: "Pause",
+    14: "Joystick L", 15: "Joystick R", 16: "Keyboard",
+    17: "PSG Mix", 18: "Covox", 19: "MT32-pi", 20: "Video",
+    21: "Serial channel",
+    22: "FDC trace to UART",
+    23: "GS Reset", 24: "NMI", 25: "Reset",
+}
+
+#: The rows inside the `Tape` page (`P3`): the file, then the three controls
+#: and the monitor.
+TAPE_PAGE_ROWS = {
+    0: "Tape", 1: "Tape play/pause", 2: "Tape previous block",
+    3: "Tape next block", 4: "Tape monitor",
 }
 
 BAR_X = 330      # a column inside the bar's left padding, 960 px wide

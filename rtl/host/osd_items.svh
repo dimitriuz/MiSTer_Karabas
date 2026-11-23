@@ -31,6 +31,8 @@
 //   13  NMI         [20] trigger
 //   14  Reset       osd_reset    trigger
 //   15  Mode        [26]         field (Pentagon / 48k)
+//   20  Tape monitor [56:55]     field (Off / In / Out / Both; upstream's index 20
+//                                on every board, profi.vhd kb_tape_mon)
 //
 // Triggers are not status fields: mcu_emu sends their frames itself (1, then
 // 0 after TRIGGER_CLKS), so osd_value is 0 for them and the run-loop value
@@ -51,6 +53,7 @@ localparam int OSD_GS_RESET = 12;
 localparam int OSD_NMI      = 13;
 localparam int OSD_RESET    = 14;
 localparam int OSD_MODE     = 15;
+localparam int OSD_TAPE_MON = 20;
 
 // osd_value: the CMD_SWITCHES value of item idx for the status vector.
 function automatic [7:0] osd_value(input int idx, input [127:0] status);
@@ -70,6 +73,7 @@ function automatic [7:0] osd_value(input int idx, input [127:0] status);
             OSD_KEYBOARD: v = {3'd0, status[17]};
             OSD_PAUSE:    v = {3'd0, status[18]};
             OSD_MODE:     v = {3'd0, status[26]};
+            OSD_TAPE_MON: v = {2'd0, status[56:55]};
             default:      v = 4'd0;  // 9, and the triggers 12..14
         endcase
         osd_value = {4'd0, v};
