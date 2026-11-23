@@ -32,8 +32,6 @@ CP/M, 512x240 text-friendly video, a stack of sound chips and real disk drives.
    file browser opens there.
 3. Start **Karabas_Profi** from the `Computer` menu.
 
-Keep only one Karabas `.rbf` in `_Computer`, otherwise it is easy to start an old one by mistake.
-
 ### Update your esxDOS SD image too
 
 The core's DivMMC ROM is now esxDOS 0.9.0, and it will not start with the system files of
@@ -59,9 +57,6 @@ to `SYS`. An `NMI.SYS` or `RTC.SYS` made for an older esxDOS must be rebuilt.
   Nuked SC-55, MU50), `Munt ROM`, `SoundFont` 0 to 15 and `Reset Hanging Notes`. EmuSC,
   Nuked SC-55 and MU50 need the [ckeisc/mt32-pi](https://github.com/ckeisc/mt32-pi)
   firmware; a stock mt32-pi plays them as FluidSynth.
-
-The release has working TR-DOS, esxdos/DivMMC and NMI, and meets timing. Known small issue:
-the esxdos VGM player says the OPL chip is "not detected" but still plays.
 
 ## Using it
 
