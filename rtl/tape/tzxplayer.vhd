@@ -50,7 +50,11 @@ port(
 	stop48k         : out std_logic;                    -- tape should be stopped in 48k mode
 
 	cass_read  : buffer std_logic;   -- tape read signal
-	cass_motor : in  std_logic    -- 1 = tape motor is powered
+	cass_motor : in  std_logic;   -- 1 = tape motor is powered
+
+	-- Karabas diagnostics (static, set from the OSD)
+	pilot_sel  : in  std_logic_vector(1 downto 0) := "00"; -- pilot pulses of a 0x10 block: 8064, 4031, 4032, 6048
+	pause_keep : in  std_logic := '0'  -- 1 = the pause keeps the level (no forced low after 1 ms)
 );
 end tzxplayer;
 
@@ -276,7 +280,7 @@ begin
 					if ce = '1' then
 						ms_counter <= ms_counter - 1;
 						-- Set pulse level to low after 1 ms
-						if ms_counter = 1 then
+						if ms_counter = 1 and pause_keep = '0' then
 							wave_period <= '0';
 							end_period <= '0';
 							cass_read <= '0';
@@ -424,7 +428,12 @@ begin
 					sync2_l <= conv_std_logic_vector(NORMAL_SYNC2_LEN, 16);
 					zero_l  <= conv_std_logic_vector(NORMAL_ZERO_LEN,  16);
 					one_l   <= conv_std_logic_vector(NORMAL_ONE_LEN,   16);
-					pilot_pulses <= conv_std_logic_vector(NORMAL_PILOT_PULSES, 16);
+					case pilot_sel is
+						when "01"   => pilot_pulses <= conv_std_logic_vector(4031, 16);
+						when "10"   => pilot_pulses <= conv_std_logic_vector(4032, 16);
+						when "11"   => pilot_pulses <= conv_std_logic_vector(6048, 16);
+						when others => pilot_pulses <= conv_std_logic_vector(NORMAL_PILOT_PULSES, 16);
+					end case;
 					last_byte_bits <= "1000";
 					tzx_state <= TZX_PLAY_TONE;
 				end if;

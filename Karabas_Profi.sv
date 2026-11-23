@@ -79,6 +79,10 @@ localparam CONF_STR = {
 	"P3T[33],Tape next block;",
 	"P3-;",
 	"P3O[56:55],Tape monitor,Off,In,Out,Both;",
+	"P3O[57],TZX engine,Converter,Stock;",
+	"P3O[59:58],Stock pilot,8064,4031,4032,6048;",
+	"P3O[60],Stock pause,Standard,Keep level;",
+	"P3O[61],Stock level,Normal,Inverted;",
 	"-;",
 	"O[2:1],ROM Bank,ROMain,PQ-DOS,FDImage,FATALL;",
 	"O[26],Mode,Pentagon,48k;",
@@ -886,7 +890,10 @@ wire        tape_rd;
 wire [24:0] tape_addr;
 wire  [7:0] tape_din;
 wire        tape_rd_en;
-wire        tape_active, tape_audio;
+wire        tape_active, tape_audio, tape_audio_raw;
+reg  [1:0] tape_stock_s = 2'd0, tape_inv_s = 2'd0;
+reg  [1:0] tape_pilot_sel = 2'd0;
+reg        tape_pause_keep = 1'b0;
 wire        tape_blk_seek;    // converter jumped to another block
 wire        tape_pause, tape_prev, tape_next;   // OSD trigger levels
 wire        tape_adc, tape_adc_act;
@@ -913,7 +920,8 @@ tape_src u_tape_src (
 	.rd_en(tape_rd_en),
 	.seek_prev(tape_prev),
 	.seek_next(tape_next),
-	.blk_seek(tape_blk_seek)
+	.blk_seek(tape_blk_seek),
+	.stock_tzx(tape_stock_s[1])
 );
 
 // {pause, prev, next}: first sync stage, second sync stage, the second stage
@@ -969,7 +977,10 @@ tape u_tape (
 	.req_hdr(1'b0),
 	.blk_seek(tape_blk_seek_held),
 
-	.audio_out(tape_audio),
+	.tzx_pilot_sel(tape_pilot_sel),
+	.tzx_pause_keep(tape_pause_keep),
+
+	.audio_out(tape_audio_raw),
 
 	.rd_en(tape_rd_en),
 	.rd(tape_rd),
@@ -996,6 +1007,16 @@ end
 
 // profi reads not(TAPE_IN) as the EAR bit, exactly like the ZX core's
 // ula_tape_in = ~tape_vin, so the player output goes in unchanged.
+// Diagnostic OSD items (static): the stock TZX engine, its pilot length, pause
+// shape and output polarity. All at their defaults the stream is unchanged.
+always @(posedge clk_bus) begin
+	tape_stock_s    <= {tape_stock_s[0], status[57]};
+	tape_inv_s      <= {tape_inv_s[0], status[61]};
+	tape_pilot_sel  <= status[59:58];
+	tape_pause_keep <= status[60];
+end
+assign tape_audio = tape_audio_raw ^ (tape_inv_s[1] & (tape_mode == 2'd2));
+
 assign tape_in  = tape_active ? tape_audio : (tape_adc_act_s[1] ? tape_adc_s[1] : 1'b0);
 assign LED_USER = tape_active;
 

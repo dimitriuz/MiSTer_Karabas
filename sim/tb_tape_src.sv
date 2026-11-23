@@ -104,7 +104,8 @@ module tb_tape_src;
         .rd_en(rd_en),
         .seek_prev(seek_prev),
         .seek_next(seek_next),
-        .blk_seek(blk_seek)
+        .blk_seek(blk_seek),
+        .stock_tzx(1'b0)
     );
 
     sd_img_model #(.LAT_CLKS(1000)) sd_model (

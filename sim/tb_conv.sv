@@ -40,7 +40,7 @@ module tb_conv;
         .clk(clk), .tape_ready(tape_ready), .tape_mode(tape_mode),
         .tape_size(tape_size), .rd(tape_rd), .addr(tape_addr),
         .din(tape_din), .rd_en(tape_rd_en),
-        .seek_prev(1'b0), .seek_next(1'b0), .blk_seek()
+        .seek_prev(1'b0), .seek_next(1'b0), .blk_seek(), .stock_tzx(1'b0)
     );
 
     sd_img_model #(.LAT_CLKS(1000)) sd_model (

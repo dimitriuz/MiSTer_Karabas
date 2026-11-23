@@ -107,7 +107,8 @@ module tb_tape_play;
         .rd_en(tape_rd_en),
         .seek_prev(prev),
         .seek_next(next),
-        .blk_seek(tape_blk_seek_conv)
+        .blk_seek(tape_blk_seek_conv),
+        .stock_tzx(1'b0)
     );
 
     sd_img_model #(.LAT_CLKS(1000)) sd_model (
@@ -141,6 +142,8 @@ module tb_tape_play;
         .stdload(1'b0),
         .req_hdr(1'b0),
         .blk_seek(tape_blk_seek),
+        .tzx_pilot_sel(2'd0),
+        .tzx_pause_keep(1'b0),
         .audio_out(audio_out),
         .rd_en(tape_rd_en),
         .rd(tape_rd),

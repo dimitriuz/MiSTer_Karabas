@@ -78,7 +78,8 @@ module tape_src (
     output wire        rd_en,           // tape.sv rd_en
     input  wire        seek_prev,       // OSD Tape previous block
     input  wire        seek_next,       // OSD Tape next block
-    output wire        blk_seek         // converter jumped: reset the parse
+    output wire        blk_seek,        // converter jumped: reset the parse
+    input  wire        stock_tzx        // diagnostic: play TZX through the stock engine (sampled at mount)
 );
 
     localparam [1:0] MODE_TAP = 2'd0, MODE_CSW = 2'd1, MODE_TZX = 2'd2;
@@ -86,7 +87,11 @@ module tape_src (
     // The source file format; TAP/TZX are streamed through tape_conv as CSW.
     reg  [1:0]  src_mode = MODE_CSW;
     reg  [24:0] src_size = 25'd0;
-    wire        conv = (src_mode != MODE_CSW);
+    // Diagnostic (OSD `TZX engine`): a TZX mounted with stock_tzx = 1 skips the
+    // converter and plays through tape.sv's own TZX engine, as the player saw
+    // the file before the converter existed. Latched at the mount.
+    reg         use_stock = 1'b0;
+    wire        conv = (src_mode != MODE_CSW) && !use_stock;
 
     // payload layouts
     //   mount {valid, mode[1:0], size[24:0]}
@@ -313,8 +318,12 @@ module tape_src (
                 // size is the converter's (unbounded) output.
                 src_mode   <= mount_payload[MOUNT_MODE +: 2];
                 src_size   <= mount_payload[MOUNT_SIZE +: 25];
-                tape_mode  <= MODE_CSW;
-                tape_size  <= (mount_payload[MOUNT_MODE +: 2] != MODE_CSW)
+                use_stock  <= stock_tzx && (mount_payload[MOUNT_MODE +: 2] == MODE_TZX);
+                tape_mode  <= (stock_tzx && mount_payload[MOUNT_MODE +: 2] == MODE_TZX)
+                              ? MODE_TZX : MODE_CSW;
+                tape_size  <= (stock_tzx && mount_payload[MOUNT_MODE +: 2] == MODE_TZX)
+                              ? mount_payload[MOUNT_SIZE +: 25] :
+                              (mount_payload[MOUNT_MODE +: 2] != MODE_CSW)
                               ? 25'h1FFFFFF : mount_payload[MOUNT_SIZE +: 25];
                 tag0       <= 16'd0;
                 valid0     <= 1'b1;
