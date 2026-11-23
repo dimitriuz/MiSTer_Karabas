@@ -298,7 +298,7 @@ main: process
 
 	procedure put (base : in natural; at : in natural; b : in std_logic_vector(7 downto 0)) is
 	begin
-		sdram_chip_mem(base + at) := b;
+		sdram_chip_mem(2 * (base + at)) := b;
 	end procedure;
 
 	-- the tail every path shares: LD (#4000),A ; HALT
@@ -313,14 +313,14 @@ main: process
 	procedure fill is
 	begin
 		for i in 0 to 16383 loop
-			sdram_chip_mem(ROM48 + i)  := x"76";
-			sdram_chip_mem(ROMDOS + i) := x"76";
-			sdram_chip_mem(DIVROM + i) := x"76";
+			sdram_chip_mem(2 * (ROM48 + i))  := x"76";
+			sdram_chip_mem(2 * (ROMDOS + i)) := x"76";
+			sdram_chip_mem(2 * (DIVROM + i)) := x"76";
 		end loop;
 		for i in 0 to 8191 loop
-			sdram_chip_mem(DIVRAM + i) := x"76";
+			sdram_chip_mem(2 * (DIVRAM + i)) := x"76";
 		end loop;
-		sdram_chip_mem(MARK) := x"AA";
+		sdram_chip_mem(2 * (MARK)) := x"AA";
 	end procedure;
 
 	-- kind 0: 48 ROM #0000: XOR A; JP tgt. 48 ROM[tgt] = INC A, TR-DOS ROM[tgt]
@@ -400,7 +400,7 @@ main: process
 			if now - t0 > TMAX then exit watch; end if;
 		end loop watch;
 		rise(8);
-		got := sdram_chip_mem(MARK);
+		got := sdram_chip_mem(2 * (MARK));
 		if (not halted) or got /= expect then
 			bad := true;
 			report "tb_rom_entry: FAIL kind " & integer'image(kind) & " #" & hx4(tgt)

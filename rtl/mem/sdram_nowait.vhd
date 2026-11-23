@@ -42,34 +42,40 @@
 --          schedule READ (A10 = 0) at S0 + 2. The bank is idle and TRC has
 --          elapsed at every start (sim assertion, it is the schedule's
 --          invariant).
---   S0 + 5 capture edge of the READ issued at S0 + 2: SDRAM_CLK is clk_mem
+--   S0 + 6 capture edge of the READ issued at S0 + 2: SDRAM_CLK is clk_mem
 --          inverted (the top's altddio), so a command issued at edge e is read
---          by the chip at e + 1/2 and the CL2 read data drives the bus during
---          [S0 + 4.5, S0 + 5.5): the capture is the clk_mem edge S0 + 5, one
---          clk_mem before the latch edge E2 (S0 + 5 is absolute t = 7 at
---          turbo 11, E2 is t = 8). This is sdram.sv's data_ready_delay rule
---          (capture = command + CL + 1 chip cycles) on the inverted clock,
---          and the chip model confirms the edge (tb_sdram_nowait checks the
---          byte). A write cycle rearms the capture for the edge after its
---          resolve (below), because at turbos below 11 that resolve is later
---          than S0 + 5 and din is only latched there.
+--          by the chip at e + 1/2 and the CL2 read data is launched by the chip
+--          edge S0 + 4.5. At the pins it is valid from about 6.4 ns (tAC max +
+--          board) plus the ~2.4 ns by which the SDRAM_CLK pin lags the capture
+--          register's clock, i.e. from S0 + 5.5 at 112.5 MHz, until about 3.2 +
+--          2.4 ns after the next chip edge, S0 + 6.1. The capture is the clk_mem
+--          edge S0 + 6, inside that window (Karabas_Profi.sdc has no multicycle
+--          on SDRAM_CLK -> clk_mem: STA's one-edge relation is the real one;
+--          the former capture at S0 + 5 was 4.4 ns after the launch edge against
+--          8.8 ns of data delay and only worked when the fitter placed the
+--          capture clock late). tb_sdram_nowait models the chip's tAC/tOH/pin
+--          lag (sim/models/sdram_chip.vhd) and checks the byte.
+--          S0 + 6 is the edge E2 at turbo 11 (t = 8): the T80 would latch DI
+--          at the same edge that loads the register. memory.vhd therefore
+--          holds T2 of a memory read one clk_bus period (a one-T-state wait,
+--          MEM_WAIT -> WAIT_n) at turbo 11 only; the latch is then at E3 = t = 12.
+--          At the lower turbos E2 is S0 + 14 or later.
 --   resolve sample, the first one seeing RD_n/WR_n/IORQ_n low (those are low
 --          exactly during [E1, E2), which holds exactly one sample at turbo
 --          11, S0 + 4):
 --     wr_n = 0 and mreq_n = 0 (write): WRITE with auto precharge (A10 = 1) at
---       max(sample + 2, S0 + 6), the floor keeping it out of the read data's
---       drive interval - with the byte lane un-masked on dqm and A12/A11, the
---       byte driven on both lanes, and only if the latched cpu_wr_en = '1'
---       (else PRECHARGE at sample + 1). The rearmed capture loads the written
---       byte instead of the bus (write forwarding), so the byte latched at E2
---       of a write cycle is the written byte (the capture rearms for
---       resolve + 1 = E1 + 3, always before the latch edge E2).
+--       sample + 3 (S0 + 7 at turbo 11): the chip may still drive the read data
+--       until about S0 + 6.4 (tHZ) - with lane 1 masked (dqm "10", A12 = 1), the byte
+--       driven on both lanes, and only if the latched cpu_wr_en = '1'
+--       (else PRECHARGE at sample + 1). The byte latched at E2 of a write cycle
+--       is whatever the S0 + 6 capture read (the old content): the T80 never
+--       uses DI in a write cycle.
 --     rd_n = 0 or iorq_n = 0 (read / I/O cycle): PRECHARGE at sample + 1
 --       (= S0 + 5 at turbo 11).
 --     ts >= "011" with none of the above (no memory access), or the CPU
 --       dropping into reset mid-cycle: PRECHARGE at that sample + 1.
 --   idle again at max(ACTIVE + TRC, PRECHARGE + TRP, WRITE + 2 + TRP) =
---          S0 + 8 for reads, S0 + 10 for writes, S0 + 11 for the no-access
+--          S0 + 8 for reads, S0 + 11 for writes, S0 + 11 for the no-access
 --          path - all before the next possible start sample S0 + 12.
 --
 -- Free windows, only with the bank idle (every timer expired) and no cycle in
@@ -83,7 +89,7 @@
 --       release before the first T1 edge; the same bound).
 -- In a window, issue AUTO REFRESH if owed > 0, else a pending port B access:
 -- ACTIVE at W, READ/WRITE with auto precharge at W + 2 (port B reads also use
--- A10 = 1), read data captured at W + 5, b_done toggles at W + 6. A REFRESH
+-- A10 = 1), read data captured at W + 6, b_done toggles at W + 7. A REFRESH
 -- needs TRFC = 8 before the next command, so both classes finish exactly by
 -- W + 8, when a CPU start is allowed again (t_next = 0 at W + 8).
 --
@@ -94,26 +100,29 @@
 -- issued; a second rising edge while still pending is a sim assertion plus a
 -- sticky b_overrun.
 --
--- Address map (sdram.sv's, kept for continuity): word address addr(20:1),
--- byte lane addr(0) with lane 0 = DQ(7:0); BA = "00"; row = addr(13:1);
--- column = addr(20:14) in sd_a(6 downto 0), sd_a(8 downto 7) = "00",
--- sd_a(9) = '0', sd_a(10) = auto precharge (0 on the CPU READ - the explicit
--- PRECHARGE follows; 1 on every WRITE), and on READ/WRITE sd_a(12)/sd_a(11)
--- carry DQMH/DQML (some MiSTer SDRAM boards take the mask from A12/A11 - the
--- chip takes it from dqm; sdram.sv drives both). Reads use mask "00" and read
--- both lanes; a write drives its byte on both lanes and masks the other lane.
+-- Address map: ONE byte per SDRAM word, in lane 0 = DQ(7:0): word address =
+-- byte address addr(20:0); BA = "00"; row = addr(12:0); column = addr(20:13) in
+-- sd_a(7:0), sd_a(9:8) = "00", sd_a(10) = auto precharge (0 on the CPU READ - the
+-- explicit PRECHARGE follows; 1 on every WRITE), and on READ/WRITE sd_a(12)/
+-- sd_a(11) carry DQMH/DQML (some MiSTer SDRAM boards take the mask from A12/A11
+-- - the chip takes it from dqm). Reads use mask "00"; a write masks lane 1
+-- (dqm "10") and drives its byte on both lanes. Half of the SDRAM is unused
+-- (the 2 MiB address space takes 2 M words = 4 MiB of the module), which is the
+-- price of having no byte-lane select anywhere on the read path.
 --
 -- IO registers: sys/sys.tcl sets FAST_OUTPUT_REGISTER on SDRAM_* and
 -- FAST_INPUT_REGISTER on SDRAM_DQ[*], so every sd_* output comes straight out
 -- of a clk_mem register (dq_r carries 'Z' when the controller does not drive,
--- sdram.sv-style - no logic between register and pin). The read data is
--- captured into two 8-bit byte registers: cpu_byte_r at S0 + 5, b_byte_r at
--- W + 5. The lane select happens in front of the register (its D input), so
--- cpu_dout/b_dout are bare register outputs: at turbo 8x the capture -> CPU
--- DI path has a one clk_mem budget and the byte-select routing no longer
--- fits behind the register (build 20: clk_bus28 setup -1.087 through the
--- mux into the T80). The lane select sits on the unconstrained sd_dq ->
--- register path, exactly as the 16-bit register + trailing mux did before.
+-- sdram.sv-style - no logic between register and pin). The read data goes into
+-- ONE 8-bit register, cpu_byte_r, loaded at S0 + 6 (W + 6 for port B; cap_en is
+-- its enable) straight from SDRAM_DQ[7:0]: no reset, no lane select, nothing but
+-- the pad in front of it, so the fitter places it in the pin's IO input
+-- register and the pad -> register delay is the silicon's, independent of the
+-- placement of the fabric. (Lane select in front of the register put 9.5 ns
+-- of routing on that path in some builds; a trailing select cost the T80 DI path
+-- 1.087 ns at turbo 8x, build 20. With the byte in lane 0 neither exists.)
+-- cpu_dout and b_dout are that register (port B reads are not used in the core
+-- build; they share it and are valid until the next capture).
 --
 -- Init: NOPs for INIT_CLKS = 11250 + 64 clk_mem (100 us + margin at the
 -- 112.5 MHz rate, also covering 96.43 MHz and the power-up window of the
@@ -189,7 +198,7 @@ constant REFRESH_CLKS : natural := 700;         -- 6.2 us @ 112.5 MHz
 -- busy budgets (clk_mem cycles from the setting sample until the next ACTIVE
 -- of the bank is allowed again): the chip's TRC 8, TRP 2, TRFC 8, TWR 2, CL 2
 constant BUSY_START : natural := 8;   -- ACTIVE + TRC
-constant BUSY_WR    : natural := 6;   -- resolve + 6 = WRITE(S0+6) + 2 + TRP
+constant BUSY_WR    : natural := 7;   -- resolve + 7 = WRITE(S0+7) + 2 + TRP (S0+11)
 constant BUSY_RD    : natural := 3;   -- resolve + 3: t_next is 0 again at the
                                       -- sample S0 + 8, where an M1 cycle has
                                       -- its refresh window (PRECHARGE at
@@ -219,24 +228,20 @@ signal ba_r  : std_logic_vector(1 downto 0)  := "00";
 signal dqm_r : std_logic_vector(1 downto 0)  := "00";
 signal dq_r  : std_logic_vector(15 downto 0) := (others => 'Z');
 
--- read data capture registers; the byte lane select sits in front of the
--- register, so the outputs are bare register drives
+-- read data capture register: the IO input register of SDRAM_DQ[7:0]
 signal cpu_byte_r : std_logic_vector(7 downto 0) := (others => '0');
-signal b_byte_r   : std_logic_vector(7 downto 0) := (others => '0');
-signal lane_r   : std_logic := '0';
-signal b_lane_r : std_logic := '0';
+signal cap_en     : std_logic := '0';   -- load cpu_byte_r on this edge
 
 -- command staging: s1 fires next cycle, s2 fires two cycles ahead (the only
 -- schedules are +1/-PRE and +2/READ-WRITE, and at most one source stages at a
 -- sample edge, so a slot can never be overwritten while holding a command)
-signal s1, s2 : cmd_t := CMD_NONE;
+signal s1, s2, s3 : cmd_t := CMD_NONE;
 
 -- event shift chains, bit i = fires i cycles after the cycle that set it
--- (the bit read at [0] fires this cycle); width covers the longest delay, b_done at W + 6
-signal cp_cpu : std_logic_vector(5 downto 0) := (others => '0');
-signal cp_b   : std_logic_vector(5 downto 0) := (others => '0');
-signal dn_b   : std_logic_vector(5 downto 0) := (others => '0');
-signal ovr    : std_logic_vector(5 downto 0) := (others => '0');
+-- (the bit read at [0] fires this cycle); width covers the longest delay, b_done at W + 7
+signal cp_cpu : std_logic_vector(6 downto 0) := (others => '0');
+signal cp_b   : std_logic_vector(6 downto 0) := (others => '0');
+signal dn_b   : std_logic_vector(6 downto 0) := (others => '0');
 
 signal ready_r     : std_logic := '0';
 signal in_cycle    : std_logic := '0';
@@ -265,18 +270,16 @@ begin
 main: process (clk_mem)
 	variable hd        : boolean;        -- a command issues this cycle
 	variable d         : cmd_t;
-	variable n1, n2    : cmd_t;          -- schedules for +1 and +2
+	variable n1, n2, n3 : cmd_t;         -- schedules for +1, +2 and +3
 	variable p         : cmd_t;          -- the command to issue
-	variable v_cpc     : std_logic_vector(5 downto 0);
-	variable v_cpb     : std_logic_vector(5 downto 0);
-	variable v_dnb     : std_logic_vector(5 downto 0);
-	variable v_ovr     : std_logic_vector(5 downto 0);
+	variable v_cpc     : std_logic_vector(6 downto 0);
+	variable v_cpb     : std_logic_vector(6 downto 0);
+	variable v_dnb     : std_logic_vector(6 downto 0);
 	variable busy      : boolean;
 	variable busy_v    : natural range 0 to 31;
 	variable smp       : boolean;
 	variable v_rise    : boolean;
 	variable col       : std_logic_vector(12 downto 0);
-	variable dqm_v     : std_logic_vector(1 downto 0);
 begin
 	if rising_edge(clk_mem) then
 		if reset = '1' then
@@ -285,16 +288,13 @@ begin
 			ba_r      <= "00";
 			dqm_r     <= "00";
 			dq_r      <= (others => 'Z');
-			cpu_byte_r <= (others => '0');
-			b_byte_r   <= (others => '0');
-			lane_r    <= '0';
-			b_lane_r  <= '0';
+			cap_en    <= '0';
 			s1        <= CMD_NONE;
 			s2        <= CMD_NONE;
+			s3        <= CMD_NONE;
 			cp_cpu    <= (others => '0');
 			cp_b      <= (others => '0');
 			dn_b      <= (others => '0');
-			ovr       <= (others => '0');
 			ready_r   <= '0';
 			in_cycle  <= '0';
 			wr_en_r   <= '0';
@@ -316,33 +316,19 @@ begin
 			d := CMD_NONE;
 			n1 := CMD_NONE;
 			n2 := CMD_NONE;
+			n3 := CMD_NONE;
 			busy := false;
 			busy_v := 0;
 			-- shift the event chains; bit 0 of the current value fires now
-			v_cpc := '0' & cp_cpu(5 downto 1);
-			v_cpb := '0' & cp_b(5 downto 1);
-			v_dnb := '0' & dn_b(5 downto 1);
-			v_ovr := '0' & ovr(5 downto 1);
+			v_cpc := '0' & cp_cpu(6 downto 1);
+			v_cpb := '0' & cp_b(6 downto 1);
+			v_dnb := '0' & dn_b(6 downto 1);
 			smp := bus_phase = "01";
 			v_rise := false;
 
-			-- captures (the sample edge of the schedule tables above)
-			if cp_cpu(0) = '1' then
-				if ovr(0) = '1' then
-					cpu_byte_r <= din_r;          -- write forwarding
-				elsif lane_r = '1' then
-					cpu_byte_r <= sd_dq(15 downto 8);
-				else
-					cpu_byte_r <= sd_dq(7 downto 0);
-				end if;
-			end if;
-			if cp_b(0) = '1' then
-				if b_lane_r = '1' then
-					b_byte_r <= sd_dq(15 downto 8);
-				else
-					b_byte_r <= sd_dq(7 downto 0);
-				end if;
-			end if;
+			-- the capture enable of cpu_byte_r (the IO input register, below): the
+			-- registered 'fires next cycle' bit of the CPU and port B chains
+			cap_en <= v_cpc(0) or v_cpb(0);
 			if dn_b(0) = '1' then
 				b_done_r <= not b_done_r;
 			end if;
@@ -431,17 +417,16 @@ begin
 						report "sdram_nowait: start sample with the bank busy"
 						severity failure;
 					-- pragma translate_on
-					lane_r <= cpu_addr(0);
 					wr_en_r <= cpu_wr_en;
 					d := (v => '1', driven => '0', cmd => CMD_ACTIVE,
-						a => cpu_addr(13 downto 1), dqm => "00",
+						a => cpu_addr(12 downto 0), dqm => "00",
 						dq => (others => 'Z'));
 					hd := true;
 					col := (others => '0');
-					col(6 downto 0) := cpu_addr(20 downto 14);
+					col(7 downto 0) := cpu_addr(20 downto 13);
 					n2 := (v => '1', driven => '0', cmd => CMD_READ,
 						a => col, dqm => "00", dq => (others => 'Z'));
-					v_cpc(4) := '1';            -- capture at S0 + 5
+					v_cpc(5) := '1';            -- capture at S0 + 6
 					busy := true;
 					busy_v := BUSY_START;
 					in_cycle <= '1';
@@ -452,20 +437,12 @@ begin
 						din_r <= cpu_din;
 						if wr_en_r = '1' then
 							col := (others => '0');
-							col(6 downto 0) := cpu_addr(20 downto 14);
-							col(12) := not cpu_addr(0);    -- DQMH
-							col(11) := cpu_addr(0);        -- DQML
+							col(7 downto 0) := cpu_addr(20 downto 13);
+							col(12) := '1';                -- DQMH: lane 1 unused
 							col(10) := '1';                -- auto precharge
-							if cpu_addr(0) = '1' then
-								dqm_v := "01";   -- DQML masks lane 0
-							else
-								dqm_v := "10";   -- DQMH masks lane 1
-							end if;
-							n2 := (v => '1', driven => '1', cmd => CMD_WRITE,
-								a => col, dqm => dqm_v,
+							n3 := (v => '1', driven => '1', cmd => CMD_WRITE,
+								a => col, dqm => "10",
 								dq => cpu_din & cpu_din);
-							v_ovr(0) := '1';               -- forward below
-							v_cpc(0) := '1';               -- capture edge
 						else
 							n1 := (v => '1', driven => '0', cmd => CMD_PRECHARGE,
 								a => (others => '0'), dqm => "00",
@@ -507,32 +484,25 @@ begin
 							busy := true;
 							busy_v := BUSY_FREE;
 						elsif b_pending = '1' or v_rise then
-							b_lane_r <= b_addr(0);
 							d := (v => '1', driven => '0', cmd => CMD_ACTIVE,
-								a => b_addr(13 downto 1), dqm => "00",
+								a => b_addr(12 downto 0), dqm => "00",
 								dq => (others => 'Z'));
 							hd := true;
 							col := (others => '0');
-							col(6 downto 0) := b_addr(20 downto 14);
+							col(7 downto 0) := b_addr(20 downto 13);
 							col(10) := '1';                -- auto precharge
 							if b_we = '1' then
-								col(12) := not b_addr(0);  -- DQMH
-								col(11) := b_addr(0);      -- DQML
-								if b_addr(0) = '1' then
-									dqm_v := "01";
-								else
-									dqm_v := "10";
-								end if;
+								col(12) := '1';            -- DQMH: lane 1 unused
 								n2 := (v => '1', driven => '1', cmd => CMD_WRITE,
-									a => col, dqm => dqm_v,
+									a => col, dqm => "10",
 									dq => b_din & b_din);
 							else
 								n2 := (v => '1', driven => '0', cmd => CMD_READ,
 									a => col, dqm => "00",
 									dq => (others => 'Z'));
 							end if;
-							v_cpb(4) := '1';               -- capture at W + 5
-							v_dnb(5) := '1';               -- b_done at W + 6
+							v_cpb(5) := '1';               -- capture at W + 6
+							v_dnb(6) := '1';               -- b_done at W + 7
 							b_pending <= '0';
 							busy := true;
 							busy_v := BUSY_FREE;
@@ -591,11 +561,29 @@ begin
 			else
 				s1 <= s2;
 			end if;
-			s2 <= n2;
+			if n2.v = '1' then
+				s2 <= n2;
+			else
+				s2 <= s3;
+			end if;
+			s3 <= n3;
 			cp_cpu <= v_cpc;
 			cp_b   <= v_cpb;
 			dn_b   <= v_dnb;
-			ovr    <= v_ovr;
+		end if;
+	end if;
+end process;
+
+-- The read data: ONE 8-bit register straight on SDRAM_DQ[7:0], enabled by cap_en
+-- and with no reset and no logic in front of it, so the fitter puts it in the pin's
+-- own IO input register (FAST_INPUT_REGISTER) and the pad -> register path is the
+-- silicon's, whatever the placement. Every byte lives in its own SDRAM word (lane
+-- 0), so there is no lane select behind or in front of it.
+capture: process (clk_mem)
+begin
+	if rising_edge(clk_mem) then
+		if cap_en = '1' then
+			cpu_byte_r <= sd_dq(7 downto 0);
 		end if;
 	end if;
 end process;
@@ -611,6 +599,6 @@ sd_cas_n  <= cmd_r(1);
 sd_we_n   <= cmd_r(0);
 sd_dq     <= dq_r;
 cpu_dout  <= cpu_byte_r;
-b_dout    <= b_byte_r;
+b_dout    <= cpu_byte_r;
 
 end rtl;

@@ -382,7 +382,9 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertEqual(
             out.count("-- wait always disabled\n"
                       "-- actual wait signal is controlled by ena_cpu\n"), 1)
-        self.assertEqual(out.count("mem_wait"), 0)
+        # the turbo-11 read wait (memory.vhd MEM_WAIT): the signal, its U3 mapping
+        # and its term in upstream's cpu_wait_n
+        self.assertEqual(out.count("mem_wait"), 3)
 
     def test_profi_rewrites_anchor_missing(self):
         m = load_tool_module()
@@ -465,7 +467,11 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertEqual(
             out.count("signal cpu_wait \t\t\t: std_logic;\n"
                       "signal cpu_ts : std_logic_vector(2 downto 0);\n"
-                      "signal cpu_mc : std_logic_vector(2 downto 0);"), 1)
+                      "signal cpu_mc : std_logic_vector(2 downto 0);\n"
+                      "signal mem_wait : std_logic;"), 1)
+        # the one-T-state memory read wait joins upstream's own wait condition
+        self.assertEqual(
+            out.count("cpu_wait_n <= '0' when mem_wait = '1' or zc_busy = '1' or"), 1)
         self.assertEqual(
             out.count("\tDO\t\t\t\t\t=> cpu_do_bus,\n"
                       "\tTS_O\t\t\t\t=> cpu_ts,\n"
@@ -480,6 +486,7 @@ class TestPrepareUpstream(unittest.TestCase):
                       "\tCPU_TS \t\t\t=> cpu_ts,\n"
                       "\tCPU_MC \t\t\t=> cpu_mc,\n"
                       "\tCPU_RESET_N \t\t=> cpu_reset_n,\n"
+                      "\tMEM_WAIT \t\t=> mem_wait,\n"
                       "\tMEM_READY \t\t=> MEM_READY,"), 1)
 
     def test_profi_rewrites_gs_strings(self):

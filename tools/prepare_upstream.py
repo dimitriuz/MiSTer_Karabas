@@ -232,7 +232,13 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "signal cpu_wait \t\t\t: std_logic;",
      "signal cpu_wait \t\t\t: std_logic;\n"
      "signal cpu_ts : std_logic_vector(2 downto 0);\n"
-     "signal cpu_mc : std_logic_vector(2 downto 0);"),
+     "signal cpu_mc : std_logic_vector(2 downto 0);\n"
+     "signal mem_wait : std_logic;"),
+    # the one-T-state memory read wait at turbo 11 (memory.vhd MEM_WAIT): into
+    # the CPU's WAIT_n through upstream's own wait condition
+    ("src/rtl/profi.vhd",
+     "cpu_wait_n <= '0' when zc_busy = '1' or",
+     "cpu_wait_n <= '0' when mem_wait = '1' or zc_busy = '1' or"),
     # (the DO line below occurs in both CPU generates; the two-line context
     # with `-- memory manager` selects the G_T80s one)
     ("src/rtl/profi.vhd",
@@ -247,6 +253,7 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "\tCPU_TS \t\t\t=> cpu_ts,\n"
      "\tCPU_MC \t\t\t=> cpu_mc,\n"
      "\tCPU_RESET_N \t\t=> cpu_reset_n,\n"
+     "\tMEM_WAIT \t\t=> mem_wait,\n"
      "\tMEM_READY \t\t=> MEM_READY,"),
     # Task 4 fix (build 20: the capture -> DI path lost clk_bus28 setup by
     # -1.087 through the selector tree). The process drives a renamed

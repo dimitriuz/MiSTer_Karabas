@@ -8,7 +8,8 @@
 -- prepare_upstream output), rtl/replaced/memory.vhd (which instantiates
 -- rtl/mem/sdram_nowait.vhd) and the SDRAM chip model
 -- sim/models/sdram_chip.vhd with ROWS => 64 and REFRESH_US => 500.0, as in
--- tb_sdram_nowait. No wait path exists at all: WAIT_n = '1', WAIT_CPU = '0'.
+-- tb_sdram_nowait. The only wait is memory.vhd's one T-state in a memory read
+-- at turbo 11 (MEM_WAIT -> WAIT_n); WAIT_CPU = '0'.
 --
 -- Wiring (profi.vhd): T80s CLK => clk_bus, CEN => ENA_CPU, DI => the
 -- memory unit's DO; U3 = rtl/replaced/memory.vhd itself (the real core
@@ -44,9 +45,10 @@
 -- Phases: DS80 0 and 1, each at turbo "00" "01" "10" "11". The controller
 -- is never reset between phases (a second 100 us init would break the
 -- chip's 500 us sliding refresh window); every phase resets only the CPU.
--- With no wait the T-state counts are equal, so the times to HALT must
--- stand in the ratio 8 : 4 : 2 : 1 (the CPU clock is the bus /8, /4, /2,
--- /1). Measured from the first T1 after cpu_reset_n rises (TS_O = "001";
+-- Without waits the T-state counts are equal, so the times to HALT stand in
+-- the ratio 8 : 4 : 2 : 1 (the CPU clock is the bus /8, /4, /2, /1); at
+-- turbo 11 every memory read costs one more T-state, so t(11) is between
+-- t(10) / 2 and 1.5 x t(10) / 2. Measured from the first T1 after cpu_reset_n rises (TS_O = "001";
 -- during reset the T80 core holds TS_O = "000") to the clock edge on which
 -- HALT_n falls; both are CPU-clock edges, so the ratio is exact - the
 -- check requires |t(00) - 2 t(01)|, |t(01) - 2 t(10)| and |t(10) - 2 t(11)|
@@ -296,12 +298,14 @@ architecture sim of tb_turbo_nowait is
 	signal a_bus  : std_logic_vector(15 downto 0);
 	signal di_bus : std_logic_vector(7 downto 0) := (others => '0');
 	signal do_bus : std_logic_vector(7 downto 0);
+	signal mem_wait : std_logic;   -- memory.vhd's one-T-state read wait at turbo 11
+	signal mem_wait_n : std_logic;
 
 	-- the memory unit (the controller inside it)
 	signal ready  : std_logic;
 
 	-- launch-phase monitor: DO (= the controller's cpu_byte_r) must change
-	-- only on the clk_mem edge 3 clk_mem after a clk_bus rising edge
+	-- only on a clk_mem edge that coincides with a clk_bus rising edge
 	signal ph_n    : natural := 0;      -- DO changes checked
 	signal ph_bad  : boolean := false;  -- any check failed
 
@@ -347,7 +351,7 @@ begin
 		RESET_n => cpu_reset_n,
 		CLK     => clk_bus,
 		CEN     => ena_cpu,
-		WAIT_n  => '1',
+		WAIT_n  => mem_wait_n,
 		INT_n   => '1',
 		NMI_n   => '1',
 		BUSRQ_n => '1',
@@ -388,7 +392,7 @@ begin
 		GS_MREQ_N => '1',
 		BUS_PHASE => bus_phase, RESET_MEM => reset_mem,
 		CPU_TS => ts_o, CPU_MC => mc_o, CPU_RESET_N => cpu_reset_n,
-		MEM_READY => ready,
+		MEM_READY => ready, MEM_WAIT => mem_wait,
 		SDR_BA => sd_ba, SDR_A => sd_a, SDR_DQM => sd_dqm,
 		SDR_RAS_N => sd_ras_n, SDR_CAS_N => sd_cas_n, SDR_WE_N => sd_we_n,
 		SDR_DQ => dq_bus,
@@ -401,6 +405,8 @@ begin
 		DIVMMC_EN => '0', AUTOMAP => '0', REG_E3 => x"00",
 		TURBO_MODE => turbo
 	);
+
+	mem_wait_n <= not mem_wait;
 
 	sdram_clk <= not clk_mem after 1 ns;   -- the top's altddio behaviour
 
@@ -449,22 +455,23 @@ begin
 		end if;
 	end process;
 
-	-- Launch-phase monitor for Karabas_Profi.sdc's
-	-- `set_multicycle_path -start -hold 3` on cpu_byte_r/b_byte_r: those
-	-- registers load only on a clk_mem edge that is 3 clk_mem after a
-	-- clk_bus rising edge (the sample edge is bus + 2 and every CPU-side
-	-- event is a bus-edge register, so capture S0 + 5 and the write-forward
-	-- rearm both land at bus + 3, one clk_mem before the next bus edge,
-	-- never on one). DO is the controller's cpu_byte_r, so every DO change
-	-- must satisfy that. The clk_mem period is measured, not assumed
-	-- (112.5 vs 96.43 MHz), and the check is +/-1 ps.
+	-- Launch-phase monitor for Karabas_Profi.sdc's `set_multicycle_path -start
+	-- -hold 3` on cpu_byte_r: the register loads only on a clk_mem edge that is
+	-- a multiple of 4 clk_mem after a clk_bus rising edge, i.e. on an edge that
+	-- coincides with a clk_bus edge (the sample edge is bus + 2 and every
+	-- CPU-side event is a bus-edge register, so the capture S0 + 6 lands at
+	-- bus + 8). The STA's setup relation to the T80 is then the next bus edge
+	-- (4 clk_mem), which is where the T80 latches after the turbo-11 wait. DO is
+	-- the controller's cpu_byte_r, so every DO change must satisfy that. The
+	-- clk_mem period is measured, not assumed (112.5 vs 96.43 MHz), and the
+	-- check is +/-1 ps.
 	phase_chk: process
 		variable t_bus  : time := 0 ns;   -- last clk_bus rising edge
 		variable t_mem  : time := 0 ns;   -- last clk_mem rising edge
 		variable per    : time := 0 ns;   -- measured clk_mem period
 		variable n      : natural := 0;
 		variable badv   : boolean := false;
-		variable expct  : time;
+		variable k, r   : integer;
 	begin
 		loop
 			wait on clk_bus, clk_mem, di_bus;
@@ -480,14 +487,18 @@ begin
 			if di_bus'event and ready = '1' and cpu_reset_n = '1'
 			   and per > 0 ns then
 				n := n + 1;
-				expct := t_bus + 3 * per;
-				if now - expct > 1 ps or expct - now > 1 ps then
+				-- the capture edge S0 + 6 is a bus edge (S0 = bus + 2, 6 = 2 mod 4... i.e.
+				-- 8 clk_mem after a bus edge): the change is on a clk_mem edge that
+				-- coincides with a clk_bus rising edge (this process may see it
+				-- before or after t_bus is updated, so 0 or 4 x per after t_bus)
+				k := (now - t_bus) / 1 ps;
+				r := k mod (4 * (per / 1 ps));
+				if r > 1 and r < 4 * (per / 1 ps) - 1 then
 					badv := true;
 					report "tb_turbo_nowait: DO changed at "
-						& itos(now / 1 ps) & " ps, expected "
-						& itos(expct / 1 ps) & " ps (3 x "
-						& itos(per / 1 ps) & " ps after the bus edge at "
-						& itos(t_bus / 1 ps) & " ps)";
+						& itos(now / 1 ps) & " ps, not on a clk_bus edge ("
+						& itos(r) & " ps after one; clk_mem " & itos(per / 1 ps)
+						& " ps, last bus edge at " & itos(t_bus / 1 ps) & " ps)";
 				end if;
 			end if;
 			ph_n   <= n;
@@ -520,13 +531,13 @@ main: process
 	procedure preload_program is
 	begin
 		for i in 0 to PROG_N - 1 loop
-			sdram_chip_mem(16#108000# + i) := PROG(i);
+			sdram_chip_mem(2 * (16#108000# + i)) := PROG(i);
 		end loop;
 		for i in PROG_N to 511 loop
-			sdram_chip_mem(16#108000# + i) := x"00";
+			sdram_chip_mem(2 * (16#108000# + i)) := x"00";
 		end loop;
 		for i in 0 to 16383 loop
-			sdram_chip_mem(16#14000# + i) := x"00";
+			sdram_chip_mem(2 * (16#14000# + i)) := x"00";
 		end loop;
 	end procedure;
 
@@ -539,27 +550,27 @@ main: process
 		byte_bad := false;
 		for k in 0 to 15 loop
 			want := std_logic_vector(to_unsigned((257 - k) mod 256, 8));
-			if sdram_chip_mem(16#14000# + k) /= want then
+			if sdram_chip_mem(2 * (16#14000# + k)) /= want then
 				report "tb_turbo_nowait: chip[" & hx6(16#14000# + k)
-					& "] = " & hx2(sdram_chip_mem(16#14000# + k))
+					& "] = " & hx2(sdram_chip_mem(2 * (16#14000# + k)))
 					& ", expected " & hx2(want);
 				byte_bad := true;
 			end if;
 		end loop;
-		if sdram_chip_mem(16#15000#) /= x"80" then
+		if sdram_chip_mem(2 * (16#15000#)) /= x"80" then
 			report "tb_turbo_nowait: chip[15000] = "
-				& hx2(sdram_chip_mem(16#15000#)) & ", expected 80";
+				& hx2(sdram_chip_mem(2 * (16#15000#))) & ", expected 80";
 			byte_bad := true;
 		end if;
-		if sdram_chip_mem(16#17FFF#) /= x"40" or sdram_chip_mem(16#17FFE#) /= x"10" then
+		if sdram_chip_mem(2 * (16#17FFF#)) /= x"40" or sdram_chip_mem(2 * (16#17FFE#)) /= x"10" then
 			report "tb_turbo_nowait: chip stack = "
-				& hx2(sdram_chip_mem(16#17FFF#)) & ","
-				& hx2(sdram_chip_mem(16#17FFE#)) & ", expected 40,10";
+				& hx2(sdram_chip_mem(2 * (16#17FFF#))) & ","
+				& hx2(sdram_chip_mem(2 * (16#17FFE#))) & ", expected 40,10";
 			byte_bad := true;
 		end if;
-		if sdram_chip_mem(16#108100#) /= x"00" then
+		if sdram_chip_mem(2 * (16#108100#)) /= x"00" then
 			report "tb_turbo_nowait: ROM byte written: chip[108100] = "
-				& hx2(sdram_chip_mem(16#108100#)) & ", expected 00";
+				& hx2(sdram_chip_mem(2 * (16#108100#))) & ", expected 00";
 			byte_bad := true;
 		end if;
 	end procedure;
@@ -629,6 +640,21 @@ main: process
 			& " launch_n=" & itos(pn);
 	end procedure;
 
+	-- turbo 11 against turbo 10: one wait T-state per memory read, so 2 b is a
+	-- little more than a (never less, never 1.5 x more: reads are < half of the
+	-- T-states)
+	procedure chk_ratio_w (nm : in string; a, b : in time; tb : in time) is
+		variable d : time;
+	begin
+		d := 2 * b - a;
+		if d < -tb or d > a / 2 then
+			bad := true;
+			report "tb_turbo_nowait: FAIL ratio " & nm & ": " & itos(a / 1 ns)
+				& " ns vs 2 x " & itos(b / 1 ns) & " ns: 2 b - a = "
+				& itos(d / 1 ps) & " ps outside [-one clk_bus, a / 2]";
+		end if;
+	end procedure;
+
 	procedure chk_ratio (nm : in string; a, b : in time; tb : in time) is
 		variable d : time;
 	begin
@@ -683,7 +709,7 @@ begin
 			& " (clk_bus " & itos(tbus / 100 ps) & " * 100 ps)";
 		chk_ratio("t(00) vs 2 t(01)", t00, t01, tbus);
 		chk_ratio("t(01) vs 2 t(10)", t01, t10, tbus);
-		chk_ratio("t(10) vs 2 t(11)", t10, t11, tbus);
+		chk_ratio_w("t(10) vs 2 t(11) + waits", t10, t11, tbus);
 	end loop mode;
 
 	if viol /= 0 then

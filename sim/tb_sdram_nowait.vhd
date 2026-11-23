@@ -414,6 +414,7 @@ bus_drv: process (clk_bus)
 	variable cdin       : std_logic_vector(7 downto 0) := (others => '0');
 	variable cstay      : time := 0 ns;
 	variable hold_until : time := 0 ns;
+	variable wdone      : boolean := false;   -- memory.vhd's read wait already taken in this T2
 	variable gap        : natural range 0 to 15 := 0;
 	variable di         : std_logic_vector(7 downto 0);
 	variable expd       : std_logic_vector(7 downto 0);
@@ -516,59 +517,64 @@ begin
 							cstay := 0 ns;
 						end if;
 					when 2 =>
-						-- the DI latch edge (T80s: TState = 2, Wait_n = '1')
-						if kind = K_IOR or kind = K_IOW then
-							di := io_val(cadr);   -- profi.vhd's I/O mux
+						if turbo = "11" and not wdone
+						   and (kind = K_M1 or kind = K_M1X or kind = K_RD) then
+							-- memory.vhd's one-T-state wait in a memory read at turbo
+							-- 11 (MEM_WAIT -> WAIT_n): T2 is held one clk_bus period
+							-- and the DI latch is at the next edge
+							wdone := true;
 						else
-							di := cpu_dout;
-						end if;
-						case kind is
-							when K_IOR | K_IOW =>
-								expd := io_val(cadr);
-							when K_WR =>
-								if cwe = '1' then
-									expd := cdin;   -- the write forwarding
-								else
+							wdone := false;
+							-- the DI latch edge (T80s: TState = 2, Wait_n = '1')
+							if kind = K_IOR or kind = K_IOW then
+								di := io_val(cadr);   -- profi.vhd's I/O mux
+							else
+								di := cpu_dout;
+							end if;
+							case kind is
+								when K_IOR | K_IOW =>
+									expd := io_val(cadr);
+								when K_WR =>
+									expd := di;   -- no DI check: the T80 ignores it in a write cycle
+								when K_INT =>
+									null;     -- no DI check: the T80 ignores it
+								when others =>          -- M1, M1X, RD
 									expd := ref(cadr);
+							end case;
+							if kind /= K_INT then
+								n_latch := n_latch + 1;
+								if kind = K_RD then
+									cnt_rd(to_integer(unsigned(cmc))) :=
+										cnt_rd(to_integer(unsigned(cmc))) + 1;
+								elsif kind = K_WR then
+									cnt_wr(to_integer(unsigned(cmc))) :=
+										cnt_wr(to_integer(unsigned(cmc))) + 1;
 								end if;
-							when K_INT =>
-								null;     -- no DI check: the T80 ignores it
-							when others =>          -- M1, M1X, RD
-								expd := ref(cadr);
-						end case;
-						if kind /= K_INT then
-							n_latch := n_latch + 1;
-							if kind = K_RD then
-								cnt_rd(to_integer(unsigned(cmc))) :=
-									cnt_rd(to_integer(unsigned(cmc))) + 1;
-							elsif kind = K_WR then
-								cnt_wr(to_integer(unsigned(cmc))) :=
-									cnt_wr(to_integer(unsigned(cmc))) + 1;
+								if di /= expd then
+									bad := true;
+									nbad := nbad + 1;
+									report "tb_sdram_nowait: FAIL DI latch at t"
+										& integer'image(now / 1 ns) & " ns: kind "
+										& integer'image(kind_t'pos(kind))
+										& " mc "
+										& integer'image(to_integer(unsigned(cmc)))
+										& " addr " & integer'image(cadr)
+										& " got " & img8(di) & " want " & img8(expd)
+										severity error;
+								end if;
 							end if;
-							if di /= expd then
-								bad := true;
-								nbad := nbad + 1;
-								report "tb_sdram_nowait: FAIL DI latch at t"
-									& integer'image(now / 1 ns) & " ns: kind "
-									& integer'image(kind_t'pos(kind))
-									& " mc "
-									& integer'image(to_integer(unsigned(cmc)))
-									& " addr " & integer'image(cadr)
-									& " got " & img8(di) & " want " & img8(expd)
-									severity error;
+							if kind = K_IOR or kind = K_IOW then
+								-- T80s: RD/WR/IORQ were a one-period pulse
+								rd_n_o <= '1'; wr_n_o <= '1'; iorq_n_o <= '1';
 							end if;
-						end if;
-						if kind = K_IOR or kind = K_IOW then
-							-- T80s: RD/WR/IORQ were a one-period pulse
-							rd_n_o <= '1'; wr_n_o <= '1'; iorq_n_o <= '1';
-						end if;
-						if hold > 0 then
-							hold := hold - 1;
-						else
-							ts := 3;
-							ts_o <= "011";
-							rd_n_o <= '1'; wr_n_o <= '1';
-							iorq_n_o <= '1'; mreq_n_o <= '1';
+							if hold > 0 then
+								hold := hold - 1;
+							else
+								ts := 3;
+								ts_o <= "011";
+								rd_n_o <= '1'; wr_n_o <= '1';
+								iorq_n_o <= '1'; mreq_n_o <= '1';
+							end if;
 						end if;
 					when 3 =>
 						if kind = K_RD or kind = K_WR or kind = K_INT then
@@ -768,10 +774,10 @@ begin
 
 	-- the reference model and the chip boot with the same pattern (back
 	-- door: the model only decodes what arrives on the pins)
-	for i in 0 to SDRAM_CHIP_BYTES - 1 loop
+	for i in 0 to SDRAM_CHIP_BYTES / 2 - 1 loop
 		v := std_logic_vector(to_unsigned((i * 31 + i / 251) mod 256, 8));
 		ref(i) := v;
-		sdram_chip_mem(i) := v;
+		sdram_chip_mem(2 * (i)) := v;
 	end loop;
 
 	wait until reset_mem = '0' for 1 ms;
@@ -845,9 +851,9 @@ cfgs:
 			push(K_WR, 700003, '1', x"9E");
 			push(K_M1, 700002);
 			wait_idle("case2");
-			check(sdram_chip_mem(700002) = ref(700002),
+			check(sdram_chip_mem(2 * (700002)) = ref(700002),
 				"case2: lane 0 survived the masked write");
-			check(sdram_chip_mem(700003) = x"9E",
+			check(sdram_chip_mem(2 * (700003)) = x"9E",
 				"case2: lane 1 holds the written byte");
 			line_end("case2 rmw_same_address t" & natural'image(tt)
 				& " d" & natural'image(dd), bad0);
@@ -885,7 +891,7 @@ cfgs:
 			push(K_INT, 0, '1', x"00", 0 ns, "100");
 			push(K_RD, 900120, '1', x"00", 0 ns, "101");
 			wait_idle("case4");
-			check(sdram_chip_mem(900120) = ref(900120),
+			check(sdram_chip_mem(2 * (900120)) = ref(900120),
 				"case4: the ROM write left the array alone");
 			line_end("case4 io_and_internal t" & natural'image(tt)
 				& " d" & natural'image(dd), bad0);
@@ -982,11 +988,11 @@ cfgs:
 		& " refreshes over the whole run");
 
 	mism := 0;
-	for i in 0 to SDRAM_CHIP_BYTES - 1 loop
-		if sdram_chip_mem(i) /= ref(i) then
+	for i in 0 to SDRAM_CHIP_BYTES / 2 - 1 loop
+		if sdram_chip_mem(2 * (i)) /= ref(i) then
 			if mism < 8 then
 				report "tb_sdram_nowait: FAIL array mismatch at "
-					& integer'image(i) & ": chip " & img8(sdram_chip_mem(i))
+					& integer'image(i) & ": chip " & img8(sdram_chip_mem(2 * (i)))
 					& " want " & img8(ref(i)) severity error;
 			end if;
 			mism := mism + 1;

@@ -157,24 +157,23 @@ set_multicycle_path -hold 1 -from [get_clocks {clk_bus28}] -to [get_clocks {clk_
 set_multicycle_path -setup 2 -from [get_clocks {clk_bus24}] -to [get_clocks {clk_mem96}]
 set_multicycle_path -hold 1 -from [get_clocks {clk_bus24}] -to [get_clocks {clk_mem96}]
 
-# The controller's read-capture registers load only on a clk_mem edge that
-# is 3 clk_mem after a clk_bus rising edge (the sample edge lands 2 clk_mem
-# after the bus edge, capture is sample + 5 and the write-forward rearm is
-# sample + 3 - both 3 mod 4, one clk_mem before the next bus edge and never
-# on one; tb_turbo_nowait checks every DO change against this). The T80
-# latches one clk_mem after the capture, so setup is the default one
-# clk_mem, but the default HOLD check compares a capture launched on the
-# clk_mem edge that coincides with a bus edge against a latch edge at
-# 0 ns - a phase that never happens. clk_bus also reaches its registers
-# ~3.5 ns later than clk_mem (divider + its CLKENA), so the router meets
-# that impossible hold in the fast corner by padding the next
+# The controller's read-capture register (cpu_byte_r) loads on the clk_mem edge
+# S0 + 6, 8 clk_mem after the bus edge the cycle started on, i.e. on an edge that
+# coincides with a clk_bus rising edge (tb_turbo_nowait checks every DO change
+# against this). At turbo 11 that is the edge E2 that would end T2, so
+# memory.vhd holds T2 one clk_bus period (MEM_WAIT) and the T80 latches at the
+# next bus edge, 4 clk_mem later: the default setup relation; at the lower turbos
+# the latch is later still. The default HOLD check compares a capture launched
+# on the clk_mem edge that coincides with a bus edge against a latch edge at
+# 0 ns - a phase at which the T80 never latches DI. clk_bus also reaches its
+# registers ~3.5 ns later than clk_mem (divider + its CLKENA), so the router
+# would meet that impossible hold in the fast corner by padding the next
 # cpu_byte_r -> T80 route (build 22: two neighbouring LABs, 5.85 + 6.25 ns
 # of routing, clk_bus28 setup -1.472). -hold 3 with -start moves the hold
-# check to the bus edge 3 clk_mem before the launch, i.e. the edge that
+# check to the bus edge 4 clk_mem before the launch, i.e. the edge that
 # really must still see the old data.
-# cpu_byte_r only: the same argument holds for b_byte_r, but in the core
-# profile nothing consumes b_dout, so synthesis drops that register and a
-# filter naming it is an ignored-filter warning (332174).
+# cpu_byte_r is the one capture register (the IO input register of SDRAM_DQ[7:0],
+# which b_dout shares).
 set_multicycle_path -start -hold 3 \
 	-from [get_registers {*sdram_nowait:U_SDRAM|cpu_byte_r[*]}] \
 	-to [get_clocks {clk_bus28 clk_bus24}]
@@ -211,13 +210,23 @@ foreach c {SDRAM_CLK112 SDRAM_CLK96} {
 }
 set_clock_groups -logically_exclusive -group {clk_mem112 clk_bus28 SDRAM_CLK112} \
 	-group {clk_mem96 clk_bus24 SDRAM_CLK96}
-# The read data: a READ at S0 + 2 is captured at S0 + 5 (sdram_nowait.vhd), so
-# the data the chip launches at its clock edge two chip cycles after the READ
-# (CL2) is taken three clk_mem edges after that edge, not at the next one
-set_multicycle_path -setup 3 -from [get_clocks {SDRAM_CLK112}] -to [get_clocks {clk_mem112}]
-set_multicycle_path -hold  2 -from [get_clocks {SDRAM_CLK112}] -to [get_clocks {clk_mem112}]
-set_multicycle_path -setup 3 -from [get_clocks {SDRAM_CLK96}]  -to [get_clocks {clk_mem96}]
-set_multicycle_path -hold  2 -from [get_clocks {SDRAM_CLK96}]  -to [get_clocks {clk_mem96}]
+# The read data: a READ at S0 + 2 is seen by the chip at S0 + 2.5 (SDRAM_CLK is
+# clk_mem inverted); the CL2 data is launched by the chip edge S0 + 4.5 and the
+# controller's capture register (the IO input register of SDRAM_DQ[7:0]) loads
+# on the clk_mem edge S0 + 6, the SECOND rising clk_mem edge after that launch
+# (S0 + 5 is the first, half a period after it: far too early for 6.4 ns of tAC +
+# board + ~2.4 ns of SDRAM_CLK pin lag). STA's default relation SDRAM_CLK* (clk_mem
+# fall) -> clk_mem* (rise) is the first rising edge, so the setup relation is
+# one clk_mem longer: -setup 2 = 1.5 periods = 13.3 ns at 112.5 MHz. -hold is left
+# at its default, which then checks the NEXT chip data (launched one period
+# later, ~5.6 ns min delay) against this same capture edge - the real hold
+# requirement. (The former `-setup 3 -hold 2` described a capture at S0 + 7, a
+# whole period later than the real one, so STA reported ~2 periods of slack the
+# hardware never had and the capture worked only when the fitter placed the
+# capture clock late; the true figures for the S0 + 5 capture were -8.1 ns at
+# 112.5 MHz and -7.4 ns at 96.4 MHz.)
+set_multicycle_path -setup 2 -from [get_clocks {SDRAM_CLK112}] -to [get_clocks {clk_mem112}]
+set_multicycle_path -setup 2 -from [get_clocks {SDRAM_CLK96}]  -to [get_clocks {clk_mem96}]
 
 # The HQ2x scandoubler's blender (sys/hq2x.sv) runs on clk_vid (112.5 MHz) but every register in it
 # is enabled by ce_in = scandoubler's ce_x4i, which fires at 1/4, 2/4 and 3/4 of a pixel plus once
