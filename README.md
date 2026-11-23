@@ -34,6 +34,16 @@ CP/M, 512x240 text-friendly video, a stack of sound chips and real disk drives.
 
 Keep only one Karabas `.rbf` in `_Computer`, otherwise it is easy to start an old one by mistake.
 
+### Update your esxDOS SD image too
+
+The core's DivMMC ROM is now esxDOS 0.9.0, and it will not start with the system files of
+0.8.x. On the SD image you mount under `SD Card`, replace the `SYS` folder and copy the `BIN`
+folder of [esxdos090.zip](https://www.esxdos.org/files/esxdos090.zip) to the root (the system
+commands live in `SYS/BIN` now). The shipped `SYS/CONFIG/ESXDOS.CFG` has `LFN=1` (long file
+names). For the clock, add the 0.9.0 `RTC.SYS` from
+[karabas-go software/esxdos](https://github.com/andykarpov/karabas-go/tree/master/software/esxdos)
+to `SYS`. An `NMI.SYS` or `RTC.SYS` made for an older esxDOS must be rebuilt.
+
 ### What is new in 20261123
 
 - **SDRAM reads fixed.** The previous release could fail to start (ROMain stayed blank) on
