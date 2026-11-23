@@ -72,10 +72,13 @@ localparam CONF_STR = {
 	"F2,FDIUDITD0SCL,Floppy B (raw);",
 	"O[35:34],Disk layout,Auto,TR-DOS,CP/M;",
 	"-;",
-	"S0,TAPTZXCSW,Tape;",
-	"T[31],Tape play/pause;",
-	"T[32],Tape previous block;",
-	"T[33],Tape next block;",
+	"P3,Tape;",
+	"P3S0,TAPTZXCSW,Tape;",
+	"P3T[31],Tape play/pause;",
+	"P3T[32],Tape previous block;",
+	"P3T[33],Tape next block;",
+	"P3-;",
+	"P3O[56:55],Tape monitor,Off,In,Out,Both;",
 	"-;",
 	"O[2:1],ROM Bank,ROMain,PQ-DOS,FDImage,FATALL;",
 	"O[26],Mode,Pentagon,48k;",
@@ -91,8 +94,16 @@ localparam CONF_STR = {
 	"O[3],Covox,On,Off;",
 	"P2,MT32-pi;",
 	"P2O[27],Use MT32-pi,Yes,No;",
-	"P2O[28],Synth,Munt,FluidSynth;",
+	"P2O[39:38],Show Info,No,Yes,LCD-On,LCD-Auto;",
+	"P2O[52:51],LCD Type,Auto,SSD1306,SH1106,HD44780;",
+	"P2O[54:53],HD44780 Size,20x4,16x2,20x2,16x4;",
+	"P2-;",
+	"P2-,Default Config:;",
+	"P2O[50:48],Synth,Munt,FluidSynth,EmuSC,Nuked SC-55,MU50;",
 	"P2O[30:29],Munt ROM,MT-32 v1,MT-32 v2,CM-32L;",
+	"P2O[47:44],SoundFont,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
+	"P2-;",
+	"P2T[43],Reset Hanging Notes;",
 	"-;",
 	"P1,Video;",
 	"P1O[22:21],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
@@ -105,6 +116,30 @@ localparam CONF_STR = {
 	"T[19],GS Reset;",
 	"T[20],NMI;",
 	"R[0],Reset;",
+	"I,",
+	"MT32-pi: SoundFont #0,",
+	"MT32-pi: SoundFont #1,",
+	"MT32-pi: SoundFont #2,",
+	"MT32-pi: SoundFont #3,",
+	"MT32-pi: SoundFont #4,",
+	"MT32-pi: SoundFont #5,",
+	"MT32-pi: SoundFont #6,",
+	"MT32-pi: SoundFont #7,",
+	"MT32-pi: SoundFont #8,",
+	"MT32-pi: SoundFont #9,",
+	"MT32-pi: SoundFont #10,",
+	"MT32-pi: SoundFont #11,",
+	"MT32-pi: SoundFont #12,",
+	"MT32-pi: SoundFont #13,",
+	"MT32-pi: SoundFont #14,",
+	"MT32-pi: SoundFont #15,",
+	"MT32-pi: MT-32 v1,",
+	"MT32-pi: MT-32 v2,",
+	"MT32-pi: CM-32L,",
+	"MT32-pi: Unknown mode,",
+	"MT32-pi: EmuSC,",
+	"MT32-pi: Nuked SC-55,",
+	"MT32-pi: MU50;",
 	"J1,A,B,C,X,Y,Z,Start,Mode;",
 	"V,v",`BUILD_DATE
 };
@@ -127,6 +162,9 @@ wire [127:0] status;
 wire [10:0] ps2_key;
 wire forced_scandoubler;
 wire [21:0] gamma_bus;
+wire        mt32_info_req;        // OSD info message: the MT32-pi mode changed (below)
+wire  [7:0] mt32_info_val;
+wire  [7:0] vm_r, vm_g, vm_b;     // the video mixer's output, before the MT32-pi LCD overlay
 wire [7:0] uart_mode;             // OSD "UART mode" select: 3 = MIDI
 
 // keyboard shortcuts (rtl/host/hotkeys.sv): Ctrl+Alt+Del reset, Ctrl+Alt+End NMI,
@@ -227,6 +265,8 @@ hps_io #(.CONF_STR(CONF_STR), .VDNUM(6), .BLKSZ(2)) hps_io
 	.status_in({status[127:10], hk_turbo, status[7:0]}),
 	.status_set(hk_turbo_set),
 	.status_menumask(16'd0),
+	.info_req(mt32_info_req),
+	.info(mt32_info_val),
 
 	.uart_mode(uart_mode),
 
@@ -1159,9 +1199,9 @@ video_mixer #(.LINE_LENGTH(1024), .GAMMA(1)) video_mixer
 	.HDMI_FREEZE(1'b0),
 	.freeze_sync(),
 
-	.VGA_R(VGA_R),                // straight onto the MiSTer outputs
-	.VGA_G(VGA_G),
-	.VGA_B(VGA_B),
+	.VGA_R(vm_r),                 // onto the MiSTer outputs through the LCD overlay
+	.VGA_G(vm_g),
+	.VGA_B(vm_b),
 	.VGA_VS(VGA_VS),
 	.VGA_HS(VGA_HS),
 	.VGA_DE(VGA_DE)
@@ -1178,6 +1218,14 @@ video_mixer #(.LINE_LENGTH(1024), .GAMMA(1)) video_mixer
 // AUDIO_L/R. The MT32-pi OSD page picks the Pi's synth and ROM; "Use
 // MT32-pi: No" silences the USER-port Pi only, never MidiLink.
 wire [6:0]  mt32_user_out;
+// "Reset Hanging Notes" (status[43], a button) resets the mt32pi link, which makes
+// the Pi drop its notes - the same way as the other cores' MT32-pi pages
+wire        mt32_rst = RESET | status[0] | status[43];
+// OSD Synth item order (Munt first, the old default) -> the module's encoding:
+// 0 FluidSynth (0xA2), 1 Munt (0xA1), 2 EmuSC (0xA3), 3 Nuked SC-55 (0xA4), 4 MU50 (0xA5).
+// The last three need the ckeisc/mt32-pi fork; a stock Pi treats them as FluidSynth.
+wire  [2:0] mt32_synth_req = (status[50:48] == 3'd0) ? 3'd1 :
+                             (status[50:48] == 3'd1) ? 3'd0 : status[50:48];
 wire [15:0] mt32_i2s_l, mt32_i2s_r;
 wire        mt32_available;
 wire        midi_tx_to_pi;
@@ -1196,7 +1244,7 @@ mt32pi u_mt32pi (
 	.USER_IN(USER_IN),
 	.USER_OUT(mt32_user_out),
 
-	.reset(RESET | status[0]),
+	.reset(mt32_rst),
 	.midi_tx(midi_tx_to_pi),
 	.midi_rx(),
 
@@ -1204,9 +1252,11 @@ mt32pi u_mt32pi (
 	.mt32_i2s_r(mt32_i2s_r),
 	.mt32_available(mt32_available),
 
-	.mt32_mode_req(status[28]),
+	.mt32_synth_req(mt32_synth_req),
 	.mt32_rom_req(status[30:29]),
-	.mt32_sf_req(8'd0),
+	.mt32_sf_req({12'd0, status[47:44]}),
+	.mt32_lcd_type(status[52:51]),
+	.mt32_hd_size(status[54:53]),
 
 	.mt32_mode(mt32_mode),
 	.mt32_rom(mt32_rom),
@@ -1216,6 +1266,66 @@ mt32pi u_mt32pi (
 	.mt32_lcd_pix(mt32_lcd_pix),
 	.mt32_lcd_update(mt32_lcd_update)
 );
+
+// OSD info message ("Show Info: Yes"): when the Pi reports a new mode, show which
+// SoundFont or Munt ROM it runs. The index is the 1-based `I,` string of CONF_STR.
+reg       mt32_newmode_d = 1'b0;
+reg       mt32_info_req_r = 1'b0;
+reg [7:0] mt32_info_disp = 8'd0;
+always @(posedge clk_sys) begin
+	mt32_newmode_d <= mt32_newmode;
+	mt32_info_req_r <= (mt32_newmode_d ^ mt32_newmode) && (status[39:38] == 2'd1);
+
+	// 1-based index into the "I," strings: 1..16 SoundFont #0..#15, 17..19 MT-32 v1 /
+	// v2 / CM-32L, 20 unknown, 21 EmuSC, 22 Nuked SC-55, 23 MU50
+	mt32_info_disp <= (mt32_mode == 8'hA2) ? (8'd1 + {4'd0, mt32_sf[3:0]}) :
+	                  (mt32_mode == 8'hA1 && mt32_rom == 8'd0) ? 8'd17 :
+	                  (mt32_mode == 8'hA1 && mt32_rom == 8'd1) ? 8'd18 :
+	                  (mt32_mode == 8'hA1 && mt32_rom == 8'd2) ? 8'd19 :
+	                  (mt32_mode == 8'hA3) ? 8'd21 :
+	                  (mt32_mode == 8'hA4) ? 8'd22 :
+	                  (mt32_mode == 8'hA5) ? 8'd23 : 8'd20;
+
+	if (mt32_rst) begin
+		mt32_newmode_d <= mt32_newmode;
+		mt32_info_req_r <= 1'b0;
+	end
+end
+assign mt32_info_req = mt32_info_req_r;
+assign mt32_info_val = mt32_info_disp;
+
+// The Pi's LCD picture over the video ("Show Info: LCD-On" always, "LCD-Auto" for 2 s
+// after each LCD update). It replaces the two top bits of each colour.
+reg [31:0] mt32_lcd_timeout = 32'd0;
+reg        mt32_lcd_update_d = 1'b0;
+reg        mt32_lcd_on = 1'b0;
+always @(posedge clk_sys) begin
+	mt32_lcd_update_d <= mt32_lcd_update;
+
+	if (mt32_rst) begin
+		mt32_lcd_timeout <= 32'd0;
+		mt32_lcd_update_d <= mt32_lcd_update;
+		mt32_lcd_on <= 1'b0;
+	end
+	else begin
+		if (mt32_lcd_timeout != 0) mt32_lcd_timeout <= mt32_lcd_timeout - 1'd1;
+
+		if (status[39:38] == 2'd2) mt32_lcd_on <= 1'b1;
+		else if (status[39:38] != 2'd3) mt32_lcd_on <= 1'b0;
+		else begin
+			if (mt32_lcd_timeout == 0) mt32_lcd_on <= 1'b0;
+			if (mt32_lcd_update_d ^ mt32_lcd_update) begin
+				mt32_lcd_on <= 1'b1;
+				mt32_lcd_timeout <= 32'd100_000_000;   // 2 s of clk_sys
+			end
+		end
+	end
+end
+
+wire mt32_lcd = mt32_lcd_on & mt32_lcd_en;
+assign VGA_R = mt32_lcd ? {{2{mt32_lcd_pix}}, vm_r[7:2]} : vm_r;
+assign VGA_G = mt32_lcd ? {{2{mt32_lcd_pix}}, vm_g[7:2]} : vm_g;
+assign VGA_B = mt32_lcd ? {{2{mt32_lcd_pix}}, vm_b[7:2]} : vm_b;
 
 mt32_mix u_mt32_mix (
 	.clk(CLK_AUDIO),

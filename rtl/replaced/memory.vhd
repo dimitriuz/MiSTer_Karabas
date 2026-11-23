@@ -57,15 +57,17 @@ port (
 
 	-- Stage 2 (the no-wait SDRAM controller rtl/mem/sdram_nowait.vhd): the
 	-- clk_mem-domain clock signals and the CPU visibility the controller
-	-- needs; MEM_WAIT is gone, no memory wait reaches the CPU. The defaults
-	-- keep the entity elaborable without them (the core profile's
-	-- profi.vhd rewrites map all six; MEM_READY may stay unmapped).
+	-- needs. The only wait that reaches the CPU is MEM_WAIT: one T-state at
+	-- turbo 11 in a memory read (see below). The defaults keep the entity
+	-- elaborable without them (the core profile's profi.vhd rewrites map
+	-- all of them; MEM_READY may stay unmapped).
 	BUS_PHASE	: in std_logic_vector(1 downto 0) := "00";
 	RESET_MEM	: in std_logic := '1';
 	CPU_TS		: in std_logic_vector(2 downto 0) := "000";
 	CPU_MC		: in std_logic_vector(2 downto 0) := "000";
 	CPU_RESET_N	: in std_logic := '1';
 	MEM_READY	: out std_logic;
+	MEM_WAIT	: out std_logic;
 	GS_MREQ_N	: in STD_LOGIC;
 	
 	MA 			: out 	std_logic_vector(20 downto 0);
@@ -140,6 +142,9 @@ architecture RTL of memory is
 	signal romm_a : std_logic := '0';   -- = is_romDIVMMC's
 	signal ramm_a : std_logic := '0';   -- = is_ramDIVMMC's
 	
+	signal mem_wait_i : std_logic;
+	signal w_done     : std_logic := '0';
+
 	signal vid_spec_wr : std_logic := '0';
 	signal vid_profi_wr : std_logic := '0';
 	signal vid_spec_wr_a_bus, vid_spec_rd_a_bus: std_logic_vector(13 downto 0);
@@ -273,8 +278,29 @@ begin
 
 	-- the main memory is the MiSTer SDRAM behind the Stage 2 no-wait
 	-- controller rtl/mem/sdram_nowait.vhd: every M-cycle the CPU runs is
-	-- served inside the M-cycle, no wait state exists (MEM_WAIT is gone from
-	-- the entity). The SRAM pins of the board are not driven.
+	-- served inside the M-cycle (the one-T-state read wait at turbo 11 is MEM_WAIT
+	-- below). The SRAM pins of the board are not driven.
+	-- The one wait state: at turbo 11 (28 MHz) the SDRAM read data is captured
+	-- at the clk_mem edge S0 + 6, which is the bus edge E2 that ends T2, so the
+	-- T80 could not see it. T2 of a memory read (RD_n and MREQ_n low, which also
+	-- covers the M1 fetch) is held one clk_bus period through WAIT_n; the DI
+	-- latch is then at E3. w_done marks "already waited in this T2"; it is
+	-- cleared by the first clk_bus edge after T2 (the controller's schedule
+	-- tolerates the longer cycle, see sdram_nowait.vhd). Lower turbos need none.
+	mem_wait_i <= '1' when TURBO_MODE = "11" and CPU_TS = "010"
+	                       and N_MREQ = '0' and N_RD = '0' and w_done = '0' else '0';
+	MEM_WAIT <= mem_wait_i;
+	process (CLK_BUS)
+	begin
+		if rising_edge(CLK_BUS) then
+			if TURBO_MODE = "11" and CPU_TS = "010" and N_MREQ = '0' and N_RD = '0' then
+				w_done <= '1';
+			else
+				w_done <= '0';
+			end if;
+		end if;
+	end process;
+
 	MA <= (others => '0');
 	MD <= (others => 'Z');
 	N_MWR <= "11";

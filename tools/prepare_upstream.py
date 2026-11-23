@@ -121,6 +121,7 @@ _DI_SELECTOR_OLD = (
     '\t\twhen x"19" => cpu_di_bus <= ide_do_bus;' + "\n"
     '\t\twhen x"1A" => cpu_di_bus <= gs_do_bus;' + "\n"
     '\t\twhen x"1B" => cpu_di_bus <= opl3_do_bus;' + "\n"
+    '\t\twhen x"1C" => cpu_di_bus <= nx_do;' + "\n"
     "\t\twhen others => cpu_di_bus <= (others => '1');" + "\n"
     '\tend case;' + "\n"
     'end process;' + "\n"
@@ -232,7 +233,13 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "signal cpu_wait \t\t\t: std_logic;",
      "signal cpu_wait \t\t\t: std_logic;\n"
      "signal cpu_ts : std_logic_vector(2 downto 0);\n"
-     "signal cpu_mc : std_logic_vector(2 downto 0);"),
+     "signal cpu_mc : std_logic_vector(2 downto 0);\n"
+     "signal mem_wait : std_logic;"),
+    # the one-T-state memory read wait at turbo 11 (memory.vhd MEM_WAIT): into
+    # the CPU's WAIT_n through upstream's own wait condition
+    ("src/rtl/profi.vhd",
+     "cpu_wait_n <= '0' when zc_busy = '1' or",
+     "cpu_wait_n <= '0' when mem_wait = '1' or zc_busy = '1' or"),
     # (the DO line below occurs in both CPU generates; the two-line context
     # with `-- memory manager` selects the G_T80s one)
     ("src/rtl/profi.vhd",
@@ -247,6 +254,7 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
      "\tCPU_TS \t\t\t=> cpu_ts,\n"
      "\tCPU_MC \t\t\t=> cpu_mc,\n"
      "\tCPU_RESET_N \t\t=> cpu_reset_n,\n"
+     "\tMEM_WAIT \t\t=> mem_wait,\n"
      "\tMEM_READY \t\t=> MEM_READY,"),
     # Task 4 fix (build 20: the capture -> DI path lost clk_bus28 setup by
     # -1.087 through the selector tree). The process drives a renamed
@@ -283,15 +291,12 @@ PROFI_REWRITES = [  # (out-relative file, exact old string, exact new string)
     # Task 6 (stage 2): register 15 is the MiSTer Mode item (Pentagon /
     # 48k). Upstream's Karabas Go layout has no OSD item for it and hard-wires
     # kb_screen_mode to "00" (pentagon_video: "00" is Pentagon, "01" the
-    # classic 312-line frame with contention), so the core profile grows
-    # softsw_regs to 16 registers, gives kg_soft_switches N = 16 and feeds
-    # kb_screen_mode from register 15. The Mini layout keeps its register 6.
-    ("src/rtl/profi.vhd",
-     "signal softsw_regs\t\t: std_logic_vector(15*8-1 downto 0);",
-     "signal softsw_regs\t\t: std_logic_vector(16*8-1 downto 0);"),
-    ("src/rtl/profi.vhd",
-     "\tN \t\t\t\t\t=> 15\n)\nport map (",
-     "\tN \t\t\t\t\t=> 16\n)\nport map ("),
+    # classic 312-line frame with contention), so the core profile feeds
+    # kb_screen_mode from register 15. Since upstream 2026-11-20 softsw_regs has
+    # 21 registers and kg_soft_switches N = 21 (the tape monitor is register
+    # 20; 15..19 are separators / menu entries of core.json, never read), so the
+    # size patches of the earlier versions are gone. The Mini layout keeps its
+    # register 6.
     ("src/rtl/profi.vhd",
      "\tkb_screen_mode <= \"00\";",
      "\tkb_screen_mode <= softsw_regs(15*8+1 downto 15*8);"),
@@ -576,9 +581,36 @@ def apply_rewrites(text, rewrites):
     return text
 
 
+# The link-v2 generate blocks of upstream (2026-11-14, `LINK : integer := 1`): they
+# are only elaborated for LINK = 2 (kg_mcu2, the bitmap OSD, the icons), which the
+# core never selects, but VHDL analyses them anyway and they name signals the core
+# profile removes (sdc_* are ports now, no img_sdc). Cut whole, from the line that
+# opens the generate to the line that closes it; both markers must be unique.
+PROFI_CUTS = [  # (first line contains, last line contains)
+    ("G_OVERLAY2: if LINK = 2 generate", "end generate G_OVERLAY2;"),
+    ("G_MCU2: if LINK = 2 generate", "end generate G_MCU2;"),
+]
+
+
+def cut_blocks(text, cuts, label):
+    for first, last in cuts:
+        if text.count(first) != 1 or text.count(last) != 1:
+            sys.exit(f"{label}: cut markers {first!r} / {last!r} must each occur "
+                     f"exactly once (found {text.count(first)} / {text.count(last)})")
+        i = text.index(first)
+        i = text.rfind("\n", 0, i) + 1          # from the start of the opening line
+        j = text.index(last) + len(last)
+        j = text.index("\n", j) + 1 if "\n" in text[j:] else len(text)
+        if j <= i:
+            sys.exit(f"{label}: cut markers {first!r} / {last!r} are out of order")
+        text = text[:i] + text[j:]
+    return text
+
+
 def apply_profi_rewrites(text):
-    """PROFI_REWRITES over the text of src/rtl/profi.vhd."""
-    return apply_rewrites(text, PROFI_REWRITES)
+    """PROFI_REWRITES over the text of src/rtl/profi.vhd, then PROFI_CUTS."""
+    return cut_blocks(apply_rewrites(text, PROFI_REWRITES), PROFI_CUTS,
+                      "src/rtl/profi.vhd")
 
 
 def apply_t80s_rewrites(text):
@@ -631,7 +663,9 @@ def default_clause(value, is_vector):
 PORT_RE = re.compile(
     r"\s*(input|output|inout)\s+(wire|reg)?\s*(signed)?\s*(\[[^\]]*\])?\s*(\w+)\s*(=\s*(.*))?$",
     re.S)
-PARAM_RE = re.compile(r"\s*parameter\s+(\[[^\]]*\]\s*)?(\w+)\s*=\s*(.*)", re.S)
+# `parameter integer NAME = ...` (kg_tape_monitor, 2026-11) is the same as `parameter NAME = ...`
+PARAM_RE = re.compile(
+    r"\s*parameter\s+(?:(?:integer|int)\s+)?(\[[^\]]*\]\s*)?(\w+)\s*=\s*(.*)", re.S)
 
 
 def split_args(text):
@@ -802,6 +836,13 @@ def main():
         for rel in sorted({r[0] for r in JTOPL_REWRITES}):
             p = out / rel
             p.write_text(apply_jtopl_rewrites(p.read_text(errors="replace"), rel))
+    else:
+        # elab profile: profi.vhd stays upstream's except that the link-v2 generates
+        # go too (kg_mcu2's vector generics, e.g. CAPS, cannot be mapped through the
+        # generated component; the generates are dead for LINK = 1 anyway)
+        p = out / "src/rtl/profi.vhd"
+        p.write_text(cut_blocks(p.read_text(errors="replace"), PROFI_CUTS,
+                                "src/rtl/profi.vhd"))
 
     # ---- the compize_proto rewrite over the compiled (qip-kept) VHDL ----------
     vmods, vhd_ents = {}, set()

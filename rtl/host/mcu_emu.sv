@@ -18,7 +18,8 @@
 // while no byte is pending, so a source that strobes only on the low can
 // start it (a byte strobed in the held window is latched, none is lost);
 // ROMLOADER off, all
-// 15 switch frames (indices 0-8 and 10-15; 9 is the HDF slot), the RTC
+// 16 switch frames (indices 0-8, 10-15 and 20; 9 is the HDF slot, 16-19 are
+// separators of upstream's OSD list), the RTC
 // registers (256 CMD_RTC frames: the time registers from hps_io's BCD RTC,
 // 01/03/05/0A/0B/0C/0D, then FF through 0xFF - persistent CMOS is stage 4's
 // storage, so this load starts it filled), the cleared
@@ -232,8 +233,8 @@ wire [7:0] bank2 = cur_a[31:24];
 
 // ---------------- OSD switches, keyboard, triggers ----------------
 
-reg [7:0] sent_val [0:15];   // last CMD_SWITCHES value sent per index
-reg [3:0] sw_i;              // start sequence: the index being sent
+reg [7:0] sent_val [0:20];   // last CMD_SWITCHES value sent per index
+reg [4:0] sw_i;              // start sequence: the index being sent
 
 reg        kb_pend;              // a report burst is in flight
 reg        kb_again;             // the report changed during the burst
@@ -475,7 +476,7 @@ always @(*) begin
                 end
             S_SWALL: begin
                 sw_target = sw_i;
-                fword     = {C_SW, {4'd0, sw_i}, osd_value(sw_i, status)};
+                fword     = {C_SW, {3'd0, sw_i}, osd_value(sw_i, status)};
                 faction   = A_SW;
             end
             S_RTC: begin
@@ -506,10 +507,12 @@ always @(*) begin
                     faction = A_START;
                 end else begin
                     // 1. a switch value that differs from the last sent
-                    //    (0-8, 10-11, 15; 9 is the HDF slot, 12-14 the
-                    //    triggers, whose value is always 0)
-                    for (cv = 0; cv <= 15; cv = cv + 1)
+                    //    (0-8, 10-11, 15, 20; 9 is the HDF slot, 12-14 the
+                    //    triggers, whose value is always 0; 16-19 are
+                    //    separators / menu entries of upstream's OSD list)
+                    for (cv = 0; cv <= 20; cv = cv + 1)
                         if (cv != 9 && cv != 12 && cv != 13 && cv != 14 &&
+                            !(cv >= 16 && cv <= 19) &&
                             osd_value(cv, status) != sent_val[cv])
                             sw_target = cv;
                     if (sw_target >= 0) begin
@@ -598,7 +601,7 @@ always @(posedge clk) begin
         cur_a       <= 32'd0;
         cur_d       <= 8'd0;
         seq_i       <= 2'd0;
-        sw_i        <= 4'd0;
+        sw_i        <= 5'd0;
         kb_i        <= 3'd0;
         kb_pend     <= 1'b0;
         kb_again    <= 1'b0;
@@ -648,7 +651,7 @@ always @(posedge clk) begin
         ur_wr        <= 3'd0;
         ur_rd        <= 3'd0;
         ur_idx       <= 8'd1;   // kg_mcu_uart's own idx starts at 0
-        for (iv = 0; iv <= 15; iv = iv + 1)
+        for (iv = 0; iv <= 20; iv = iv + 1)
             sent_val[iv] <= 8'h00;
     end else begin
         tx_start    <= 1'b0;
@@ -684,19 +687,21 @@ always @(posedge clk) begin
                 end
                 A_LOADER_OFF: begin
                     st   <= S_SWALL;
-                    sw_i <= 4'd0;
+                    sw_i <= 5'd0;
                 end
                 A_SW: begin
                     sent_val[sw_target] <= fword[7:0];
                     if (st == S_SWALL) begin
-                        if (sw_i == 4'd15) begin
+                        if (sw_i == 5'd20) begin
                             st      <= S_RTC;
                             rtc_si  <= 8'd0;
                             rt_time <= rt_now;
-                        end else if (sw_i == 4'd8)
-                            sw_i <= 4'd10;
+                        end else if (sw_i == 5'd8)
+                            sw_i <= 5'd10;
+                        else if (sw_i == 5'd15)
+                            sw_i <= 5'd20;      // 16..19: separators of the OSD list
                         else
-                            sw_i <= sw_i + 4'd1;
+                            sw_i <= sw_i + 5'd1;
                     end
                 end
                 A_RTCS:

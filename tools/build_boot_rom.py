@@ -12,7 +12,7 @@ address of a byte at offset o is  o < 0x50000 ? 0x00100000 + o :
     0x10000  bios_pqdos.rom                64 KiB
     0x20000  FDImageGO.rom                 64 KiB
     0x30000  ROMain_fatall_ramdisk_D.rom   64 KiB
-    0x40000  esxdos089.bin                 8 KiB, padded with 0xFF to 64 KiB
+    0x40000  esxdos090.bin                 8 KiB, padded with 0xFF to 64 KiB
     0x50000  gs105b.rom                    32 KiB
                                         -----------
                              total        0x58000 = 360448 bytes
@@ -40,7 +40,7 @@ LAYOUT = [
     (0x10000, "bios_pqdos.rom", 0x10000),
     (0x20000, "FDImageGO.rom", 0x10000),
     (0x30000, "ROMain_fatall_ramdisk_D.rom", 0x10000),
-    (0x40000, "esxdos089.bin", 0x10000),
+    (0x40000, "esxdos090.bin", 0x10000),
     (0x50000, "gs105b.rom", 0x8000),
 ]
 SIZE = 0x58000

@@ -18,11 +18,12 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools" / "prepare_upstream.py"
 UPSTREAM = ROOT / "upstream" / "karabas-go-core-profi"
 
-# The 17 Verilog modules that VHDL instantiates directly at the pinned upstream.
+# The 19 Verilog modules that VHDL instantiates directly at the pinned upstream
+# (kg_mcu2 in the link-v2 generate and kg_tape_monitor came with 2026-11-20).
 NAMES = sorted("""
 audio_mixer dot_matrix gs_top hdf_ata hrdy_fdc img_sdc kg_cursor kg_fifo kg_mcu
-kg_pix_doubler kg_sdpram kg_soft_switches kg_sprom opl2_top saa1099 turbosound
-zc_spi
+kg_mcu2 kg_pix_doubler kg_sdpram kg_soft_switches kg_sprom kg_tape_monitor
+opl2_top saa1099 turbosound zc_spi
 """.split())
 
 # Excluded from every profile (brief Step 5 list, in output-relative form).
@@ -40,7 +41,8 @@ KEPT_BY_ELAB_ONLY = {"src/rtl/memory/memory.vhd", "src/rtl/memory/sdram.vhd"}
 # Instantiated upstream but removed by the core profile's rewrites (stage 4b:
 # the file mounter's sector engine is the MiSTer top's img_src now), so the
 # prepared profi.vhd has no instantiation and gets no generated component.
-DROPPED_BY_REWRITES = {"img_sdc"}
+# kg_mcu2 sits in the link-v2 generate that PROFI_CUTS removes whole.
+DROPPED_BY_REWRITES = {"img_sdc", "kg_mcu2"}
 
 # Init-path / qip path prefix per profile: relative to the profile's Quartus
 # project dir (core: repo root with the tree in build/upstream; elab:
@@ -132,7 +134,7 @@ class TestPrepareUpstream(unittest.TestCase):
 
     def test_component_rewrite(self):
         # The set of names VHDL instantiates directly, computed from the prj-kept
-        # files the same way the tool does it, is exactly the brief's 17 names.
+        # files the same way the tool does it, is exactly NAMES.
         profile = "core"
         kept = {rel for _, _, rel, _ in qip_entries(profile)}
         vmods, vhd_ents = set(), set()
@@ -158,7 +160,7 @@ class TestPrepareUpstream(unittest.TestCase):
             if names:
                 inst_in[rel] = names
                 used |= names
-        self.assertEqual(used, set(NAMES), "instantiated-Verilog set differs from the brief's 17")
+        self.assertEqual(used, set(NAMES), "instantiated-Verilog set differs from NAMES")
 
         out = prepared(profile)
         for rel, names in inst_in.items():
@@ -175,6 +177,9 @@ class TestPrepareUpstream(unittest.TestCase):
         otext = (out / "src/rtl/profi.vhd").read_text(errors="replace")
         self.assertNotRegex(otext, r'(?i)entity\s+work\.img_sdc\b')
         self.assertIsNone(component_block(otext, "img_sdc"))
+        # kg_mcu2 (link v2): the generate is cut, no instantiation, no component
+        self.assertNotRegex(otext, r'(?i)entity\s+work\.kg_mcu2\b')
+        self.assertIsNone(component_block(otext, "kg_mcu2"))
         self.assertNotRegex(
             otext, r'(?im)^[ \t]*component[ \t]+img_sdc[ \t]*($|\r?\n)')
         # the brief's example: profi.vhd keeps its own opl2_top and gets no second
@@ -353,6 +358,16 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertIn("nosuchmodule", msg)
         self.assertIn("this is nonsense p", msg)
 
+    def test_typed_integer_parameter_is_a_generic(self):
+        # `parameter integer X = 1` (kg_tape_monitor) is a plain integer generic
+        m = load_tool_module()
+        block = m.component_declaration(
+            "kg_tape_monitor",
+            "parameter integer CLK_HZ = 28000000, parameter integer HOLD_US = 37000",
+            "input wire clk")
+        self.assertIn("CLK_HZ : integer := 28000000", block)
+        self.assertIn("HOLD_US : integer := 37000", block)
+
     def test_unparsable_parameter_fragment_is_a_named_error(self):
         m = load_tool_module()
         # `#(parameter A=1, B=2)`: the comma-elided second declaration `B=2` must
@@ -382,7 +397,9 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertEqual(
             out.count("-- wait always disabled\n"
                       "-- actual wait signal is controlled by ena_cpu\n"), 1)
-        self.assertEqual(out.count("mem_wait"), 0)
+        # the turbo-11 read wait (memory.vhd MEM_WAIT): the signal, its U3 mapping
+        # and its term in upstream's cpu_wait_n
+        self.assertEqual(out.count("mem_wait"), 3)
 
     def test_profi_rewrites_anchor_missing(self):
         m = load_tool_module()
@@ -417,7 +434,24 @@ class TestPrepareUpstream(unittest.TestCase):
                 m.apply_rewrites(broken, m.PROFI_REWRITES[i:])
             self.assertIn(self.PROFIS, str(ctx.exception))
             text = m.apply_rewrites(text, [m.PROFI_REWRITES[i]])
+        text = m.cut_blocks(text, m.PROFI_CUTS, self.PROFIS)
         self.assertEqual(text, m.apply_profi_rewrites(self.upstream_profi()))
+
+    def test_profi_link_v2_blocks_are_cut(self):
+        # the LINK = 2 generates name signals the core profile removes (sdc_*),
+        # so they must not survive; the LINK = 1 ones stay
+        m = load_tool_module()
+        out = m.apply_profi_rewrites(self.upstream_profi())
+        for gone in ("G_OVERLAY2", "G_MCU2", "work.kg_mcu2", "sdc_active"):
+            self.assertEqual(out.count(gone), 0, gone)
+        for kept in ("G_OVERLAY1: if LINK = 1 generate", "G_MCU1: if LINK = 1 generate",
+                     "G_SOFTSW1: if LINK = 1 generate"):
+            self.assertEqual(out.count(kept), 1, kept)
+
+    def test_profi_cut_markers_must_be_unique(self):
+        m = load_tool_module()
+        with self.assertRaises(SystemExit):
+            m.cut_blocks("a\nb\n", [("nosuchfirst", "b")], "x")
 
     def test_profi_rewrites_each_anchor_duplicated(self):
         m = load_tool_module()
@@ -465,7 +499,11 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertEqual(
             out.count("signal cpu_wait \t\t\t: std_logic;\n"
                       "signal cpu_ts : std_logic_vector(2 downto 0);\n"
-                      "signal cpu_mc : std_logic_vector(2 downto 0);"), 1)
+                      "signal cpu_mc : std_logic_vector(2 downto 0);\n"
+                      "signal mem_wait : std_logic;"), 1)
+        # the one-T-state memory read wait joins upstream's own wait condition
+        self.assertEqual(
+            out.count("cpu_wait_n <= '0' when mem_wait = '1' or zc_busy = '1' or"), 1)
         self.assertEqual(
             out.count("\tDO\t\t\t\t\t=> cpu_do_bus,\n"
                       "\tTS_O\t\t\t\t=> cpu_ts,\n"
@@ -480,6 +518,7 @@ class TestPrepareUpstream(unittest.TestCase):
                       "\tCPU_TS \t\t\t=> cpu_ts,\n"
                       "\tCPU_MC \t\t\t=> cpu_mc,\n"
                       "\tCPU_RESET_N \t\t=> cpu_reset_n,\n"
+                      "\tMEM_WAIT \t\t=> mem_wait,\n"
                       "\tMEM_READY \t\t=> MEM_READY,"), 1)
 
     def test_profi_rewrites_gs_strings(self):
@@ -626,7 +665,7 @@ class TestPrepareUpstream(unittest.TestCase):
         self.assertEqual(
             out.count("signal cpu_di_bus\t\t\t: std_logic_vector(7 downto 0);\n"
                       "signal cpu_di_mux\t\t\t: std_logic_vector(7 downto 0);"), 1)
-        self.assertEqual(out.count("cpu_di_mux <="), 28)
+        self.assertEqual(out.count("cpu_di_mux <="), 29)   # 27 cases + the 1C Next I2C + others
         self.assertEqual(
             out.count("when x\"00\" => cpu_di_mux <= (others => '1');"), 1)
         self.assertEqual(out.count(
@@ -657,14 +696,14 @@ class TestPrepareUpstream(unittest.TestCase):
         # register 15.
         m = load_tool_module()
         out = m.apply_profi_rewrites(self.upstream_profi())
+        # upstream's own 21 registers (tape monitor = 20) already cover register 15
         self.assertEqual(
-            out.count("signal softsw_regs\t\t: std_logic_vector(16*8-1 downto 0);"), 1)
-        self.assertEqual(out.count("\tN \t\t\t\t\t=> 16\n)\nport map ("), 1)
+            out.count("signal softsw_regs\t\t: std_logic_vector(21*8-1 downto 0);"), 1)
+        self.assertEqual(out.count("\tN \t\t\t\t\t=> 21\n)\nport map ("), 1)
         self.assertEqual(
             out.count('\tkb_screen_mode <= softsw_regs(15*8+1 downto 15*8);'), 1)
-        # upstream's hard-wired value and the 15-register width are gone
+        # upstream's hard-wired value is gone
         self.assertEqual(out.count('\tkb_screen_mode <= "00";'), 0)
-        self.assertEqual(out.count("15*8-1 downto 0"), 0)
         # the Mini layout keeps its own register 6, untouched
         self.assertEqual(
             out.count("\tkb_screen_mode <= softsw_regs(6*8+1 downto 6*8);"), 1)

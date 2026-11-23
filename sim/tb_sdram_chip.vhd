@@ -90,20 +90,20 @@ architecture sim of tb_sdram_chip is
 
 	-- test words: distinct row/column triples per phase
 	constant ROW_A : std_logic_vector(12 downto 0) := "0000000101010";
-	constant COL_A : std_logic_vector(6 downto 0)  := "1011100";
+	constant COL_A : std_logic_vector(7 downto 0)  := "01011100";
 	constant ROW_B : std_logic_vector(12 downto 0) := "0010101001100";
-	constant COL_B : std_logic_vector(6 downto 0)  := "0101011";
+	constant COL_B : std_logic_vector(7 downto 0)  := "00101011";
 	constant ROW_C : std_logic_vector(12 downto 0) := "0001100110011";
-	constant COL_C : std_logic_vector(6 downto 0)  := "1110011";
+	constant COL_C : std_logic_vector(7 downto 0)  := "01110011";
 	constant ROW_R : std_logic_vector(12 downto 0) := "0000011000011";
-	constant COL_R : std_logic_vector(6 downto 0)  := "0010110";
+	constant COL_R : std_logic_vector(7 downto 0)  := "00010110";
 
 	constant A_PRE_ALL  : std_logic_vector(12 downto 0) := (10 => '1', others => '0');
 	constant A_MODE     : std_logic_vector(12 downto 0) := "0001000100000";
-	constant A_COL_A    : std_logic_vector(12 downto 0) := "000000" & COL_A;
-	constant A_COL_B_AP : std_logic_vector(12 downto 0) := "00" & '1' & "000" & COL_B;
-	constant A_COL_C    : std_logic_vector(12 downto 0) := "000000" & COL_C;
-	constant A_COL_R    : std_logic_vector(12 downto 0) := "000000" & COL_R;
+	constant A_COL_A    : std_logic_vector(12 downto 0) := "00000" & COL_A;
+	constant A_COL_B_AP : std_logic_vector(12 downto 0) := "00" & '1' & "00" & COL_B;
+	constant A_COL_C    : std_logic_vector(12 downto 0) := "00000" & COL_C;
+	constant A_COL_R    : std_logic_vector(12 downto 0) := "00000" & COL_R;
 
 	constant ADR_A0 : natural := sdram_chip_addr(ROW_A, COL_A, '0');
 	constant ADR_A1 : natural := sdram_chip_addr(ROW_A, COL_A, '1');

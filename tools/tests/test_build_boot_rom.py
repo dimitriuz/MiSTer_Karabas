@@ -27,7 +27,7 @@ LAYOUT = [
     ("bios_pqdos.rom", 0x10000, 0x10000),
     ("FDImageGO.rom", 0x20000, 0x10000),
     ("ROMain_fatall_ramdisk_D.rom", 0x30000, 0x10000),
-    ("esxdos089.bin", 0x40000, 0x2000),        # padded with 0xFF to 0x10000
+    ("esxdos090.bin", 0x40000, 0x2000),        # padded with 0xFF to 0x10000
     ("gs105b.rom", 0x50000, 0x8000),
 ]
 

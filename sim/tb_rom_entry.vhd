@@ -141,6 +141,7 @@ architecture sim of tb_rom_entry is
 	signal di_bus : std_logic_vector(7 downto 0) := (others => '0');
 	signal do_bus : std_logic_vector(7 downto 0);
 	signal ready  : std_logic;
+	signal mem_wait, mem_wait_n : std_logic;   -- memory.vhd's turbo-11 read wait -> WAIT_n
 	signal sd_ba  : std_logic_vector(1 downto 0);
 	signal sd_a   : std_logic_vector(12 downto 0);
 	signal sd_dqm : std_logic_vector(1 downto 0);
@@ -187,10 +188,12 @@ begin
 		CLK_VID => open, BUS_PHASE => bus_phase, RESET_MEM => reset_mem
 	);
 
+	mem_wait_n <= not mem_wait;
+
 	U_CPU: entity work.T80s
 	port map (
 		RESET_n => cpu_reset_n, CLK => clk_bus, CEN => ena_cpu,
-		WAIT_n => '1', INT_n => '1', NMI_n => '1', BUSRQ_n => '1',
+		WAIT_n => mem_wait_n, INT_n => '1', NMI_n => '1', BUSRQ_n => '1',
 		M1_n => m1_n, MREQ_n => mreq_n, IORQ_n => iorq_n, RD_n => rd_n,
 		WR_n => wr_n, RFSH_n => rfsh_n, HALT_n => halt_n, BUSAK_n => busak_n,
 		OUT0 => '1', A => a_bus, DI => di_bus, DO => do_bus,
@@ -239,7 +242,7 @@ begin
 		GS_MREQ_N => '1',
 		BUS_PHASE => bus_phase, RESET_MEM => reset_mem,
 		CPU_TS => ts_o, CPU_MC => mc_o, CPU_RESET_N => cpu_reset_n,
-		MEM_READY => ready,
+		MEM_READY => ready, MEM_WAIT => mem_wait,
 		SDR_BA => sd_ba, SDR_A => sd_a, SDR_DQM => sd_dqm,
 		SDR_RAS_N => sd_ras_n, SDR_CAS_N => sd_cas_n, SDR_WE_N => sd_we_n,
 		SDR_DQ => dq_bus,
@@ -298,7 +301,7 @@ main: process
 
 	procedure put (base : in natural; at : in natural; b : in std_logic_vector(7 downto 0)) is
 	begin
-		sdram_chip_mem(base + at) := b;
+		sdram_chip_mem(2 * (base + at)) := b;
 	end procedure;
 
 	-- the tail every path shares: LD (#4000),A ; HALT
@@ -313,14 +316,14 @@ main: process
 	procedure fill is
 	begin
 		for i in 0 to 16383 loop
-			sdram_chip_mem(ROM48 + i)  := x"76";
-			sdram_chip_mem(ROMDOS + i) := x"76";
-			sdram_chip_mem(DIVROM + i) := x"76";
+			sdram_chip_mem(2 * (ROM48 + i))  := x"76";
+			sdram_chip_mem(2 * (ROMDOS + i)) := x"76";
+			sdram_chip_mem(2 * (DIVROM + i)) := x"76";
 		end loop;
 		for i in 0 to 8191 loop
-			sdram_chip_mem(DIVRAM + i) := x"76";
+			sdram_chip_mem(2 * (DIVRAM + i)) := x"76";
 		end loop;
-		sdram_chip_mem(MARK) := x"AA";
+		sdram_chip_mem(2 * (MARK)) := x"AA";
 	end procedure;
 
 	-- kind 0: 48 ROM #0000: XOR A; JP tgt. 48 ROM[tgt] = INC A, TR-DOS ROM[tgt]
@@ -400,7 +403,7 @@ main: process
 			if now - t0 > TMAX then exit watch; end if;
 		end loop watch;
 		rise(8);
-		got := sdram_chip_mem(MARK);
+		got := sdram_chip_mem(2 * (MARK));
 		if (not halted) or got /= expect then
 			bad := true;
 			report "tb_rom_entry: FAIL kind " & integer'image(kind) & " #" & hx4(tgt)

@@ -8,15 +8,18 @@
 -- through) and count into `violations`.
 --
 -- Address map (the one the Stage 2 controller uses, after rtl/mem/sdram.sv):
---   byte_addr(20 downto 0) = column(6 downto 0) & row(12 downto 0) & lane
+--   word_addr(20 downto 0) = column(7 downto 0) & row(12 downto 0), 2 bytes a word:
+--   array index = 2 * word_addr + lane (the controller keeps one byte per word, in
+--   lane 0 - see rtl/mem/sdram_nowait.vhd - so the testbenches index the array
+--   with 2 * byte_address)
 --   row    = A(12 downto 0) latched on ACTIVE of that bank
---   column = A(6 downto 0)  latched on READ/WRITE;  A(9 downto 7) ignored
+--   column = A(7 downto 0)  latched on READ/WRITE;  A(9 downto 8) ignored
 --   lane   0 = DQ(7 downto 0)  (the even byte),  lane 1 = DQ(15 downto 8)
 --   BA is not part of the address (the controller only uses bank 0, but all
 --   four banks are decoded and timed);  on READ/WRITE A(12)/A(11) carry a
 --   copy of the byte mask - ignored, only `dqm` masks;  A(10) on READ/WRITE
 --   is auto precharge, on PRECHARGE it means "all banks".
--- The array is sdram_chip_pkg.sdram_chip_mem: 2 MiB bytes, a shared variable
+-- The array is sdram_chip_pkg.sdram_chip_mem: 4 MiB bytes, a shared variable
 -- (GHDL cannot select inside an instantiated unit by name), so the testbench
 -- preloads and inspects it. It boots 'U' - the testbench fills what it reads.
 --
@@ -77,16 +80,16 @@ use IEEE.numeric_std.all;
 
 package sdram_chip_pkg is
 
-	constant SDRAM_CHIP_BYTES : natural := 2 * 1024 * 1024;
+	constant SDRAM_CHIP_BYTES : natural := 4 * 1024 * 1024;
 
 	subtype chip_byte_t is std_logic_vector(7 downto 0);
 	type chip_byte_array is array (0 to SDRAM_CHIP_BYTES - 1) of chip_byte_t;
 
 	-- the byte address of (row, column, lane) under the map documented in the
-	-- model header: {column(6 downto 0), row(12 downto 0), lane}
+	-- model header: 2 * {column(7 downto 0), row(12 downto 0)} + lane
 	function sdram_chip_addr (
 		row  : std_logic_vector(12 downto 0);
-		col  : std_logic_vector(6 downto 0);
+		col  : std_logic_vector(7 downto 0);
 		lane : std_logic) return natural;
 
 	-- The model's memory: the model writes it, the testbench preloads and
@@ -102,10 +105,10 @@ package body sdram_chip_pkg is
 
 	function sdram_chip_addr (
 		row  : std_logic_vector(12 downto 0);
-		col  : std_logic_vector(6 downto 0);
+		col  : std_logic_vector(7 downto 0);
 		lane : std_logic) return natural is
 	begin
-		return to_integer(unsigned(col & row & lane));
+		return to_integer(unsigned(std_logic_vector'(col & row & lane)));
 	end function;
 
 end package body;
@@ -118,6 +121,15 @@ use work.sdram_chip_pkg.all;
 entity sdram_chip is
 generic (
 	T_CK_NS    : real := 8.888889;   -- the SDRAM clock this chip is driven with
+	-- data output timing, as seen at the FPGA pins (sdram_nowait.vhd, Karabas_Profi.sdc):
+	-- the SDRAM_CLK pin lags the capture register's clock by T_CLK_NS (DDR cell +
+	-- output buffer), the chip's data is valid T_AC_NS after its clock edge (tAC
+	-- max + board) and held T_OH_NS after the next one (tOH min); it floats T_HZ_NS
+	-- after an edge that starts no data. 0 for all four = the ideal chip.
+	T_CLK_NS   : real := 2.4;
+	T_AC_NS    : real := 6.4;
+	T_OH_NS    : real := 3.2;
+	T_HZ_NS    : real := 5.4;
 	CL         : integer := 2;       -- assumed CAS latency until LOAD MODE
 	TRCD       : integer := 2;       -- ACTIVE to READ/WRITE
 	TRP        : integer := 2;       -- PRECHARGE to ACTIVE
@@ -217,15 +229,19 @@ begin
 					severity error;
 			end if;
 
-			-- read data pipeline: stage 0 drives the interval this edge starts
+			-- read data pipeline: stage 0 drives the interval this edge starts.
+			-- The previous interval's data is held until T_CLK + T_OH after this
+			-- edge ('X' from then on), the new data is valid T_CLK + T_AC after it;
+			-- an edge that starts no data releases the bus T_CLK + T_HZ after it.
 			if sch_v(0) then
 				drv := sch_d(0);
 				driving := true;
-				dq <= drv;
+				dq <= transport (others => 'X') after (T_CLK_NS + T_OH_NS) * 1 ns;
+				dq <= transport drv after (T_CLK_NS + T_AC_NS) * 1 ns;
 			else
 				drv := (others => 'Z');
 				driving := false;
-				dq <= (others => 'Z');
+				dq <= transport (others => 'Z') after (T_CLK_NS + T_HZ_NS) * 1 ns;
 			end if;
 			for i in 0 to SCHED_N - 2 loop
 				sch_v(i) := sch_v(i + 1);
@@ -313,7 +329,7 @@ begin
 									& integer'image(cyc) & ", t" & integer'image(now / 1 ns) & " ns)"
 									severity error;
 							else
-								idx := sdram_chip_addr(row_b(b), a(6 downto 0), '0');
+								idx := sdram_chip_addr(row_b(b), a(7 downto 0), '0');
 								if cmd = CMD_READ then
 									sch_d(mode_cl - 1) :=
 										sdram_chip_mem(idx + 1) & sdram_chip_mem(idx);
