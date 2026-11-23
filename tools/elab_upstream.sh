@@ -58,6 +58,7 @@ set_global_assignment -name FAMILY "Cyclone V"
 set_global_assignment -name DEVICE 5CSEBA6U23I7
 set_global_assignment -name TOP_LEVEL_ENTITY profi
 set_global_assignment -name VHDL_FILE ../../rtl/compat/unisim_vcomponents.vhd -library unisim
+set_global_assignment -name VHDL_FILE ../../rtl/compat/oddr2_model.vhd
 set_global_assignment -name VHDL_FILE clock_stub.vhd
 set_global_assignment -name QIP_FILE upstream/upstream.qip
 EOF
