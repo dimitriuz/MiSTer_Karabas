@@ -21,8 +21,12 @@ CP/M, 512x240 text-friendly video, a stack of sound chips and real disk drives.
 
    | From this repo | To the SD card |
    |---|---|
-   | `Karabas_Profi_20261120.rbf` | `/media/fat/_Computer/` |
+   | `Karabas_Profi_20261123.rbf` | `/media/fat/_Computer/` |
    | `boot.rom` | `/media/fat/games/Karabas_Profi/` |
+
+   **Replace `boot.rom` too.** This release has a new `boot.rom` (esxDOS 0.9.0 in the DivMMC
+   ROM; the other ROMs are unchanged). The core also starts with the old one, but then esxDOS
+   stays at 0.8.9.
 
 2. Put your disk, tape and hard-disk images in `/media/fat/games/Karabas_Profi/`. The OSD
    file browser opens there.
@@ -30,8 +34,24 @@ CP/M, 512x240 text-friendly video, a stack of sound chips and real disk drives.
 
 Keep only one Karabas `.rbf` in `_Computer`, otherwise it is easy to start an old one by mistake.
 
-The 20261120 release has working TR-DOS, esxdos/DivMMC and NMI, and meets timing. Known small issue: the esxdos VGM player says the OPL chip is "not detected"
-but still plays.
+### What is new in 20261123
+
+- **SDRAM reads fixed.** The previous release could fail to start (ROMain stayed blank) on
+  some boards: its read of the SDRAM sampled the data before the chip had put it on the
+  bus, and whether that worked depended on how the compiler placed the logic. The read is
+  now timed against the chip's real data window and the build is checked for it.
+- **Upstream update** (Karabas Go core, 2026-11-20): esxDOS 0.9.0, the RTC for esxDOS
+  (Gluk ports and the ZX Next I2C clock) and a **tape monitor** (`Tape` page).
+- **`Tape` page**: file, play/pause, previous and next block, and `Tape monitor` (`Off`,
+  `In`, `Out`, `Both`: hear the tape input and/or the output).
+- **`MT32-pi` page** with the options of the other MiSTer cores: `Show Info`, `LCD Type`
+  (Auto, SSD1306, SH1106, HD44780) and `HD44780 Size`, `Synth` (Munt, FluidSynth, EmuSC,
+  Nuked SC-55, MU50), `Munt ROM`, `SoundFont` 0 to 15 and `Reset Hanging Notes`. EmuSC,
+  Nuked SC-55 and MU50 need the [ckeisc/mt32-pi](https://github.com/ckeisc/mt32-pi)
+  firmware; a stock mt32-pi plays them as FluidSynth.
+
+The release has working TR-DOS, esxdos/DivMMC and NMI, and meets timing. Known small issue:
+the esxdos VGM player says the OPL chip is "not detected" but still plays.
 
 ## Using it
 
@@ -46,14 +66,14 @@ Open the OSD (F12) and pick an image from the main page:
 | `Disk layout` | `Auto`, `TR-DOS` or `CP/M`. Leave on `Auto` unless an image is misdetected. |
 | `IDE 0` / `IDE 1` | Hard-disk images (`.hdf`). Read-write. |
 | `SD Card` | A raw SD image (`.vhd`) for esxdos. Read-write. **It must be FAT32.** A FAT16 image is ignored by the Karabas ROM. |
-| `Tape` | `.tap`, `.tzx`, `.csw`. |
+| `Tape` | A page: `.tap`, `.tzx`, `.csw` and the tape controls (see Tape). |
 
 A TR-DOS disk with a `boot` program starts directly from the GO menu's `Run TR-DOS 128K`.
 
 ### Tape
 
-Mounting a tape starts it paused. Use `Tape play/pause`, `Tape previous block` and
-`Tape next block`. The `Turbo` setting also speeds up tape loading. Large TZX files mount
+Open the `Tape` page of the OSD. Mounting a tape starts it paused. Use `Tape play/pause`,
+`Tape previous block` and `Tape next block`; `Tape monitor` lets you hear the tape signal. The `Turbo` setting also speeds up tape loading. Large TZX files mount
 instantly. Plain TAP and standard-speed TZX blocks are supported. Once a tape has played
 to the end, mount it again to replay it.
 
@@ -88,7 +108,8 @@ All the sound chips are on by default. `GS Reset` restarts the General Sound CPU
 
 For MIDI, either set `UART mode` to `MIDI` and choose a target in MiSTer's MidiLink menu
 (mt32-pi over the network, MUNT, FluidSynth, a USB MIDI adapter), or connect an mt32-pi to the
-USER port and use the `MT32-pi` page.
+USER port and use the `MT32-pi` page. With an mt32-pi on the USER port, set
+`mister = on` and `output_device = i2s` in its `mt32-pi.cfg`.
 
 ### Serial port (ZiFi, ESP, WiFi software)
 
@@ -99,7 +120,8 @@ software.
 
 ## Known limitations
 
-- Turbo runs without memory wait states.
+- At 8x turbo every memory read takes one extra T-state (so about 20 % slower than an
+  ideal 28 MHz); 2x and 4x have no memory wait states.
 - Floppy `Format Track` and raw `Write Track` are not implemented. The drive holds up to 84
   tracks and 32 sectors per track. CP/M images need their owner reference filled to boot
   (`tools/mk_disk.py reffrom`).
