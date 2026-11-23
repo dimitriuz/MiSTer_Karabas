@@ -237,3 +237,11 @@ set_multicycle_path -setup 2 -from [get_clocks {SDRAM_CLK96}]  -to [get_clocks {
 # The only 1-clk spacing is the hsync-edge pulse next to a regular one, inside the blanking.
 set_multicycle_path -setup 2 -to [get_registers {*|Hq2x:Hq2x|Blend:blender|*}]
 set_multicycle_path -hold  1 -to [get_registers {*|Hq2x:Hq2x|Blend:blender|*}]
+# The same argument for the pattern counter and the pattern registers of the same module
+# (sys/hq2x.sv lines 158-208): cyc, pattern and nextpatt are all loaded only under ce_in, so a
+# path from cyc to nextpatt / pattern also has two clk_vid periods. Only these registers: the
+# others of Hq2x load on ce_out (an unrelated phase) or are not ce_in-gated. (cyc[1] ->
+# nextpatt[6] was the worst clk_vid path in builds that missed by 0.09 and 0.38 ns with no
+# change anywhere near it.)
+set_multicycle_path -setup 2 -from [get_registers {*|Hq2x:Hq2x|cyc[*]}] -to [get_registers {*|Hq2x:Hq2x|nextpatt[*] *|Hq2x:Hq2x|pattern[*]}]
+set_multicycle_path -hold  1 -from [get_registers {*|Hq2x:Hq2x|cyc[*]}] -to [get_registers {*|Hq2x:Hq2x|nextpatt[*] *|Hq2x:Hq2x|pattern[*]}]

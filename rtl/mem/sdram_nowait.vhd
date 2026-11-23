@@ -250,6 +250,12 @@ signal din_r       : std_logic_vector(7 downto 0) := (others => '0');
 signal prev_ts     : std_logic_vector(2 downto 0) := "001";
 signal t_next      : unsigned(4 downto 0) := (others => '0');
 signal owed        : unsigned(3 downto 0) := (others => '0');
+-- one-bit registered flags of the two multi-bit compares the command mux tests (the
+-- decision logic into a_r was the worst clk_mem112 path: owed / t_next -> a_r[7]); each
+-- flag is the compare of the value the register takes, so it always equals the compare of
+-- the register itself
+signal t_idle      : std_logic := '1';   -- t_next = 0
+signal owed_nz     : std_logic := '0';   -- owed /= 0
 signal rcnt        : unsigned(9 downto 0) := (others => '0');
 signal init_cnt    : unsigned(13 downto 0) := (others => '0');
 signal ist         : unsigned(2 downto 0) := (others => '0');  -- init phase
@@ -280,6 +286,7 @@ main: process (clk_mem)
 	variable smp       : boolean;
 	variable v_rise    : boolean;
 	variable col       : std_logic_vector(12 downto 0);
+	variable owed_n    : unsigned(3 downto 0);
 begin
 	if rising_edge(clk_mem) then
 		if reset = '1' then
@@ -302,6 +309,8 @@ begin
 			prev_ts   <= "001";
 			t_next    <= (others => '0');
 			owed      <= (others => '0');
+			t_idle    <= '1';
+			owed_nz   <= '0';
 			rcnt      <= (others => '0');
 			init_cnt  <= (others => '0');
 			ist       <= (others => '0');
@@ -313,6 +322,7 @@ begin
 			b_overrun_r <= '0';
 		else
 			hd := false;
+			owed_n := owed;
 			d := CMD_NONE;
 			n1 := CMD_NONE;
 			n2 := CMD_NONE;
@@ -470,17 +480,17 @@ begin
 						in_cycle <= '0';
 					end if;
 
-				elsif in_cycle = '0' and t_next = 0 then
+				elsif in_cycle = '0' and t_idle = '1' then
 					-- free windows: (a) the M1 refresh phase, (b) the T80
 					-- cannot advance, (c) the CPU is in reset
 					if cpu_reset_n = '0' or cpu_ena = '0'
 					   or (cpu_mc = "001" and cpu_ts = "011") then
-						if owed /= 0 then
+						if owed_nz = '1' then
 							d := (v => '1', driven => '0', cmd => CMD_REFRESH,
 								a => (others => '0'), dqm => "00",
 								dq => (others => 'Z'));
 							hd := true;
-							owed <= owed - 1;
+							owed_n := owed - 1;
 							busy := true;
 							busy_v := BUSY_FREE;
 						elsif b_pending = '1' or v_rise then
@@ -516,8 +526,16 @@ begin
 			-- remaining clocks before the next ACTIVE may be issued
 			if busy then
 				t_next <= to_unsigned(busy_v, 5);
-			elsif t_next /= 0 then
+				if busy_v = 0 then
+					t_idle <= '1';
+				else
+					t_idle <= '0';
+				end if;
+			elsif t_idle = '0' then
 				t_next <= t_next - 1;
+				if t_next = 1 then
+					t_idle <= '1';
+				end if;
 			end if;
 
 			-- refresh debt, from init done on
@@ -530,11 +548,18 @@ begin
 							report "sdram_nowait: refresh debt reached 9"
 							severity failure;
 						-- pragma translate_on
-						owed <= owed + 1;
+						owed_n := owed + 1;
 					end if;
 				else
 					rcnt <= rcnt + 1;
 				end if;
+			end if;
+
+			owed <= owed_n;
+			if owed_n = 0 then
+				owed_nz <= '0';
+			else
+				owed_nz <= '1';
 			end if;
 
 			-- issue: direct beats the stage firing this cycle; the stage for
