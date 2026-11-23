@@ -536,6 +536,8 @@ tape tape
 (
 	.*,
 	.blk_seek(1'b0),
+	.tzx_pilot_sel(2'd0),
+	.tzx_pause_keep(1'b0),
 	.tape_mode(tape_mode_reg),
 	.req_hdr(stdhdr),
 
