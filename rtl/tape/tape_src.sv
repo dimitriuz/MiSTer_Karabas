@@ -317,13 +317,11 @@ module tape_src (
                 // size is the converter's (unbounded) output.
                 src_mode   <= mount_payload[MOUNT_MODE +: 2];
                 src_size   <= mount_payload[MOUNT_SIZE +: 25];
-                use_stock  <= stock_tzx && (mount_payload[MOUNT_MODE +: 2] == MODE_TZX);
-                tape_mode  <= (stock_tzx && mount_payload[MOUNT_MODE +: 2] == MODE_TZX)
-                              ? MODE_TZX : MODE_CSW;
-                tape_size  <= (stock_tzx && mount_payload[MOUNT_MODE +: 2] == MODE_TZX)
-                              ? mount_payload[MOUNT_SIZE +: 25] :
-                              (mount_payload[MOUNT_MODE +: 2] != MODE_CSW)
-                              ? 25'h1FFFFFF : mount_payload[MOUNT_SIZE +: 25];
+                use_stock  <= stock_tzx && (mount_payload[MOUNT_MODE +: 2] != MODE_CSW);
+                tape_mode  <= (stock_tzx && mount_payload[MOUNT_MODE +: 2] != MODE_CSW)
+                              ? mount_payload[MOUNT_MODE +: 2] : MODE_CSW;
+                tape_size  <= (stock_tzx || mount_payload[MOUNT_MODE +: 2] == MODE_CSW)
+                              ? mount_payload[MOUNT_SIZE +: 25] : 25'h1FFFFFF;
                 tag0       <= 16'd0;
                 valid0     <= 1'b1;
                 cur_slot   <= 1'b0;
