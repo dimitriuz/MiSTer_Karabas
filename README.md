@@ -79,7 +79,7 @@ A TR-DOS disk with a `boot` program starts directly from the GO menu's `Run TR-D
 
 Open the `Tape` page of the OSD. Mounting a tape starts it paused. Use `Tape play/pause`,
 `Tape previous block` and `Tape next block`; `Tape monitor` lets you hear the tape signal. The `Turbo` setting also speeds up tape loading. Large TZX files mount
-instantly. TAP is converted on the fly; TZX plays through the original ZX Spectrum core engine, so turbo, pure-tone and other TZX blocks work. Once a tape has played
+instantly. TAP and TZX play through the original ZX Spectrum core engine, so turbo, pure-tone and other TZX blocks work. `Tape previous block` and `Tape next block` work for TZX only. Once a tape has played
 to the end, mount it again to replay it.
 
 ### Machine settings
