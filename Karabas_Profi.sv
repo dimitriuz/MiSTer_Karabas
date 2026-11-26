@@ -867,7 +867,7 @@ sdramclk_ddr
 // core's player, rtl/tape/tape.sv (clk_bus side), through its rd_en/addr/din
 // memory port. tape.sv and its TZX engine rtl/tape/tzxplayer.vhd are copies
 // of ZX-Spectrum_MISTer c2c4e6f with the deviations listed in files.qip;
-// what plays is tape.sv's CSW decoder, fed by rtl/tape/tape_conv.sv, and its
+// tape.sv's TAP and CSW decoders and its TZX engine play the file as it is; their
 // pulses count `ce` ticks, so `ce` is the CPU's own enable: one pulse per
 // T-state at whatever Turbo is set to.
 //
@@ -887,7 +887,6 @@ wire [24:0] tape_addr;
 wire  [7:0] tape_din;
 wire        tape_rd_en;
 wire        tape_active, tape_audio;
-wire        tape_blk_seek;    // converter jumped to another block
 wire        tape_pause, tape_prev, tape_next;   // OSD trigger levels
 wire        tape_adc, tape_adc_act;
 wire        tape_in;
@@ -910,10 +909,7 @@ tape_src u_tape_src (
 	.rd(tape_rd),
 	.addr(tape_addr),
 	.din(tape_din),
-	.rd_en(tape_rd_en),
-	.seek_prev(tape_prev),
-	.seek_next(tape_next),
-	.blk_seek(tape_blk_seek)
+	.rd_en(tape_rd_en)
 );
 
 // {pause, prev, next}: first sync stage, second sync stage, the second stage
@@ -922,11 +918,9 @@ tape_src u_tape_src (
 // enable: at Turbo Off that is one clk_bus in eight, so a one-clock pulse
 // would usually be missed. 15 clocks span at least one `ce` pulse at every
 // Turbo setting (two at Turbo Off), and tape.sv reacts to the rising edge it
-// sees, so the longer level still acts exactly once. tape_src's `blk_seek` is
-// a one-clock clk_bus pulse for the same reason and is held the same way.
+// sees, so the longer level still acts exactly once.
 reg [2:0] tape_trig_s [0:2];
 reg [3:0] tape_trig_hold [0:2];
-reg [3:0] tape_seek_hold;
 always @(posedge clk_bus) begin
 	tape_trig_s[0] <= {tape_trig_s[0][1:0], status[31]};
 	tape_trig_s[1] <= {tape_trig_s[1][1:0], status[32]};
@@ -937,14 +931,11 @@ always @(posedge clk_bus) begin
 	else if (tape_trig_hold[1]) tape_trig_hold[1] <= tape_trig_hold[1] - 4'd1;
 	if (tape_trig_s[2][1] & ~tape_trig_s[2][2]) tape_trig_hold[2] <= 4'hF;
 	else if (tape_trig_hold[2]) tape_trig_hold[2] <= tape_trig_hold[2] - 4'd1;
-	if (tape_blk_seek) tape_seek_hold <= 4'hF;
-	else if (tape_seek_hold) tape_seek_hold <= tape_seek_hold - 4'd1;
 end
 
 assign tape_pause = |tape_trig_hold[0];
 assign tape_prev  = |tape_trig_hold[1];
 assign tape_next  = |tape_trig_hold[2];
-wire   tape_blk_seek_held = |tape_seek_hold;
 
 tape u_tape (
 	.clk_sys(clk_bus),
@@ -967,7 +958,6 @@ tape u_tape (
 	.tape_size(tape_size),
 	.stdload(1'b0),
 	.req_hdr(1'b0),
-	.blk_seek(tape_blk_seek_held),
 
 	.audio_out(tape_audio),
 
@@ -996,7 +986,21 @@ end
 
 // profi reads not(TAPE_IN) as the EAR bit, exactly like the ZX core's
 // ula_tape_in = ~tape_vin, so the player output goes in unchanged.
-assign tape_in  = tape_active ? tape_audio : (tape_adc_act_s[1] ? tape_adc_s[1] : 1'b0);
+// tape.sv's `active` drops when its read counter hits 0, and the TZX engine
+// reads a block's last byte *before* it plays it: with a TZX that ends in a data
+// block `active` fell a whole byte early (sim: 7.97 ms against the last audio
+// edge at 8.70 ms), the EAR input switched to the line-in and the ROM lost the
+// checksum byte (`R Tape loading error`, or a hang at the end of the load).
+// For a TAP or TZX the tape therefore stays selected for 2^22 clk_bus (about 150 ms)
+// after `active` falls; a byte lasts at most 8 ms at Turbo Off.
+reg [21:0] tape_hold = 22'd0;
+always @(posedge clk_bus) begin
+	if (tape_active)         tape_hold <= {22{1'b1}};
+	else if (|tape_hold)     tape_hold <= tape_hold - 22'd1;
+end
+wire tape_sel = tape_active | (tape_mode != 2'd1 && |tape_hold);
+
+assign tape_in  = tape_sel ? tape_audio : (tape_adc_act_s[1] ? tape_adc_s[1] : 1'b0);
 assign LED_USER = tape_active;
 
 ///////////////////////   STORAGE: SD CARD AND IDE IMAGES   //////////////////

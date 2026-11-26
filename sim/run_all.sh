@@ -4,7 +4,7 @@
 # ends with the summary `run_all: N passed, M failed`. Exits 0 only when M=0.
 # Called through tools/sim.sh:
 #   tools/sim.sh sim/run_all.sh
-# tb_tape_play takes ~35 minutes and tb_floppy ~73 minutes (six speed combinations of a
+# tb_floppy ~73 minutes (six speed combinations of a
 # disk that spins in real time, two of the cases waiting out a six-turn search), so
 # budget for them.
 set -u

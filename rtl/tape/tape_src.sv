@@ -75,18 +75,10 @@ module tape_src (
     input  wire        rd,              // tape.sv rd
     input  wire [24:0] addr,            // tape.sv addr
     output wire  [7:0] din,             // tape.sv din
-    output wire        rd_en,           // tape.sv rd_en
-    input  wire        seek_prev,       // OSD Tape previous block
-    input  wire        seek_next,       // OSD Tape next block
-    output wire        blk_seek         // converter jumped: reset the parse
+    output wire        rd_en            // tape.sv rd_en
 );
 
     localparam [1:0] MODE_TAP = 2'd0, MODE_CSW = 2'd1, MODE_TZX = 2'd2;
-
-    // The source file format; TAP/TZX are streamed through tape_conv as CSW.
-    reg  [1:0]  src_mode = MODE_CSW;
-    reg  [24:0] src_size = 25'd0;
-    wire        conv = (src_mode != MODE_CSW);
 
     // payload layouts
     //   mount {valid, mode[1:0], size[24:0]}
@@ -230,37 +222,15 @@ module tape_src (
     reg [8:0] q_lo = 9'd0;
     reg       q_slot = 1'b0;
 
-    // converter input port
-    wire [24:0] conv_in_addr;
-    wire        conv_in_req;
-    reg   [7:0] conv_data = 8'd0;
-    reg         conv_valid = 1'b0;
-    wire  [7:0] conv_din;
-    wire        conv_rd_en;
-    wire        conv_done;
-
-    // the cache serves the player (CSW) or the converter's input reader
+    // the cache serves tape.sv's reads
     reg  [7:0] c_din = 8'd0;
     reg        c_rd_en = 1'b0;
-    reg        old_c_rd_en = 1'b0;
-    wire [24:0] c_addr = conv ? conv_in_addr : addr;
-    wire        c_rd = conv ? (conv_in_req & c_rd_en & ~conv_valid) : rd;
-    wire [24:0] fetch_size = conv ? src_size : tape_size;
+    wire [24:0] c_addr = addr;
+    wire        c_rd = rd;
+    wire [24:0] fetch_size = tape_size;
 
-    assign din   = conv ? conv_din   : c_din;
-    assign rd_en = conv ? conv_rd_en : c_rd_en;
-
-    // converter input response: c_din is registered on the serve clock
-    always @(posedge clk) begin
-        old_c_rd_en <= c_rd_en;
-        if (conv) begin
-            if (conv_in_req && !c_rd_en && old_c_rd_en) conv_data <= qbuf;
-            if (!conv_in_req) conv_valid <= 1'b0;
-            else if (conv_in_req && !c_rd_en && old_c_rd_en) conv_valid <= 1'b1;
-        end else begin
-            conv_valid <= 1'b0;
-        end
-    end
+    assign din   = c_din;
+    assign rd_en = c_rd_en;
 
     wire [15:0] sec = c_addr[24:9];
     wire        hit0 = valid0 && (tag0 == sec);
@@ -308,14 +278,10 @@ module tape_src (
                 pending_ready <= 1'b0;
                 ready_hold    <= 3'd4;
             end else begin
-                // {valid=1, mode, size}: the sniff is done. TAP/TZX go
-                // through tape_conv, so the player always sees CSW; its
-                // size is the converter's (unbounded) output.
-                src_mode   <= mount_payload[MOUNT_MODE +: 2];
-                src_size   <= mount_payload[MOUNT_SIZE +: 25];
-                tape_mode  <= MODE_CSW;
-                tape_size  <= (mount_payload[MOUNT_MODE +: 2] != MODE_CSW)
-                              ? 25'h1FFFFFF : mount_payload[MOUNT_SIZE +: 25];
+                // {valid=1, mode, size}: the sniff is done; tape.sv's own
+                // TAP, CSW and TZX players read the file as it is.
+                tape_mode  <= mount_payload[MOUNT_MODE +: 2];
+                tape_size  <= mount_payload[MOUNT_SIZE +: 25];
                 tag0       <= 16'd0;
                 valid0     <= 1'b1;
                 cur_slot   <= 1'b0;
@@ -341,8 +307,7 @@ module tape_src (
             end
         end
 
-        // cache read FSM: 0 -> 1 alternation, serving tape.sv (CSW) or
-        // tape_conv's input reader (TAP/TZX)
+        // cache read FSM: 0 -> 1 alternation, serving tape.sv
         if (!fsm_en) begin
             c_rd_en <= 1'b0;
         end else if (!c_rd_en) begin
@@ -369,9 +334,6 @@ module tape_src (
             if (cur_slot) valid0 <= 1'b0;
             else          valid1 <= 1'b0;
         end
-
-        // the converter finished the last block; stop the player
-        if (conv_done) tape_ready <= 1'b0;
     end
 
 // No reset port: these are the power-up values of the outputs.
@@ -382,26 +344,6 @@ module tape_src (
         tape_mode  = 2'd0;
         tape_size  = 25'd0;
     end
-
-wire converter_active = conv & tape_ready;
-
-tape_conv u_tape_conv (
-    .clk(clk),
-    .active(converter_active),
-    .src_mode(src_mode),
-    .in_size(src_size),
-    .in_addr(conv_in_addr),
-    .in_req(conv_in_req),
-    .in_data(conv_data),
-    .in_valid(conv_valid),
-    .rd(rd),
-    .din(conv_din),
-    .rd_en(conv_rd_en),
-    .done(conv_done),
-    .prev(seek_prev),
-    .next(seek_next),
-    .blk_seek(blk_seek)
-);
 
 endmodule
 

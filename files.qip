@@ -39,10 +39,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/floppy.sv
 # both data-block lead-ins are 8064 pulses instead of the ZX 3220/4031,
 # because the Profi ROM consumes the data lead-in while its LD_WAIT/LD_LEADER
 # run (board: 3223/4031 fail, 8064 loads; see the comments in the two files);
-# and tape.sv gained a `blk_seek` input so the converted CSW stream can drop
-# its RLE state when `tape_conv.sv` jumps to another block (Tape previous/next).
+# and a TAP keeps playing after each data block (the ZX core waits for the ROM's
+# standard-load trap there; the Profi has none).
 # The player reads through rtl/tape/tape_src.sv, this port's SD-file path.
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape/tape_conv.sv
 set_global_assignment -name VHDL_FILE rtl/tape/tzxplayer.vhd
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape/tape.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape/tape_src.sv
