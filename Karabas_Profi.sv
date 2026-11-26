@@ -913,7 +913,8 @@ tape_src u_tape_src (
 	.rd_en(tape_rd_en),
 	.seek_prev(tape_prev),
 	.seek_next(tape_next),
-	.blk_seek(tape_blk_seek)
+	.blk_seek(tape_blk_seek),
+	.stock_tzx(1'b1)   // TZX plays through the stock engine; TAP/CSW as before
 );
 
 // {pause, prev, next}: first sync stage, second sync stage, the second stage
@@ -996,7 +997,21 @@ end
 
 // profi reads not(TAPE_IN) as the EAR bit, exactly like the ZX core's
 // ula_tape_in = ~tape_vin, so the player output goes in unchanged.
-assign tape_in  = tape_active ? tape_audio : (tape_adc_act_s[1] ? tape_adc_s[1] : 1'b0);
+// tape.sv's `active` drops when its read counter hits 0, and the TZX engine
+// reads a block's last byte *before* it plays it: with a TZX that ends in a data
+// block `active` fell a whole byte early (sim: 7.97 ms against the last audio
+// edge at 8.70 ms), the EAR input switched to the line-in and the ROM lost the
+// checksum byte (`R Tape loading error`, or a hang at the end of the load).
+// For a TAP or TZX the tape therefore stays selected for 2^22 clk_bus (about 150 ms)
+// after `active` falls; a byte lasts at most 8 ms at Turbo Off.
+reg [21:0] tape_hold = 22'd0;
+always @(posedge clk_bus) begin
+	if (tape_active)         tape_hold <= {22{1'b1}};
+	else if (|tape_hold)     tape_hold <= tape_hold - 22'd1;
+end
+wire tape_sel = tape_active | (tape_mode != 2'd1 && |tape_hold);
+
+assign tape_in  = tape_sel ? tape_audio : (tape_adc_act_s[1] ? tape_adc_s[1] : 1'b0);
 assign LED_USER = tape_active;
 
 ///////////////////////   STORAGE: SD CARD AND IDE IMAGES   //////////////////

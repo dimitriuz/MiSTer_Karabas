@@ -107,7 +107,8 @@ module tb_tape_play;
         .rd_en(tape_rd_en),
         .seek_prev(prev),
         .seek_next(next),
-        .blk_seek(tape_blk_seek_conv)
+        .blk_seek(tape_blk_seek_conv),
+        .stock_tzx(1'b0)
     );
 
     sd_img_model #(.LAT_CLKS(1000)) sd_model (

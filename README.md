@@ -21,7 +21,7 @@ CP/M, 512x240 text-friendly video, a stack of sound chips and real disk drives.
 
    | From this repo | To the SD card |
    |---|---|
-   | `Karabas_Profi_20261123.rbf` | `/media/fat/_Computer/` |
+   | `Karabas_Profi_20261126.rbf` | `/media/fat/_Computer/` |
    | `boot.rom` | `/media/fat/games/Karabas_Profi/` |
 
    **Replace `boot.rom` too.** This release has a new `boot.rom` (esxDOS 0.9.0 in the DivMMC
@@ -41,6 +41,15 @@ commands live in `SYS/BIN` now). The shipped `SYS/CONFIG/ESXDOS.CFG` has `LFN=1`
 names). For the clock, add the 0.9.0 `RTC.SYS` from
 [karabas-go software/esxdos](https://github.com/andykarpov/karabas-go/tree/master/software/esxdos)
 to `SYS`. An `NMI.SYS` or `RTC.SYS` made for an older esxDOS must be rebuilt.
+
+### What is new in 20261126
+
+- **TZX tapes load.** TAP and TZX now play through the original ZX Spectrum core engines, so
+  turbo, pure-tone and the other TZX blocks work, not only standard-speed ones. The old
+  "R Tape loading error" and the hang at the end of a load were the tape signal switching
+  to the line-in one byte early.
+- **A TAP keeps playing between blocks**, no play/pause press per block.
+- `Tape previous block` and `Tape next block` work for TZX only.
 
 ### What is new in 20261123
 
@@ -79,7 +88,7 @@ A TR-DOS disk with a `boot` program starts directly from the GO menu's `Run TR-D
 
 Open the `Tape` page of the OSD. Mounting a tape starts it paused. Use `Tape play/pause`,
 `Tape previous block` and `Tape next block`; `Tape monitor` lets you hear the tape signal. The `Turbo` setting also speeds up tape loading. Large TZX files mount
-instantly. Plain TAP and standard-speed TZX blocks are supported. Once a tape has played
+instantly. TAP and TZX play through the original ZX Spectrum core engine, so turbo, pure-tone and other TZX blocks work. `Tape previous block` and `Tape next block` work for TZX only. Once a tape has played
 to the end, mount it again to replay it.
 
 ### Machine settings
@@ -130,7 +139,6 @@ software.
 - Floppy `Format Track` and raw `Write Track` are not implemented. The drive holds up to 84
   tracks and 32 sectors per track. CP/M images need their owner reference filled to boot
   (`tools/mk_disk.py reffrom`).
-- TZX blocks other than standard speed end the tape where they start.
 - In the 512x240 mode the analog scandoubler may duplicate pixels. HDMI is fine.
 
 ## Building from source
