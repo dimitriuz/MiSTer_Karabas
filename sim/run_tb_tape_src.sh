@@ -33,8 +33,7 @@ out = Path("build/sim")
 
 def raw(name, length, seed, first):
     # the sector term keeps the same offset in different sectors different;
-    # the CSW magic keeps tape_src in CSW passthrough mode (the converter is
-    # exercised end to end by tb_tape_play)
+    # the CSW magic makes the sniff report a CSW file
     magic = b"Compressed Square Wave\x1a"
     data = bytes(magic[i] if i < len(magic)
                  else ((i * seed + (i // 512) * 101 + first) & 0xFF)
@@ -88,8 +87,7 @@ LOG=$(mktemp)
 iverilog -g2012 -o build/sim/tb_tape_src.vvp \
     sim/tb_tape_src.sv \
     sim/models/sd_img_model.sv \
-    rtl/tape/tape_src.sv \
-    rtl/tape/tape_conv.sv
+    rtl/tape/tape_src.sv
 vvp build/sim/tb_tape_src.vvp > "$LOG" 2>&1 || true
 cat "$LOG"
 # The testbench prints its own verdict (see the end of its initial block);

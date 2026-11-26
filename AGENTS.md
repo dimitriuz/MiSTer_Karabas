@@ -32,19 +32,16 @@ Instructions for agents (and humans) changing this repository. Read these with:
 | Build | `tools/build.sh` → `build/logs/buildNN.log` | Ends `build: exit N`; must be `exit 0`, which includes `check_timing: OK` (negative slack, a missing generated clock, an ignored `332174/332049/332060` sdc line, a `10236`/`10541` implicit net in our sources). Numbering continues from the last build (90 as of 2026-11-19, seed 7: SDRAM read path +1.215 ns, hotkeys, SCL; builds 77, 79, 81, 82, 85 and 88 passed the old timing gate and read garbage from the SDRAM because its pins were unconstrained - fixed in the sdc from build 89, see docs/dev/sdram-timing.md; still boot every RBF on the board before trusting it). |
 | Revert the qsf | `git checkout -- Karabas_Profi.qsf` | Quartus rewrites `LAST_QUARTUS_VERSION` on every compile. |
 | Simulations | `tools/sim.sh sim/run_tb_*.sh` | Runs in image `karabas-sim:1` (repo at `/work`). Every testbench prints exactly one final `<tb>: PASS` / `<tb>: FAIL <reason>` and exits non-zero on failure. |
-| All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 30 today, one per `sim/run_tb_*.sh`). |
+| All simulations | `tools/sim.sh sim/run_all.sh` | Ends `run_all: N passed, 0 failed` (N = 35 today, one per `sim/run_tb_*.sh`). |
 | Python tests | `python3 -m unittest discover -s tools/tests` | 147 tests. `tests/` holds only the `.bas` sources for the tape fixtures — there are no python tests there. |
 | Upstream gates | `tools/check_upstream.sh`, `tools/elab_upstream.sh` | Tripwire for files we replace, and elaboration of the rewritten upstream. |
 
 Simulation runtimes, so a long run is not mistaken for a hang:
 
-- `tb_mcu_emu` ≈ 10 min; `tb_tape_play` ≈ 35 min — it plays the test tapes in simulation
-  time, one 44.1 kHz sample per ≈638 clocks (28.125 MHz ÷ 44.1 kHz); `tb_floppy` runs its six speed combinations at the same
+- `tb_mcu_emu` ≈ 10 min; `tb_floppy` runs its six speed combinations at the same
   time and takes ≈ 1 h 15 min of wall time in total (measured 2026-11-13: 73 min; the disk spins in
   real time and two reads that have to fail cost 2.4 s of simulated time each). Budget
   `run_all` at ≈ 50 min plus that hour.
-- The GHDL netlist `build/sim/tzxplayer_syn.v` is cached and rebuilt only when
-  `sim/run_tb_tape_play.sh` changes.
 - Testbenches that wait on a signal must be guarded by an **edge count**, not by a `$time`
   difference: 64-bit time arithmetic in deep Icarus runs silently never fires.
 

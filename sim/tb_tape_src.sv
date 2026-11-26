@@ -13,9 +13,7 @@
 //
 // Cases (each prints `<case>: ok` or `FAIL <case> ...`):
 //   sniff                  hello.tap, hello.tzx, hello.csw sniff as modes
-//                          0, 2, 1 (src_mode) with sizes 58, 74, 12196;
-//   blk_seek               prev on a converted file raises exactly one
-//                          seek pulse for tape.sv, on a CSW file none;
+//                          0, 2, 1 (tape_mode) with sizes 58, 74, 17037;
 //   sequential             every byte 0..2999 of a 3000-byte file;
 //   prefetch_hides_latency LAT_CLKS = 100000 (2 ms), one byte every 300 us
 //                          from 500 to 519: after the first byte no read
@@ -75,15 +73,6 @@ module tb_tape_src;
     reg  [24:0] jump_addr = 25'd0;
     wire        rd = rd_req & rd_en;
 
-    // prev/next drive the converter's block seeks; blk_seek is tape_conv's
-    // one-clock "the stream restarts here" pulse, which the top holds for
-    // 15 clocks before tape.sv sees it (Karabas_Profi.sv)
-    reg         seek_prev = 1'b0;
-    reg         seek_next = 1'b0;
-    wire        blk_seek;
-    integer     blk_seek_n = 0;
-    always @(posedge clk) if (blk_seek) blk_seek_n = blk_seek_n + 1;
-
     tape_src dut (
         .clk_sys(clk_sys),
         .img_mounted(img_mounted),
@@ -101,11 +90,7 @@ module tb_tape_src;
         .rd(rd),
         .addr(addr),
         .din(din),
-        .rd_en(rd_en),
-        .seek_prev(seek_prev),
-        .seek_next(seek_next),
-        .blk_seek(blk_seek),
-        .stock_tzx(1'b0)
+        .rd_en(rd_en)
     );
 
     sd_img_model #(.LAT_CLKS(1000)) sd_model (
@@ -260,54 +245,22 @@ module tb_tape_src;
         $display("tb_tape_src: start");
 
         // ---- sniff: the three signature formats give modes 0, 2, 1 ----
-        // tape_mode is always 1: the player only ever sees the converter's
-        // CSW stream (or a CSW file). What the sniff itself decided is
-        // src_mode, and the size tells the two apart: a converted file is
-        // unbounded (0x1FFFFFF), a passthrough one is the file's own size.
         case_errors = errors;
         shown = 0;
         mount_file(32'd58, "build/sim/hello.tap.hex");
         wait_cycle(low_cycles);
-        fail_int("sniff", "tap src_mode", dut.src_mode, 0);
-        fail_int("sniff", "tap mode", tape_mode, 1);
-        fail_int("sniff", "tap size", tape_size, 25'h1FFFFFF);
+        fail_int("sniff", "tap mode", tape_mode, 0);
+        fail_int("sniff", "tap size", tape_size, 58);
         mount_file(32'd74, "build/sim/hello.tzx.hex");
         wait_cycle(low_cycles);
-        fail_int("sniff", "tzx src_mode", dut.src_mode, 2);
-        fail_int("sniff", "tzx mode", tape_mode, 1);
-        fail_int("sniff", "tzx size", tape_size, 25'h1FFFFFF);
+        fail_int("sniff", "tzx mode", tape_mode, 2);
+        fail_int("sniff", "tzx size", tape_size, 74);
         mount_file(32'd17037, "build/sim/hello.csw.hex");
         wait_cycle(low_cycles);
-        fail_int("sniff", "csw src_mode", dut.src_mode, 1);
         fail_int("sniff", "csw mode", tape_mode, 1);
         fail_int("sniff", "csw size", tape_size, 17037);
         if (errors == case_errors) $display("sniff: ok");
         else $display("sniff: FAIL");
-
-        // ---- blk_seek: one pulse per converter jump, none in passthrough ----
-        // The pulse is how tape.sv learns to drop its CSW RLE state, and the
-        // top holds it for 15 clocks. `prev` is used because `next` only
-        // seeks after the stream has reached a block end.
-        case_errors = errors;
-        shown = 0;
-        mount_file(32'd58, "build/sim/hello.tap.hex");
-        wait_cycle(low_cycles);
-        blk_seek_n = 0;
-        seek_prev = 1'b1;
-        repeat (16) @(posedge clk);
-        seek_prev = 1'b0;
-        repeat (200) @(posedge clk);
-        fail_int("blk_seek", "pulses on a converted file", blk_seek_n, 1);
-        mount_file(32'd17037, "build/sim/hello.csw.hex");
-        wait_cycle(low_cycles);
-        blk_seek_n = 0;
-        seek_prev = 1'b1;
-        repeat (16) @(posedge clk);
-        seek_prev = 1'b0;
-        repeat (200) @(posedge clk);
-        fail_int("blk_seek", "pulses in passthrough", blk_seek_n, 0);
-        if (errors == case_errors) $display("blk_seek: ok");
-        else $display("blk_seek: FAIL");
 
         // ---- sequential: every byte of a 3000-byte file ----
         case_errors = errors;

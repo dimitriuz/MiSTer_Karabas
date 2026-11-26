@@ -49,7 +49,6 @@ to `SYS`. An `NMI.SYS` or `RTC.SYS` made for an older esxDOS must be rebuilt.
   "R Tape loading error" and the hang at the end of a load were the tape signal switching
   to the line-in one byte early.
 - **A TAP keeps playing between blocks**, no play/pause press per block.
-- `Tape previous block` and `Tape next block` work for TZX only.
 
 ### What is new in 20261123
 
@@ -88,7 +87,7 @@ A TR-DOS disk with a `boot` program starts directly from the GO menu's `Run TR-D
 
 Open the `Tape` page of the OSD. Mounting a tape starts it paused. Use `Tape play/pause`,
 `Tape previous block` and `Tape next block`; `Tape monitor` lets you hear the tape signal. The `Turbo` setting also speeds up tape loading. Large TZX files mount
-instantly. TAP and TZX play through the original ZX Spectrum core engine, so turbo, pure-tone and other TZX blocks work. `Tape previous block` and `Tape next block` work for TZX only. Once a tape has played
+instantly. TAP and TZX play through the original ZX Spectrum core engine, so turbo, pure-tone and other TZX blocks work. Once a tape has played
 to the end, mount it again to replay it.
 
 ### Machine settings
