@@ -79,7 +79,7 @@ module tape_src (
     input  wire        seek_prev,       // OSD Tape previous block
     input  wire        seek_next,       // OSD Tape next block
     output wire        blk_seek,        // converter jumped: reset the parse
-    input  wire        stock_tzx        // diagnostic: play TZX through the stock engine (sampled at mount)
+    input  wire        stock_tzx        // 1: a TZX goes to tape.sv's own engine, 0: through tape_conv (sampled at mount)
 );
 
     localparam [1:0] MODE_TAP = 2'd0, MODE_CSW = 2'd1, MODE_TZX = 2'd2;
@@ -87,9 +87,8 @@ module tape_src (
     // The source file format; TAP/TZX are streamed through tape_conv as CSW.
     reg  [1:0]  src_mode = MODE_CSW;
     reg  [24:0] src_size = 25'd0;
-    // Diagnostic (OSD `TZX engine`): a TZX mounted with stock_tzx = 1 skips the
-    // converter and plays through tape.sv's own TZX engine, as the player saw
-    // the file before the converter existed. Latched at the mount.
+    // A TZX mounted with stock_tzx = 1 skips the converter and plays through
+    // tape.sv's own TZX engine (all block types). Latched at the mount.
     reg         use_stock = 1'b0;
     wire        conv = (src_mode != MODE_CSW) && !use_stock;
 

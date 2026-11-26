@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Icarus run of the diagnostic stock TZX path: tape_src with stock_tzx = 1 feeds
-# the raw TZX to tape.sv's own engine (tzxplayer.vhd, GHDL-synthesised), whose
-# OSD knobs pilot_sel / pause_keep are checked on the pulse stream:
-#   pilot_sel 1 -> 8063 pilot edges of 2168, pilot_sel 2 -> 8065 (hello.tzx),
-#   pause_keep 0/1 on a short synthetic turbo block: the 1 ms level-low edge
-#   after the last bit is there / is gone, and tape_mode is 2 (stock) at all.
-# Pilots are long: about 4 minutes of simulation per 16k edges. Same image
-# hop as run_tb_tape_play.sh:
+# Icarus run of the stock TZX path: tape_src with stock_tzx = 1 feeds the raw
+# TZX to tape.sv's own engine (tzxplayer.vhd, GHDL-synthesised). A synthetic
+# turbo block (0x11) followed by a text block (0x30), which the converter would
+# not play at all, must come out as: pilot 2*5+1 edges of 2168, sync 668/736, 16 bit
+# edges, then the 1 ms level-low edge of the pause. Same image hop as
+# run_tb_tape_play.sh:
 #   tools/sim.sh sim/run_tb_tzx_stock.sh     # inside the image
 #   sim/run_tb_tzx_stock.sh                  # from the host
 # The last line is `tb_tzx_stock: PASS` or `tb_tzx_stock: FAIL <reason>`.
@@ -18,8 +16,6 @@ OUT=build/sim/tzx_stock
 mkdir -p "$OUT"
 
 if [ "$PREPARE" = 1 ]; then
-    python3 tools/zxtap.py bas tests/zx/hello.bas "$OUT/hello.tap" --autostart 10
-    python3 tools/zxtap.py tzx "$OUT/hello.tap" "$OUT/hello.tzx"
     python3 - <<'PY'
 import struct
 from pathlib import Path
@@ -29,7 +25,7 @@ blk = bytes([0x11]) + struct.pack("<HHHHHHBH", 2168, 667, 735, 855, 1710, 5, 8, 
 # a trailing text block: at the end of the file the engine waits for a byte that
 # never comes and never reaches the pause
 (out / "turbo.tzx").write_bytes(b"ZXTape!\x1a\x01\x0d" + blk + bytes([0x30, 3]) + b"end")
-for name in ("hello.tzx", "turbo.tzx"):
+for name in ("turbo.tzx",):
     d = (out / name).read_bytes()
     (out / (name + ".hex")).write_text("".join("%02x\n" % b for b in d))
     (out / (name + ".size")).write_text(str(len(d)))
@@ -67,41 +63,22 @@ PY
 iverilog -g2012 -o "$OUT/tb.vvp" sim/tb_tzx_stock.sv sim/models/sd_img_model.sv \
     "$OUT/tape_sim.v" rtl/tape/tape_src.sv rtl/tape/tape_conv.sv "$OUT/tzxplayer_syn.v"
 
-run() {  # name file sel keep stock maxe tlim
+run() {  # name file stock maxe tlim
     local sz; sz=$(cat "$OUT/$2.size")
-    vvp "$OUT/tb.vvp" +FILE="$OUT/$2.hex" +SIZE="$sz" +SEL="$3" +KEEP="$4" +STOCK="$5" \
-        +MAXE="$6" +TLIM="$7" +OUT="$OUT/$1.edges" | grep -E "^mode" | sed "s/^/$1: /"
+    vvp "$OUT/tb.vvp" +FILE="$OUT/$2.hex" +SIZE="$sz" +STOCK="$3" \
+        +MAXE="$4" +TLIM="$5" +OUT="$OUT/$1.edges" | grep -E "^mode" | sed "s/^/$1: /"
 }
-run sel1 hello.tzx 1 0 1 8100 1800000000
-run sel2 hello.tzx 2 0 1 8100 1800000000
-run keep0 turbo.tzx 0 0 1 200 60000000
-run keep1 turbo.tzx 0 1 1 200 60000000
+run turbo turbo.tzx 1 200 60000000
 
 python3 - <<'PY'
 import sys
 from pathlib import Path
-d = Path("build/sim/tzx_stock")
-def edges(n):
-    return [int(l.split()[1]) for l in (d / (n + ".edges")).read_text().split("\n") if l]
+e = [int(l.split()[1]) for l in Path("build/sim/tzx_stock/turbo.edges").read_text().split("\n") if l][1:]
 bad = []
-def pilot(n):
-    e = edges(n)[1:]            # the first interval is the start-up gap
-    k = 0
-    while k < len(e) and abs(e[k] - 2168) <= 1: k += 1
-    return k, e[k:k + 2]
-for n, want in (("sel1", 8063), ("sel2", 8065)):
-    k, sync = pilot(n)
-    print(n, "pilot edges", k, "then", sync)
-    if abs(k - want) > 2: bad.append("%s pilot %d want %d" % (n, k, want))
-    if not (600 < sync[0] < 700 and 700 < sync[1] < 780): bad.append(n + " sync " + str(sync))
-def tail(n):
-    e = edges(n); return e[-3:]
-for n, forced in (("keep0", True), ("keep1", False)):
-    e = edges(n)
-    # 5 pilot-ish + 2 sync + 16 bit edges (+1 forced-low edge 1 ms after the last bit)
-    last = [x for x in e if 3400 <= x <= 3600]
-    print(n, "edges", len(e), "1 ms edges", len(last), "tail", e[-3:])
-    if bool(last) != forced: bad.append("%s 1 ms edge %s, want %s" % (n, bool(last), forced))
+print("edges", len(e), e)
+if any(abs(x - 2168) > 1 for x in e[:11]): bad.append("pilot %s" % e[:11])
+if not (abs(e[11] - 668) <= 1 and abs(e[12] - 736) <= 1): bad.append("sync %s" % e[11:13])
+if len([x for x in e if 3400 <= x <= 3600]) != 1: bad.append("the 1 ms pause edge is missing")
 print("tb_tzx_stock: PASS" if not bad else "tb_tzx_stock: FAIL " + "; ".join(bad))
 sys.exit(1 if bad else 0)
 PY

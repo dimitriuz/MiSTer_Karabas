@@ -52,9 +52,6 @@ module tape
 
 	input         blk_seek,      // the converter jumped to another block
 
-	input   [1:0] tzx_pilot_sel, // Karabas diagnostics, static: see tzxplayer.vhd
-	input         tzx_pause_keep,
-
 	output reg    audio_out,
 
 	input         rd_en,
@@ -81,9 +78,7 @@ tzxplayer #(.TZX_MS(CLOCK/1000)) tzxplayer
 	.new_block(tzx_new_block),
 	.host_tap_in(din_r),
 	.cass_read(tzx_audio),
-	.cass_motor(!play_pause && tape_mode == 2'b10),
-	.pilot_sel(tzx_pilot_sel),
-	.pause_keep(tzx_pause_keep)
+	.cass_motor(!play_pause && tape_mode == 2'b10)
 );
 
 assign rd   = rd_req & rd_en;
@@ -536,8 +531,6 @@ tape tape
 (
 	.*,
 	.blk_seek(1'b0),
-	.tzx_pilot_sel(2'd0),
-	.tzx_pause_keep(1'b0),
 	.tape_mode(tape_mode_reg),
 	.req_hdr(stdhdr),
 

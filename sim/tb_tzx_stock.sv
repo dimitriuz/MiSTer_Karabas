@@ -1,9 +1,9 @@
 // Logs every audio_out interval (in ce ticks, ce every clock) of the Karabas
 // tape chain with the diagnostic stock TZX engine selected (tape_src
 // stock_tzx = 1): tape_src serves the raw file to tape.sv's own TZX engine,
-// tzxplayer.vhd, with the OSD knobs pilot_sel / pause_keep. The edges go to
+// tzxplayer.vhd,. The edges go to
 // the file named by +OUT; sim/run_tb_tzx_stock.sh judges them.
-//   +FILE=<hex> +SIZE=<bytes> +SEL=<0..3> +KEEP=<0|1> +MAXE=<edges> +OUT=<file> +STOCK=<0|1> +TLIM=<ns>
+//   +FILE=<hex> +SIZE=<bytes> +MAXE=<edges> +OUT=<file> +STOCK=<0|1> +TLIM=<ns>
 `timescale 1ns / 1ps
 `default_nettype none
 module tb_tzx_stock;
@@ -15,7 +15,7 @@ module tb_tzx_stock;
     wire [7:0] sd_buff_dout; wire sd_buff_wr;
     wire tape_ready; wire [1:0] tape_mode; wire [24:0] tape_size, tape_addr;
     wire tape_rd, tape_rd_en, blk_seek; wire [7:0] tape_din;
-    reg pause = 0, stock = 1; reg [1:0] sel = 0; reg keep = 0;
+    reg pause = 0, stock = 1;
     wire audio_out;
 
     tape_src u_tape_src (.clk_sys(clk_sys), .img_mounted(img_mounted), .img_size(img_size),
@@ -31,7 +31,6 @@ module tb_tzx_stock;
         .byte_ready(), .dout(), .pause(pause), .prev(1'b0), .next(1'b0), .active(),
         .available(), .tape_ready(tape_ready), .tape_mode(tape_mode), .tape_size(tape_size),
         .stdload(1'b0), .req_hdr(1'b0), .blk_seek(1'b0),
-        .tzx_pilot_sel(sel), .tzx_pause_keep(keep),
         .audio_out(audio_out), .rd_en(tape_rd_en), .rd(tape_rd), .addr(tape_addr),
         .din(tape_din));
 
@@ -56,8 +55,6 @@ module tb_tzx_stock;
         if (!$value$plusargs("OUT=%s", oname)) $finish;
         if (!$value$plusargs("SIZE=%d", sz)) $finish;
         if (!$value$plusargs("MAXE=%d", maxe)) maxe = 100000;
-        if ($value$plusargs("SEL=%d", v)) sel = v;
-        if ($value$plusargs("KEEP=%d", v)) keep = v;
         if ($value$plusargs("STOCK=%d", v)) stock = v;
         if ($value$plusargs("TLIM=%d", v)) tlim = v;
         fd = $fopen(oname, "w");
