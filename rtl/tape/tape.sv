@@ -335,7 +335,10 @@ always @(posedge clk_sys) begin
 										if(blk_type && read_cnt) begin
 											blk_num <= blk_num + 1'b1;
 											blk_list[blk_num + 1'b1] <= read_cnt;
-											play_pause <= ~skip;
+											// The ZX core stops here and waits for the ROM's standard-load
+											// trap (stdload) to start the next block. The Profi has no trap
+											// (stdload is tied low), so a tape just keeps playing.
+											play_pause <= 1'b0;
 											auto_blk <= 0;
 											skip <= 0;
 										end
