@@ -79,7 +79,7 @@ A TR-DOS disk with a `boot` program starts directly from the GO menu's `Run TR-D
 
 Open the `Tape` page of the OSD. Mounting a tape starts it paused. Use `Tape play/pause`,
 `Tape previous block` and `Tape next block`; `Tape monitor` lets you hear the tape signal. The `Turbo` setting also speeds up tape loading. Large TZX files mount
-instantly. Plain TAP and standard-speed TZX blocks are supported. Once a tape has played
+instantly. TAP is converted on the fly; TZX plays through the original ZX Spectrum core engine, so turbo, pure-tone and other TZX blocks work. Once a tape has played
 to the end, mount it again to replay it.
 
 ### Machine settings
@@ -130,7 +130,6 @@ software.
 - Floppy `Format Track` and raw `Write Track` are not implemented. The drive holds up to 84
   tracks and 32 sectors per track. CP/M images need their owner reference filled to boot
   (`tools/mk_disk.py reffrom`).
-- TZX blocks other than standard speed end the tape where they start.
 - In the 512x240 mode the analog scandoubler may duplicate pixels. HDMI is fine.
 
 ## Building from source
