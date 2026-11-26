@@ -42,6 +42,15 @@ names). For the clock, add the 0.9.0 `RTC.SYS` from
 [karabas-go software/esxdos](https://github.com/andykarpov/karabas-go/tree/master/software/esxdos)
 to `SYS`. An `NMI.SYS` or `RTC.SYS` made for an older esxDOS must be rebuilt.
 
+### What is new in 20261126
+
+- **TZX tapes load.** TAP and TZX now play through the original ZX Spectrum core engines, so
+  turbo, pure-tone and the other TZX blocks work, not only standard-speed ones. The old
+  "R Tape loading error" and the hang at the end of a load were the tape signal switching
+  to the line-in one byte early.
+- **A TAP keeps playing between blocks**, no play/pause press per block.
+- `Tape previous block` and `Tape next block` work for TZX only.
+
 ### What is new in 20261123
 
 - **SDRAM reads fixed.** The previous release could fail to start (ROMain stayed blank) on
