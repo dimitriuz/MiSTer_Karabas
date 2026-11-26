@@ -89,7 +89,7 @@
 // Three checks look inside the model (u_drive.active, u_drive.trk_a/trk_b): what is
 // under test is a property the flux cannot show at that moment - a stream that must
 // not have armed, a head that must not have moved while nobody was selected - and a
-// hierarchical reference is what tb_tape_play.sv already uses for the same reason.
+// hierarchical reference is what tb_tzx_stock.sv also uses for the same reason.
 //
 // Every wait is an edge count, never a $time difference (the only $realtime
 // use is the flux decoder's cell measurement, as upstream). The last line is

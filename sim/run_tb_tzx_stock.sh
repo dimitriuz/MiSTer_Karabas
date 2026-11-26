@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Icarus run of the stock TZX path: tape_src with stock_tzx = 1 feeds the raw
+# Icarus run of the stock TZX path: tape_src feeds the raw
 # TZX to tape.sv's own engine (tzxplayer.vhd, GHDL-synthesised). A synthetic
 # turbo block (0x11) followed by a text block (0x30), which the converter would
 # not play at all, must come out as: pilot 2*5+1 edges of 2168, sync 668/736, 16 bit
 # edges, then the 1 ms level-low edge of the pause. Same image hop as
-# run_tb_tape_play.sh:
+# the other benches:
 #   tools/sim.sh sim/run_tb_tzx_stock.sh     # inside the image
 #   sim/run_tb_tzx_stock.sh                  # from the host
 # The last line is `tb_tzx_stock: PASS` or `tb_tzx_stock: FAIL <reason>`.
@@ -61,14 +61,13 @@ clear = " ".join("blk_list[%d] <= 0;" % i for i in range(128))
 Path("build/sim/tzx_stock/tape_sim.v").write_text(src.replace(old, clear))
 PY
 iverilog -g2012 -o "$OUT/tb.vvp" sim/tb_tzx_stock.sv sim/models/sd_img_model.sv \
-    "$OUT/tape_sim.v" rtl/tape/tape_src.sv rtl/tape/tape_conv.sv "$OUT/tzxplayer_syn.v"
+    "$OUT/tape_sim.v" rtl/tape/tape_src.sv "$OUT/tzxplayer_syn.v"
 
-run() {  # name file stock maxe tlim
+run() {  # name file maxe tlim
     local sz; sz=$(cat "$OUT/$2.size")
-    vvp "$OUT/tb.vvp" +FILE="$OUT/$2.hex" +SIZE="$sz" +STOCK="$3" \
-        +MAXE="$4" +TLIM="$5" +OUT="$OUT/$1.edges" | grep -E "^mode" | sed "s/^/$1: /"
+    vvp "$OUT/tb.vvp" +FILE="$OUT/$2.hex" +SIZE="$sz" +MAXE="$3" +TLIM="$4" +OUT="$OUT/$1.edges" | grep -E "^mode" | sed "s/^/$1: /"
 }
-run turbo turbo.tzx 1 200 60000000
+run turbo turbo.tzx 200 60000000
 
 python3 - <<'PY'
 import sys

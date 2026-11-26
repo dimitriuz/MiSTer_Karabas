@@ -337,7 +337,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/fdd_store.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/fdd_src.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/td0_lzh.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/disk/floppy.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape/tape_conv.sv
 set_global_assignment -name VHDL_FILE rtl/tape/tzxplayer.vhd
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape/tape.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape/tape_src.sv
