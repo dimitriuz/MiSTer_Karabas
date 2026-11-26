@@ -21,7 +21,7 @@ CP/M, 512x240 text-friendly video, a stack of sound chips and real disk drives.
 
    | From this repo | To the SD card |
    |---|---|
-   | `Karabas_Profi_20261123.rbf` | `/media/fat/_Computer/` |
+   | `Karabas_Profi_20261126.rbf` | `/media/fat/_Computer/` |
    | `boot.rom` | `/media/fat/games/Karabas_Profi/` |
 
    **Replace `boot.rom` too.** This release has a new `boot.rom` (esxDOS 0.9.0 in the DivMMC
